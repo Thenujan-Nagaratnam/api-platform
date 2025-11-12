@@ -29,12 +29,11 @@ rulesetContent:
       severity: error
       given: $.info
       then:
-        - field: description
-          function: truthy
-        - field: description
-          function: length
-          functionOptions:
-            min: 50
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: description
+          category: descriptions
+          minLength: 50
 
     ai-readiness-api-contact:
       description: API should have contact information for AI agent queries
@@ -55,8 +54,10 @@ rulesetContent:
       severity: error
       given: $.paths[*][get,post,put,patch,delete,head,options]
       then:
-        field: summary
-        function: truthy
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: summary
+          category: summaries
 
     ai-readiness-operation-description:
       description: All operations must have a detailed description
@@ -64,12 +65,11 @@ rulesetContent:
       severity: error
       given: $.paths[*][get,post,put,patch,delete,head,options]
       then:
-        - field: description
-          function: truthy
-        - field: description
-          function: length
-          functionOptions:
-            min: 30
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: description
+          category: descriptions
+          minLength: 30
 
     ai-readiness-operation-id:
       description: All operations must have an operationId for AI reference
@@ -99,8 +99,10 @@ rulesetContent:
       severity: error
       given: $.paths[*][*].parameters[*]
       then:
-        field: description
-        function: truthy
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: description
+          category: descriptions
 
     ai-readiness-parameter-description-length:
       description: Parameter descriptions should be meaningful
@@ -119,8 +121,10 @@ rulesetContent:
       severity: warn
       given: $.paths[*][*].parameters[?(@.in == 'query' || @.in == 'path')]
       then:
-        field: example
-        function: truthy
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: example
+          category: examples
 
     # ============================================================================
     # Request Body Documentation
@@ -132,8 +136,10 @@ rulesetContent:
       severity: error
       given: $.paths[*][post,put,patch].requestBody
       then:
-        field: description
-        function: truthy
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: description
+          category: descriptions
 
     ai-readiness-request-body-example:
       description: Request bodies should have examples
@@ -141,12 +147,10 @@ rulesetContent:
       severity: warn
       given: $.paths[*][post,put,patch].requestBody.content[*]
       then:
-        function: schema
+        function: aiReadinessFieldCoverage
         functionOptions:
-          schema:
-            anyOf:
-              - required: [example]
-              - required: [examples]
+          fields: [example, examples]
+          category: examples
 
     # ============================================================================
     # Response Documentation
@@ -158,8 +162,10 @@ rulesetContent:
       severity: error
       given: $.paths[*][*].responses[*]
       then:
-        field: description
-        function: truthy
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: description
+          category: descriptions
 
     ai-readiness-response-example:
       description: Success responses should have examples
@@ -167,12 +173,10 @@ rulesetContent:
       severity: warn
       given: $.paths[*][*].responses[2??].content[*]
       then:
-        function: schema
+        function: aiReadinessFieldCoverage
         functionOptions:
-          schema:
-            anyOf:
-              - required: [example]
-              - required: [examples]
+          fields: [example, examples]
+          category: examples
 
     ai-readiness-error-responses-4xx:
       description: Operations must define 4xx error responses
@@ -180,25 +184,10 @@ rulesetContent:
       severity: error
       given: $.paths[*][get,post,put,patch,delete]
       then:
-        field: responses
-        function: schema
+        function: aiReadinessErrorResponseCoverage
         functionOptions:
-          schema:
-            type: object
-            properties:
-              "400": {}
-              "401": {}
-              "403": {}
-              "404": {}
-              "422": {}
-              "429": {}
-            anyOf:
-              - required: ["400"]
-              - required: ["401"]
-              - required: ["403"]
-              - required: ["404"]
-              - required: ["422"]
-              - required: ["429"]
+          category: errorResponses
+          requiredCodes: ["400", "401", "403", "404", "422", "429"]
 
     ai-readiness-error-responses-5xx:
       description: Operations should define 5xx error responses
@@ -241,8 +230,10 @@ rulesetContent:
       severity: error
       given: $.components.schemas[*]
       then:
-        field: description
-        function: truthy
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: description
+          category: descriptions
 
     ai-readiness-schema-description-length:
       description: Schema descriptions should be meaningful
@@ -261,12 +252,10 @@ rulesetContent:
       severity: error
       given: $.components.schemas[*]
       then:
-        function: schema
+        function: aiReadinessFieldCoverage
         functionOptions:
-          schema:
-            anyOf:
-              - required: [example]
-              - required: [examples]
+          fields: [example, examples]
+          category: examples
 
     ai-readiness-schema-property-description:
       description: Schema properties must have descriptions
@@ -274,8 +263,10 @@ rulesetContent:
       severity: error
       given: $.components.schemas[*].properties[*]
       then:
-        field: description
-        function: truthy
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: description
+          category: descriptions
 
     ai-readiness-schema-property-example:
       description: Schema properties should have examples
@@ -283,8 +274,10 @@ rulesetContent:
       severity: warn
       given: $.components.schemas[*].properties[*]
       then:
-        field: example
-        function: truthy
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: example
+          category: examples
 
     ai-readiness-schema-enum-description:
       description: Enum values should have descriptions
