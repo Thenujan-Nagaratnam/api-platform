@@ -1,0 +1,15 @@
+{
+  "buildTimestamp": "2025-12-05T09:42:53Z",
+  "builderVersion": "v1.0.0",
+  "outputDir": "/workspace/output",
+  "policies": [
+    {
+      "name": "ModifyHeaders",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "WordCountGuardrail",
+      "version": "v1.0.0"
+    }
+  ]
+}

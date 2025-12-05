@@ -1,0 +1,48 @@
+name: URLGuardrail
+version: v1.0.0
+description: |
+  Validates that URLs found in request or response body are valid and reachable.
+  Supports JSONPath extraction to validate URLs in specific fields.
+  Can validate URLs via DNS resolution only or via HTTP HEAD request.
+
+parameters:
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for validation.
+      If not specified, the entire body is validated for URLs.
+
+  - name: onlyDNS
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, validates URLs only via DNS resolution.
+      If false, validates URLs via HTTP HEAD request (default).
+
+  - name: timeout
+    type: number
+    required: false
+    default: 3000
+    description: |
+      Timeout in milliseconds for DNS lookup or HTTP request.
+      Default is 3000ms.
+
+  - name: showAssessment
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, includes detailed assessment information in error responses.
+
+metadata:
+  sets:
+    - key: url.validation.passed
+      type: boolean
+      description: True if URL validation passed, false otherwise
+
+    - key: url.invalidUrls
+      type: array
+      description: List of invalid URLs found during validation
+

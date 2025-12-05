@@ -269,6 +269,21 @@ func (ec *PolicyExecutionContext) processResponseBody(
 ) (*extprocv3.ProcessingResponse, error) {
 	// If policy chain requires response body, execute policies with both headers and body
 	if ec.policyChain.RequiresResponseBody {
+		// Ensure responseContext is initialized (defensive check)
+		// It should have been initialized in processResponseHeaders, but handle nil case
+		if ec.responseContext == nil {
+			// Create a minimal response context if it wasn't initialized
+			// This can happen if response headers phase was skipped
+			ec.responseContext = &policy.ResponseContext{
+				SharedContext:   ec.requestContext.SharedContext,
+				RequestHeaders:  ec.requestContext.Headers,
+				RequestBody:     ec.requestContext.Body,
+				RequestPath:     ec.requestContext.Path,
+				RequestMethod:   ec.requestContext.Method,
+				ResponseHeaders: policy.NewHeaders(make(map[string][]string)),
+				ResponseStatus:  200, // Default status
+			}
+		}
 		// Update response context with body data
 		ec.responseContext.ResponseBody = &policy.Body{
 			Content:     body.Body,
