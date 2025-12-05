@@ -1,0 +1,104 @@
+name: AWSBedrockGuardrail
+version: v1.0.0
+description: |
+  Validates content against AWS Bedrock Guardrails to detect policy violations,
+  sensitive information, and inappropriate content. Supports PII masking/redaction
+  and can extract specific fields using JSONPath.
+
+parameters:
+  - name: region
+    type: string
+    required: true
+    description: |
+      AWS region where the Bedrock Guardrail is deployed.
+      Example: "us-east-1"
+
+  - name: guardrailID
+    type: string
+    required: true
+    description: |
+      AWS Bedrock Guardrail identifier.
+
+  - name: guardrailVersion
+    type: string
+    required: true
+    description: |
+      Version of the AWS Bedrock Guardrail to use.
+
+  - name: awsAccessKeyID
+    type: string
+    required: false
+    description: |
+      AWS access key ID for authentication.
+      If not provided, uses default credential chain.
+
+  - name: awsSecretAccessKey
+    type: string
+    required: false
+    description: |
+      AWS secret access key for authentication.
+      Required if awsAccessKeyID is provided.
+
+  - name: awsSessionToken
+    type: string
+    required: false
+    description: |
+      AWS session token for temporary credentials.
+
+  - name: awsRoleARN
+    type: string
+    required: false
+    description: |
+      AWS IAM role ARN to assume for authentication.
+
+  - name: awsRoleRegion
+    type: string
+    required: false
+    description: |
+      AWS region for role assumption.
+      Required if awsRoleARN is provided.
+
+  - name: awsRoleExternalID
+    type: string
+    required: false
+    description: |
+      External ID for role assumption.
+
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for validation.
+
+  - name: redactPII
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, redacts PII entities with "*****".
+      If false, masks PII entities with placeholders for later restoration.
+
+  - name: passthroughOnError
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, allows request to proceed if guardrail API call fails.
+
+  - name: showAssessment
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, includes detailed assessment information in error responses.
+
+metadata:
+  sets:
+    - key: awsbedrockguardrail.validation.passed
+      type: boolean
+      description: True if guardrail validation passed, false otherwise
+
+    - key: awsbedrockguardrail.pii.entities
+      type: object
+      description: Map of masked PII entities (original -> placeholder) when redactPII is false
+

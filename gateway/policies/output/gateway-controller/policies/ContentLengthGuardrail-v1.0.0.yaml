@@ -1,0 +1,59 @@
+name: ContentLengthGuardrail
+version: v1.0.0
+description: |
+  Validates that the content length (in bytes) of request or response body falls within
+  a specified range. Supports JSONPath extraction to validate specific fields within
+  the payload. Can be inverted to fail when content length is within the range.
+
+parameters:
+  - name: min
+    type: number
+    required: true
+    description: |
+      Minimum allowed content length in bytes.
+      Content must be at least this many bytes to pass validation.
+    validation:
+      minimum: 0
+
+  - name: max
+    type: number
+    required: true
+    description: |
+      Maximum allowed content length in bytes.
+      Content must be at most this many bytes to pass validation.
+    validation:
+      minimum: 1
+
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for validation.
+      If not specified, the entire body is validated.
+      Example: "$.message.content" to validate only the content field.
+
+  - name: invert
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, validation is inverted: fails when content length is within the range,
+      passes when content length is outside the range.
+
+  - name: showAssessment
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, includes detailed assessment information in error responses.
+
+metadata:
+  sets:
+    - key: contentlength.validation.passed
+      type: boolean
+      description: True if content length validation passed, false otherwise
+
+    - key: contentlength.bytes
+      type: number
+      description: Actual content length in bytes that was validated
+

@@ -1,5 +1,6 @@
 docker compose down -v
 
+cd /Users/thenujan/Desktop/Git-Repos/api-platform/gateway/policy-engine
 
 docker run --rm \
     -v $(pwd)/../policies:/workspace/policies \

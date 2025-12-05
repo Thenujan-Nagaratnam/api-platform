@@ -1,5 +1,5 @@
 {
-  "buildTimestamp": "2025-12-05T09:42:53Z",
+  "buildTimestamp": "2025-12-05T10:14:46Z",
   "builderVersion": "v1.0.0",
   "outputDir": "/workspace/output",
   "policies": [
@@ -9,6 +9,42 @@
     },
     {
       "name": "WordCountGuardrail",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "ContentLengthGuardrail",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "RegexGuardrail",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "SentenceCountGuardrail",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "URLGuardrail",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "AWSBedrockGuardrail",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "AzureContentSafetyContentModeration",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "PIIMaskingRegex",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "PIIMaskingGuardrailsAI",
+      "version": "v1.0.0"
+    },
+    {
+      "name": "SemanticCache",
       "version": "v1.0.0"
     }
   ]

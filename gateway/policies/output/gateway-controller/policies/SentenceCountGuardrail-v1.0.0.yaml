@@ -1,0 +1,58 @@
+name: SentenceCountGuardrail
+version: v1.0.0
+description: |
+  Validates that the sentence count of request or response body falls within a specified range.
+  Supports JSONPath extraction to validate specific fields within the payload.
+  Can be inverted to fail when sentence count is within the range.
+
+parameters:
+  - name: min
+    type: number
+    required: true
+    description: |
+      Minimum allowed sentence count.
+      Content must contain at least this many sentences to pass validation.
+    validation:
+      minimum: 0
+
+  - name: max
+    type: number
+    required: true
+    description: |
+      Maximum allowed sentence count.
+      Content must contain at most this many sentences to pass validation.
+    validation:
+      minimum: 1
+
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for validation.
+      If not specified, the entire body is validated.
+
+  - name: invert
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, validation is inverted: fails when sentence count is within the range,
+      passes when sentence count is outside the range.
+
+  - name: showAssessment
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, includes detailed assessment information in error responses.
+
+metadata:
+  sets:
+    - key: sentencecount.validation.passed
+      type: boolean
+      description: True if sentence count validation passed, false otherwise
+
+    - key: sentencecount.count
+      type: number
+      description: Actual sentence count that was validated
+

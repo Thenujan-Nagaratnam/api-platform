@@ -1,0 +1,112 @@
+name: SemanticCache
+version: v1.0.0
+description: |
+  Implements semantic caching for LLM responses using vector embeddings and similarity search.
+  Caches responses based on semantic similarity of requests, reducing LLM API calls and latency.
+  Requires embedding provider (OpenAI, Azure OpenAI, Mistral) and vector store (Redis, Milvus).
+
+parameters:
+  - name: embeddingProvider
+    type: string
+    required: true
+    description: |
+      Embedding provider type: "OPENAI", "AZURE_OPENAI", or "MISTRAL"
+    validation:
+      enum: [OPENAI, AZURE_OPENAI, MISTRAL]
+
+  - name: embeddingEndpoint
+    type: string
+    required: true
+    description: |
+      Endpoint URL for the embedding provider API
+    validation:
+      minLength: 1
+
+  - name: embeddingModel
+    type: string
+    required: true
+    description: |
+      Model name for embeddings (e.g., "text-embedding-ada-002")
+    validation:
+      minLength: 1
+
+  - name: apiKey
+    type: string
+    required: false
+    description: |
+      API key for embedding provider authentication
+      Can also be provided via header_name parameter
+
+  - name: headerName
+    type: string
+    required: false
+    description: |
+      Header name containing API key (alternative to apiKey parameter)
+
+  - name: vectorStoreProvider
+    type: string
+    required: true
+    description: |
+      Vector store provider: "REDIS" or "MILVUS"
+    validation:
+      enum: [REDIS, MILVUS]
+
+  - name: threshold
+    type: number
+    required: true
+    description: |
+      Similarity threshold (0.0-1.0) for cache hits
+      Higher values require more similar requests
+
+  - name: embeddingDimention
+    type: number
+    required: true
+    description: |
+      Dimension of embedding vectors
+    validation:
+      minimum: 1
+
+  - name: dbHost
+    type: string
+    required: true
+    description: |
+      Vector database host
+    validation:
+      minLength: 1
+
+  - name: dbPort
+    type: number
+    required: true
+    description: |
+      Vector database port
+    validation:
+      minimum: 1
+      maximum: 65535
+
+  - name: username
+    type: string
+    required: false
+    description: |
+      Database username (if required)
+
+  - name: password
+    type: string
+    required: false
+    description: |
+      Database password (if required)
+
+  - name: database
+    type: string
+    required: false
+    description: |
+      Database name (if required)
+
+metadata:
+  sets:
+    - key: semanticcache.cache.hit
+      type: boolean
+      description: True if cache hit occurred, false if cache miss
+
+    - key: semanticcache.embedding
+      type: string
+      description: JSON-encoded embedding vector for the request

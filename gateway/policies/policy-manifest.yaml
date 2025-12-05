@@ -1,32 +1,57 @@
 version: v1
 
 policies:
-  # # Respond Policy
-  # - name: Respond
-  #   version: v1.0.0
-  #   filePath: ./policies/respond/v1.0.0
-
-  # # UppercaseBody Policy
-  # - name: UppercaseBody
-  #   version: v1.0.0
-  #   filePath: ./policies/uppercase-body/v1.0.0
-
   # ModifyHeaders Policy
   - name: ModifyHeaders
     version: v1.0.0
     filePath: ./policies/modify-headers/v1.0.0
 
-  # # CountLetters Policy
-  # - name: CountLetters
-  #   version: v1.0.0
-  #   filePath: ./policies/count-letters/v1.0.0
-
-  # # BasicAuth Policy
-  # - name: BasicAuth
-  #   version: v1.0.0
-  #   filePath: ./policies/basic-auth/v1.0.0
-
   # WordCountGuardrail Policy
   - name: WordCountGuardrail
     version: v1.0.0
     filePath: ./policies/word-count-guardrail/v1.0.0
+
+  # ContentLengthGuardrail Policy (from examples)
+  - name: ContentLengthGuardrail
+    version: v1.0.0
+    filePath: ./policies/content-length-guardrail/v1.0.0
+
+  # RegexGuardrail Policy (from examples)
+  - name: RegexGuardrail
+    version: v1.0.0
+    filePath: ./policies/regex-guardrail/v1.0.0
+
+  # SentenceCountGuardrail Policy (from examples)
+  - name: SentenceCountGuardrail
+    version: v1.0.0
+    filePath: ./policies/sentence-count-guardrail/v1.0.0
+
+  # URLGuardrail Policy (from examples)
+  - name: URLGuardrail
+    version: v1.0.0
+    filePath: ./policies/url-guardrail/v1.0.0
+
+  # AWSBedrockGuardrail Policy (from examples)
+  - name: AWSBedrockGuardrail
+    version: v1.0.0
+    filePath: ./policies/aws-bedrock-guardrail/v1.0.0
+
+  # AzureContentSafetyContentModeration Policy (from examples)
+  - name: AzureContentSafetyContentModeration
+    version: v1.0.0
+    filePath: ./policies/azure-content-safety-content-moderation/v1.0.0
+
+  # PIIMaskingRegex Policy (from examples)
+  - name: PIIMaskingRegex
+    version: v1.0.0
+    filePath: ./policies/pii-masking-regex/v1.0.0
+
+  # PIIMaskingGuardrailsAI Policy (from examples)
+  - name: PIIMaskingGuardrailsAI
+    version: v1.0.0
+    filePath: ./policies/pii-masking-guardrails-ai/v1.0.0
+
+  # SemanticCache Policy (from examples)
+  - name: SemanticCache
+    version: v1.0.0
+    filePath: ./policies/semantic-cache/v1.0.0

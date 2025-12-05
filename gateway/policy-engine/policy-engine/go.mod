@@ -6,7 +6,16 @@ require (
 	github.com/envoyproxy/go-control-plane/envoy v1.36.0
 	github.com/google/cel-go v0.18.2
 	github.com/google/uuid v1.6.0
+	github.com/policy-engine/policies/awsbedrockguardrail v0.0.0-00010101000000-000000000000
+	github.com/policy-engine/policies/azurecontentsafetycontentmoderation v0.0.0-00010101000000-000000000000
+	github.com/policy-engine/policies/contentlengthguardrail v0.0.0-00010101000000-000000000000
 	github.com/policy-engine/policies/modifyheaders v0.0.0-00010101000000-000000000000
+	github.com/policy-engine/policies/piimaskingguardrailsai v0.0.0-00010101000000-000000000000
+	github.com/policy-engine/policies/piimaskingregex v0.0.0-00010101000000-000000000000
+	github.com/policy-engine/policies/regexguardrail v0.0.0-00010101000000-000000000000
+	github.com/policy-engine/policies/semanticcache v0.0.0-00010101000000-000000000000
+	github.com/policy-engine/policies/sentencecountguardrail v0.0.0-00010101000000-000000000000
+	github.com/policy-engine/policies/urlguardrail v0.0.0-00010101000000-000000000000
 	github.com/policy-engine/policies/wordcountguardrail v0.0.0-00010101000000-000000000000
 	github.com/policy-engine/sdk v1.0.0
 	github.com/spf13/viper v1.21.0
@@ -46,3 +55,21 @@ replace github.com/policy-engine/sdk => ../sdk
 replace github.com/policy-engine/policies/modifyheaders => ../policies/modify-headers/v1.0.0
 
 replace github.com/policy-engine/policies/wordcountguardrail => ../policies/word-count-guardrail/v1.0.0
+
+replace github.com/policy-engine/policies/contentlengthguardrail => ../policies/content-length-guardrail/v1.0.0
+
+replace github.com/policy-engine/policies/regexguardrail => ../policies/regex-guardrail/v1.0.0
+
+replace github.com/policy-engine/policies/sentencecountguardrail => ../policies/sentence-count-guardrail/v1.0.0
+
+replace github.com/policy-engine/policies/urlguardrail => ../policies/url-guardrail/v1.0.0
+
+replace github.com/policy-engine/policies/awsbedrockguardrail => ../policies/aws-bedrock-guardrail/v1.0.0
+
+replace github.com/policy-engine/policies/azurecontentsafetycontentmoderation => ../policies/azure-content-safety-content-moderation/v1.0.0
+
+replace github.com/policy-engine/policies/piimaskingregex => ../policies/pii-masking-regex/v1.0.0
+
+replace github.com/policy-engine/policies/piimaskingguardrailsai => ../policies/pii-masking-guardrails-ai/v1.0.0
+
+replace github.com/policy-engine/policies/semanticcache => ../policies/semantic-cache/v1.0.0

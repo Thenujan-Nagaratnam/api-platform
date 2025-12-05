@@ -1,0 +1,47 @@
+name: RegexGuardrail
+version: v1.0.0
+description: |
+  Validates that request or response body matches a specified regular expression pattern.
+  Supports JSONPath extraction to validate specific fields within the payload.
+  Can be inverted to fail when pattern matches.
+
+parameters:
+  - name: regex
+    type: string
+    required: true
+    description: |
+      Regular expression pattern to match against the content.
+      Must be a valid Go regular expression.
+
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for validation.
+      If not specified, the entire body is validated.
+
+  - name: invert
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, validation is inverted: fails when pattern matches,
+      passes when pattern does not match.
+
+  - name: showAssessment
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, includes detailed assessment information in error responses.
+
+metadata:
+  sets:
+    - key: regex.validation.passed
+      type: boolean
+      description: True if regex validation passed, false otherwise
+
+    - key: regex.matched
+      type: boolean
+      description: True if regex pattern matched the content
+
