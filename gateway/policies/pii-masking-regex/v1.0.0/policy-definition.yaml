@@ -1,0 +1,95 @@
+name: PIIMaskingRegex
+version: v1.0.0
+description: |
+  Masks or redacts Personally Identifiable Information (PII) from request/response
+  bodies using regex patterns. Supports JSONPath extraction to process specific fields.
+  Can mask PII with placeholders (for restoration in responses) or redact with asterisks.
+  
+  Parameters can be configured separately for request and response phases by nesting them
+  under 'request' and 'response' sections. If not nested, parameters apply to both phases.
+
+parameters:
+  - name: request
+    type: object
+    required: false
+    description: |
+      Configuration for request phase PII masking.
+      Contains parameters: piiEntities, jsonPath, redactPII
+    properties:
+      - name: piiEntities
+        type: array
+        required: true
+        description: Array of PII entity configurations for request processing
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from request body
+      - name: redactPII
+        type: boolean
+        required: false
+        default: false
+        description: Redact PII with asterisks for request
+
+  - name: response
+    type: object
+    required: false
+    description: |
+      Configuration for response phase PII masking.
+      Contains parameters: piiEntities, jsonPath, redactPII
+    properties:
+      - name: piiEntities
+        type: array
+        required: true
+        description: Array of PII entity configurations for response processing
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from response body
+      - name: redactPII
+        type: boolean
+        required: false
+        default: false
+        description: Redact PII with asterisks for response
+
+  # Legacy parameters (for backward compatibility - can be used directly or nested under request/response)
+  - name: piiEntities
+    type: array
+    required: true
+    description: |
+      Array of PII entity configurations, each containing:
+      - piiEntity: Name of the PII entity (e.g., "EMAIL", "PHONE", "SSN")
+      - piiRegex: Regex pattern to match this PII type
+    items:
+      type: object
+      properties:
+        piiEntity:
+          type: string
+          description: Name of the PII entity type
+        piiRegex:
+          type: string
+          description: Regex pattern to match this PII type
+
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for processing.
+      If not specified, the entire body is processed.
+
+  - name: redactPII
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, replaces PII with "*****" (redaction).
+      If false, replaces PII with placeholders like [EMAIL_0001] for restoration in responses (masking).
+
+metadata:
+  sets:
+    - key: piimaskingregex.pii.masked
+      type: boolean
+      description: True if PII was found and masked/redacted
+
+    - key: piimaskingregex.pii.entities
+      type: object
+      description: Map of original PII values to their placeholders (only when redactPII=false)

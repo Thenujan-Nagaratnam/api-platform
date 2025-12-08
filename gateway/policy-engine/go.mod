@@ -40,3 +40,9 @@ require (
 )
 
 replace github.com/wso2/api-platform/sdk => ../../sdk
+
+replace github.com/policy-engine/policies/respond => ../policies/respond/v1.0.0
+
+replace github.com/policy-engine/policies/modifyheaders => ../policies/modify-headers/v1.0.0
+
+replace github.com/policy-engine/policies/basicauth => ../policies/basic-auth/v1.0.0

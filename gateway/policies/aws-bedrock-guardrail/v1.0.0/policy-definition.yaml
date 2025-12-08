@@ -1,0 +1,190 @@
+name: AWSBedrockGuardrail
+version: v1.0.0
+description: |
+  Validates content against AWS Bedrock Guardrails to detect policy violations,
+  sensitive information, and inappropriate content. Supports PII masking/redaction
+  and can extract specific fields using JSONPath.
+  
+  Parameters can be configured separately for request and response phases by nesting them
+  under 'request' and 'response' sections. If not nested, parameters apply to both phases.
+
+parameters:
+  - name: request
+    type: object
+    required: false
+    description: |
+      Configuration for request phase guardrail validation.
+      Contains parameters: region, guardrailID, guardrailVersion, awsAccessKeyID,
+      awsSecretAccessKey, awsSessionToken, awsRoleARN, awsRoleRegion, awsRoleExternalID,
+      jsonPath, redactPII, passthroughOnError, showAssessment
+    properties:
+      - name: region
+        type: string
+        required: true
+        description: AWS region for request validation
+      - name: guardrailID
+        type: string
+        required: true
+        description: Guardrail ID for request validation
+      - name: guardrailVersion
+        type: string
+        required: true
+        description: Guardrail version for request validation
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from request body
+      - name: redactPII
+        type: boolean
+        required: false
+        default: false
+        description: Redact PII for request
+      - name: passthroughOnError
+        type: boolean
+        required: false
+        default: false
+        description: Allow request to proceed on API errors
+      - name: showAssessment
+        type: boolean
+        required: false
+        default: false
+        description: Include assessment details in request error responses
+
+  - name: response
+    type: object
+    required: false
+    description: |
+      Configuration for response phase guardrail validation.
+      Contains parameters: region, guardrailID, guardrailVersion, awsAccessKeyID,
+      awsSecretAccessKey, awsSessionToken, awsRoleARN, awsRoleRegion, awsRoleExternalID,
+      jsonPath, redactPII, passthroughOnError, showAssessment
+    properties:
+      - name: region
+        type: string
+        required: true
+        description: AWS region for response validation
+      - name: guardrailID
+        type: string
+        required: true
+        description: Guardrail ID for response validation
+      - name: guardrailVersion
+        type: string
+        required: true
+        description: Guardrail version for response validation
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from response body
+      - name: redactPII
+        type: boolean
+        required: false
+        default: false
+        description: Redact PII for response
+      - name: passthroughOnError
+        type: boolean
+        required: false
+        default: false
+        description: Allow response to proceed on API errors
+      - name: showAssessment
+        type: boolean
+        required: false
+        default: false
+        description: Include assessment details in response error responses
+
+  # Legacy parameters (for backward compatibility - can be used directly or nested under request/response)
+  - name: region
+    type: string
+    required: true
+    description: |
+      AWS region where the Bedrock Guardrail is deployed.
+      Example: "us-east-1"
+
+  - name: guardrailID
+    type: string
+    required: true
+    description: |
+      AWS Bedrock Guardrail identifier.
+
+  - name: guardrailVersion
+    type: string
+    required: true
+    description: |
+      Version of the AWS Bedrock Guardrail to use.
+
+  - name: awsAccessKeyID
+    type: string
+    required: false
+    description: |
+      AWS access key ID for authentication.
+      If not provided, uses default credential chain.
+
+  - name: awsSecretAccessKey
+    type: string
+    required: false
+    description: |
+      AWS secret access key for authentication.
+      Required if awsAccessKeyID is provided.
+
+  - name: awsSessionToken
+    type: string
+    required: false
+    description: |
+      AWS session token for temporary credentials.
+
+  - name: awsRoleARN
+    type: string
+    required: false
+    description: |
+      AWS IAM role ARN to assume for authentication.
+
+  - name: awsRoleRegion
+    type: string
+    required: false
+    description: |
+      AWS region for role assumption.
+      Required if awsRoleARN is provided.
+
+  - name: awsRoleExternalID
+    type: string
+    required: false
+    description: |
+      External ID for role assumption.
+
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for validation.
+
+  - name: redactPII
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, redacts PII entities with "*****".
+      If false, masks PII entities with placeholders for later restoration.
+
+  - name: passthroughOnError
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, allows request to proceed if guardrail API call fails.
+
+  - name: showAssessment
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, includes detailed assessment information in error responses.
+
+metadata:
+  sets:
+    - key: awsbedrockguardrail.validation.passed
+      type: boolean
+      description: True if guardrail validation passed, false otherwise
+
+    - key: awsbedrockguardrail.pii.entities
+      type: object
+      description: Map of masked PII entities (original -> placeholder) when redactPII is false
+

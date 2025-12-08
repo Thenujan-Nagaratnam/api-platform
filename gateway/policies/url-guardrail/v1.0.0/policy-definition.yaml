@@ -1,0 +1,106 @@
+name: URLGuardrail
+version: v1.0.0
+description: |
+  Validates that URLs found in request or response body are valid and reachable.
+  Supports JSONPath extraction to validate URLs in specific fields.
+  Can validate URLs via DNS resolution only or via HTTP HEAD request.
+  
+  Parameters can be configured separately for request and response phases by nesting them
+  under 'request' and 'response' sections. If not nested, parameters apply to both phases.
+
+parameters:
+  - name: request
+    type: object
+    required: false
+    description: |
+      Configuration for request phase validation.
+      Contains parameters: jsonPath, onlyDNS, timeout, showAssessment
+    properties:
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from request body
+      - name: onlyDNS
+        type: boolean
+        required: false
+        default: false
+        description: Validate URLs via DNS only (faster) for request
+      - name: timeout
+        type: number
+        required: false
+        default: 3000
+        description: Timeout in milliseconds for request URL validation
+      - name: showAssessment
+        type: boolean
+        required: false
+        default: false
+        description: Include assessment details in request error responses
+
+  - name: response
+    type: object
+    required: false
+    description: |
+      Configuration for response phase validation.
+      Contains parameters: jsonPath, onlyDNS, timeout, showAssessment
+    properties:
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from response body
+      - name: onlyDNS
+        type: boolean
+        required: false
+        default: false
+        description: Validate URLs via DNS only (faster) for response
+      - name: timeout
+        type: number
+        required: false
+        default: 3000
+        description: Timeout in milliseconds for response URL validation
+      - name: showAssessment
+        type: boolean
+        required: false
+        default: false
+        description: Include assessment details in response error responses
+
+  # Legacy parameters (for backward compatibility - can be used directly or nested under request/response)
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for validation.
+      If not specified, the entire body is validated for URLs.
+
+  - name: onlyDNS
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, validates URLs only via DNS resolution.
+      If false, validates URLs via HTTP HEAD request (default).
+
+  - name: timeout
+    type: number
+    required: false
+    default: 3000
+    description: |
+      Timeout in milliseconds for DNS lookup or HTTP request.
+      Default is 3000ms.
+
+  - name: showAssessment
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, includes detailed assessment information in error responses.
+
+metadata:
+  sets:
+    - key: url.validation.passed
+      type: boolean
+      description: True if URL validation passed, false otherwise
+
+    - key: url.invalidUrls
+      type: array
+      description: List of invalid URLs found during validation
+

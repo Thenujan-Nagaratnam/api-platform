@@ -1,0 +1,123 @@
+name: ContentLengthGuardrail
+version: v1.0.0
+description: |
+  Validates that the content length (in bytes) of request or response body falls within
+  a specified range. Supports JSONPath extraction to validate specific fields within
+  the payload. Can be inverted to fail when content length is within the range.
+  
+  Parameters can be configured separately for request and response phases by nesting them
+  under 'request' and 'response' sections. If not nested, parameters apply to both phases.
+
+parameters:
+  - name: request
+    type: object
+    required: false
+    description: |
+      Configuration for request phase validation.
+      Contains parameters: min, max, jsonPath, invert, showAssessment
+    properties:
+      - name: min
+        type: number
+        required: true
+        description: Minimum allowed content length in bytes for request validation
+      - name: max
+        type: number
+        required: true
+        description: Maximum allowed content length in bytes for request validation
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from request body
+      - name: invert
+        type: boolean
+        required: false
+        default: false
+        description: Invert validation logic for request
+      - name: showAssessment
+        type: boolean
+        required: false
+        default: false
+        description: Include assessment details in request error responses
+
+  - name: response
+    type: object
+    required: false
+    description: |
+      Configuration for response phase validation.
+      Contains parameters: min, max, jsonPath, invert, showAssessment
+    properties:
+      - name: min
+        type: number
+        required: true
+        description: Minimum allowed content length in bytes for response validation
+      - name: max
+        type: number
+        required: true
+        description: Maximum allowed content length in bytes for response validation
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from response body
+      - name: invert
+        type: boolean
+        required: false
+        default: false
+        description: Invert validation logic for response
+      - name: showAssessment
+        type: boolean
+        required: false
+        default: false
+        description: Include assessment details in response error responses
+
+  # Legacy parameters (for backward compatibility - can be used directly or nested under request/response)
+  - name: min
+    type: number
+    required: true
+    description: |
+      Minimum allowed content length in bytes.
+      Content must be at least this many bytes to pass validation.
+    validation:
+      minimum: 0
+
+  - name: max
+    type: number
+    required: true
+    description: |
+      Maximum allowed content length in bytes.
+      Content must be at most this many bytes to pass validation.
+    validation:
+      minimum: 1
+
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for validation.
+      If not specified, the entire body is validated.
+      Example: "$.message.content" to validate only the content field.
+
+  - name: invert
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, validation is inverted: fails when content length is within the range,
+      passes when content length is outside the range.
+
+  - name: showAssessment
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, includes detailed assessment information in error responses.
+
+metadata:
+  sets:
+    - key: contentlength.validation.passed
+      type: boolean
+      description: True if content length validation passed, false otherwise
+
+    - key: contentlength.bytes
+      type: number
+      description: Actual content length in bytes that was validated
+

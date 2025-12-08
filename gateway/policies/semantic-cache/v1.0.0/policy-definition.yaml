@@ -1,0 +1,240 @@
+name: SemanticCache
+version: v1.0.0
+description: |
+  Implements semantic caching for LLM responses using vector embeddings and similarity search.
+  Caches responses based on semantic similarity of requests, reducing LLM API calls and latency.
+  Requires embedding provider (OpenAI, Azure OpenAI, Mistral) and vector store (Redis, Milvus).
+  
+  This policy operates on both request and response phases. Configuration can be nested under
+  'request' and 'response' sections, though most parameters are shared across phases.
+
+parameters:
+  - name: request
+    type: object
+    required: false
+    description: |
+      Configuration for request phase caching (embedding generation).
+      Contains shared parameters: embeddingProvider, embeddingEndpoint, embeddingModel,
+      apiKey, headerName, vectorStoreProvider, threshold, embeddingDimention, dbHost,
+      dbPort, username, password, database
+    properties:
+      - name: embeddingProvider
+        type: string
+        required: true
+        description: Embedding provider type for request processing
+      - name: embeddingEndpoint
+        type: string
+        required: true
+        description: Embedding endpoint for request processing
+      - name: embeddingModel
+        type: string
+        required: true
+        description: Embedding model for request processing
+      - name: apiKey
+        type: string
+        required: false
+        description: API key for request embedding provider
+      - name: headerName
+        type: string
+        required: false
+        description: Header name containing API key for request
+      - name: vectorStoreProvider
+        type: string
+        required: true
+        description: Vector store provider for request caching
+      - name: threshold
+        type: number
+        required: true
+        description: Similarity threshold for request cache lookup
+      - name: embeddingDimention
+        type: number
+        required: true
+        description: Embedding dimension for request
+      - name: dbHost
+        type: string
+        required: true
+        description: Vector database host for request
+      - name: dbPort
+        type: number
+        required: true
+        description: Vector database port for request
+      - name: username
+        type: string
+        required: false
+        description: Database username for request
+      - name: password
+        type: string
+        required: false
+        description: Database password for request
+      - name: database
+        type: string
+        required: false
+        description: Database name for request
+
+  - name: response
+    type: object
+    required: false
+    description: |
+      Configuration for response phase caching (cache storage).
+      Contains shared parameters: embeddingProvider, embeddingEndpoint, embeddingModel,
+      apiKey, headerName, vectorStoreProvider, threshold, embeddingDimention, dbHost,
+      dbPort, username, password, database
+    properties:
+      - name: embeddingProvider
+        type: string
+        required: true
+        description: Embedding provider type for response processing
+      - name: embeddingEndpoint
+        type: string
+        required: true
+        description: Embedding endpoint for response processing
+      - name: embeddingModel
+        type: string
+        required: true
+        description: Embedding model for response processing
+      - name: apiKey
+        type: string
+        required: false
+        description: API key for response embedding provider
+      - name: headerName
+        type: string
+        required: false
+        description: Header name containing API key for response
+      - name: vectorStoreProvider
+        type: string
+        required: true
+        description: Vector store provider for response caching
+      - name: threshold
+        type: number
+        required: true
+        description: Similarity threshold for response cache storage
+      - name: embeddingDimention
+        type: number
+        required: true
+        description: Embedding dimension for response
+      - name: dbHost
+        type: string
+        required: true
+        description: Vector database host for response
+      - name: dbPort
+        type: number
+        required: true
+        description: Vector database port for response
+      - name: username
+        type: string
+        required: false
+        description: Database username for response
+      - name: password
+        type: string
+        required: false
+        description: Database password for response
+      - name: database
+        type: string
+        required: false
+        description: Database name for response
+
+  # Legacy parameters (for backward compatibility - can be used directly or nested under request/response)
+  - name: embeddingProvider
+    type: string
+    required: true
+    description: |
+      Embedding provider type: "OPENAI", "AZURE_OPENAI", or "MISTRAL"
+    validation:
+      enum: [OPENAI, AZURE_OPENAI, MISTRAL]
+
+  - name: embeddingEndpoint
+    type: string
+    required: true
+    description: |
+      Endpoint URL for the embedding provider API
+    validation:
+      minLength: 1
+
+  - name: embeddingModel
+    type: string
+    required: true
+    description: |
+      Model name for embeddings (e.g., "text-embedding-ada-002")
+    validation:
+      minLength: 1
+
+  - name: apiKey
+    type: string
+    required: false
+    description: |
+      API key for embedding provider authentication
+      Can also be provided via header_name parameter
+
+  - name: headerName
+    type: string
+    required: false
+    description: |
+      Header name containing API key (alternative to apiKey parameter)
+
+  - name: vectorStoreProvider
+    type: string
+    required: true
+    description: |
+      Vector store provider: "REDIS" or "MILVUS"
+    validation:
+      enum: [REDIS, MILVUS]
+
+  - name: threshold
+    type: number
+    required: true
+    description: |
+      Similarity threshold (0.0-1.0) for cache hits
+      Higher values require more similar requests
+
+  - name: embeddingDimention
+    type: number
+    required: true
+    description: |
+      Dimension of embedding vectors
+    validation:
+      minimum: 1
+
+  - name: dbHost
+    type: string
+    required: true
+    description: |
+      Vector database host
+    validation:
+      minLength: 1
+
+  - name: dbPort
+    type: number
+    required: true
+    description: |
+      Vector database port
+    validation:
+      minimum: 1
+      maximum: 65535
+
+  - name: username
+    type: string
+    required: false
+    description: |
+      Database username (if required)
+
+  - name: password
+    type: string
+    required: false
+    description: |
+      Database password (if required)
+
+  - name: database
+    type: string
+    required: false
+    description: |
+      Database name (if required)
+
+metadata:
+  sets:
+    - key: semanticcache.cache.hit
+      type: boolean
+      description: True if cache hit occurred, false if cache miss
+
+    - key: semanticcache.embedding
+      type: string
+      description: JSON-encoded embedding vector for the request

@@ -107,3 +107,8 @@ bin/
 *.prof
 *.pprof
 *__debug_bin*
+
+
+**/test-scripts/
+**/output/
+**/output/

@@ -1,0 +1,119 @@
+name: PIIMaskingGuardrailsAI
+version: v1.0.0
+description: |
+  Masks or redacts Personally Identifiable Information (PII) from request/response
+  bodies using an AI-based PII detection service. Supports JSONPath extraction to
+  process specific fields. Can mask PII with placeholders (for restoration in responses)
+  or redact with asterisks.
+  
+  Parameters can be configured separately for request and response phases by nesting them
+  under 'request' and 'response' sections. If not nested, parameters apply to both phases.
+
+parameters:
+  - name: request
+    type: object
+    required: false
+    description: |
+      Configuration for request phase PII masking.
+      Contains parameters: piiServiceURL, piiServiceAPIKey, piiEntities, jsonPath, redactPII
+    properties:
+      - name: piiServiceURL
+        type: string
+        required: true
+        description: PII detection service URL for request processing
+      - name: piiServiceAPIKey
+        type: string
+        required: true
+        description: API key for request PII service
+      - name: piiEntities
+        type: array
+        required: true
+        description: Array of PII entity types for request detection
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from request body
+      - name: redactPII
+        type: boolean
+        required: false
+        default: false
+        description: Redact PII with asterisks for request
+
+  - name: response
+    type: object
+    required: false
+    description: |
+      Configuration for response phase PII masking.
+      Contains parameters: piiServiceURL, piiServiceAPIKey, piiEntities, jsonPath, redactPII
+    properties:
+      - name: piiServiceURL
+        type: string
+        required: true
+        description: PII detection service URL for response processing
+      - name: piiServiceAPIKey
+        type: string
+        required: true
+        description: API key for response PII service
+      - name: piiEntities
+        type: array
+        required: true
+        description: Array of PII entity types for response detection
+      - name: jsonPath
+        type: string
+        required: false
+        description: JSONPath to extract field from response body
+      - name: redactPII
+        type: boolean
+        required: false
+        default: false
+        description: Redact PII with asterisks for response
+
+  # Legacy parameters (for backward compatibility - can be used directly or nested under request/response)
+  - name: piiServiceURL
+    type: string
+    required: true
+    description: |
+      URL of the PII detection service endpoint.
+    validation:
+      minLength: 1
+
+  - name: piiServiceAPIKey
+    type: string
+    required: true
+    description: |
+      API key for authenticating with the PII detection service.
+    validation:
+      minLength: 1
+
+  - name: piiEntities
+    type: array
+    required: true
+    description: |
+      Array of PII entity types to detect (e.g., ["EMAIL", "PHONE", "SSN", "PERSON"]).
+    items:
+      type: string
+
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract a specific field from the payload for processing.
+      If not specified, the entire body is processed.
+
+  - name: redactPII
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, replaces PII with "*****" (redaction).
+      If false, replaces PII with placeholders like [EMAIL_0001] for restoration in responses (masking).
+
+metadata:
+  sets:
+    - key: piimaskingguardrailsai.pii.masked
+      type: boolean
+      description: True if PII was found and masked/redacted
+
+    - key: piimaskingguardrailsai.pii.entities
+      type: object
+      description: Map of original PII values to their placeholders (only when redactPII=false)
