@@ -112,12 +112,40 @@ func (p *PIIMaskingGuardrailsAIPolicy) Validate(params map[string]interface{}) e
 
 // OnRequest performs PII masking on request
 func (p *PIIMaskingGuardrailsAIPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	return p.processBody(ctx.Body, params, false, ctx)
+	// Check if request configuration exists
+	requestParams, ok := params["request"]
+	if !ok {
+		// No request configuration, pass through
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract request params (could be a map or the params themselves if no request/response separation)
+	requestConfig, ok := requestParams.(map[string]interface{})
+	if !ok {
+		// If request is not a map, use params directly (backward compatibility)
+		requestConfig = params
+	}
+
+	return p.processBody(ctx.Body, requestConfig, false, ctx)
 }
 
 // OnResponse performs PII restoration/masking on response
 func (p *PIIMaskingGuardrailsAIPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	return p.processBodyResponse(ctx.ResponseBody, params, true, ctx)
+	// Check if response configuration exists
+	responseParams, ok := params["response"]
+	if !ok {
+		// No response configuration, pass through
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Extract response params (could be a map or the params themselves if no request/response separation)
+	responseConfig, ok := responseParams.(map[string]interface{})
+	if !ok {
+		// If response is not a map, use params directly (backward compatibility)
+		responseConfig = params
+	}
+
+	return p.processBodyResponse(ctx.ResponseBody, responseConfig, true, ctx)
 }
 
 // processBody processes request body for PII masking

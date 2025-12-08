@@ -26,13 +26,22 @@ spec:
           version: v1.0.0
           enabled: true
           params:
-            azureContentSafetyEndpoint: "https://your-resource.cognitiveservices.azure.com"
-            azureContentSafetyKey: "YOUR_API_KEY"
-            hateCategory: 2
-            sexualCategory: 2
-            selfHarmCategory: 2
-            violenceCategory: 2
-            passthroughOnError: false
+            request:
+              azureContentSafetyEndpoint: "https://your-resource.cognitiveservices.azure.com"
+              azureContentSafetyKey: "YOUR_API_KEY"
+              hateCategory: 2
+              sexualCategory: 2
+              selfHarmCategory: 2
+              violenceCategory: 2
+              passthroughOnError: false
+            response:
+              azureContentSafetyEndpoint: "https://your-resource.cognitiveservices.azure.com"
+              azureContentSafetyKey: "YOUR_API_KEY"
+              hateCategory: 2
+              sexualCategory: 2
+              selfHarmCategory: 2
+              violenceCategory: 2
+              passthroughOnError: false
 EOF
 
 # echo -e "\n\nTest 1: Valid request (safe content)"

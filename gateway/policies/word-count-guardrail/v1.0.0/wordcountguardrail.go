@@ -35,6 +35,42 @@ func (p *WordCountGuardrailPolicy) Mode() policy.ProcessingMode {
 
 // Validate validates the policy configuration
 func (p *WordCountGuardrailPolicy) Validate(params map[string]interface{}) error {
+	// Check if request/response sections exist
+	requestParams, hasRequest := params["request"]
+	responseParams, hasResponse := params["response"]
+
+	// If neither request nor response sections exist, validate params directly (backward compatibility)
+	if !hasRequest && !hasResponse {
+		return p.validateParams(params)
+	}
+
+	// Validate request section if present
+	if hasRequest {
+		requestConfig, ok := requestParams.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("'request' must be an object")
+		}
+		if err := p.validateParams(requestConfig); err != nil {
+			return fmt.Errorf("request section: %w", err)
+		}
+	}
+
+	// Validate response section if present
+	if hasResponse {
+		responseConfig, ok := responseParams.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("'response' must be an object")
+		}
+		if err := p.validateParams(responseConfig); err != nil {
+			return fmt.Errorf("response section: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// validateParams validates the actual policy parameters
+func (p *WordCountGuardrailPolicy) validateParams(params map[string]interface{}) error {
 	// Validate min parameter
 	minRaw, ok := params["min"]
 	if !ok {
@@ -108,12 +144,40 @@ func (p *WordCountGuardrailPolicy) Validate(params map[string]interface{}) error
 
 // OnRequest performs word count validation on request
 func (p *WordCountGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	return p.validateWordCount(ctx.Body, params, false)
+	// Check if request configuration exists
+	requestParams, ok := params["request"]
+	if !ok {
+		// No request configuration, pass through
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract request params (could be a map or the params themselves if no request/response separation)
+	requestConfig, ok := requestParams.(map[string]interface{})
+	if !ok {
+		// If request is not a map, use params directly (backward compatibility)
+		requestConfig = params
+	}
+
+	return p.validateWordCount(ctx.Body, requestConfig, false)
 }
 
 // OnResponse performs word count validation on response
 func (p *WordCountGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	return p.validateWordCountResponse(ctx.ResponseBody, params, true)
+	// Check if response configuration exists
+	responseParams, ok := params["response"]
+	if !ok {
+		// No response configuration, pass through
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Extract response params (could be a map or the params themselves if no request/response separation)
+	responseConfig, ok := responseParams.(map[string]interface{})
+	if !ok {
+		// If response is not a map, use params directly (backward compatibility)
+		responseConfig = params
+	}
+
+	return p.validateWordCountResponse(ctx.ResponseBody, responseConfig, true)
 }
 
 // validateWordCount validates word count for request

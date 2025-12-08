@@ -83,13 +83,30 @@ func (p *SemanticCachePolicy) Validate(params map[string]interface{}) error {
 
 // OnRequest checks cache for semantically similar requests
 func (p *SemanticCachePolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
+	// Check if request configuration exists
+	requestParams, ok := params["request"]
+	if !ok {
+		// No request configuration, pass through
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract request params (could be a map or the params themselves if no request/response separation)
+	requestConfig, ok := requestParams.(map[string]interface{})
+	if !ok {
+		// If request is not a map, use params directly (backward compatibility)
+		requestConfig = params
+	}
+
+	// Validate request config (placeholder - would use embeddingProvider, threshold, etc. from requestConfig)
+	_ = requestConfig // Use requestConfig to avoid unused variable error
+
 	if ctx.Body == nil || !ctx.Body.Present || len(ctx.Body.Content) == 0 {
 		return policy.UpstreamRequestModifications{}
 	}
 
 	// TODO: Full implementation requires:
-	// 1. Generate embedding for request body using embedding provider
-	// 2. Search vector store for similar embeddings (above threshold)
+	// 1. Generate embedding for request body using embedding provider from requestConfig
+	// 2. Search vector store for similar embeddings (above threshold from requestConfig)
 	// 3. If cache hit, return cached response immediately
 	// 4. If cache miss, store embedding in metadata for response phase
 
@@ -103,6 +120,23 @@ func (p *SemanticCachePolicy) OnRequest(ctx *policy.RequestContext, params map[s
 
 // OnResponse stores response in cache if cache miss occurred
 func (p *SemanticCachePolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
+	// Check if response configuration exists
+	responseParams, ok := params["response"]
+	if !ok {
+		// No response configuration, pass through
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Extract response params (could be a map or the params themselves if no request/response separation)
+	responseConfig, ok := responseParams.(map[string]interface{})
+	if !ok {
+		// If response is not a map, use params directly (backward compatibility)
+		responseConfig = params
+	}
+
+	// Validate response config (placeholder - would use vectorStoreProvider, dbHost, etc. from responseConfig)
+	_ = responseConfig // Use responseConfig to avoid unused variable error
+
 	if ctx.ResponseBody == nil || !ctx.ResponseBody.Present || len(ctx.ResponseBody.Content) == 0 {
 		return policy.UpstreamResponseModifications{}
 	}
@@ -117,7 +151,7 @@ func (p *SemanticCachePolicy) OnResponse(ctx *policy.ResponseContext, params map
 
 	// TODO: Full implementation requires:
 	// 1. Retrieve embedding from metadata (stored in request phase)
-	// 2. Store embedding + response body in vector store
+	// 2. Store embedding + response body in vector store using responseConfig settings
 	// 3. Associate with API ID for scoping
 
 	// Placeholder: Log that response should be cached

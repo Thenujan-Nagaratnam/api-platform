@@ -10,9 +10,9 @@ ENV GATEWAY_POLICIES_DEFINITIONS__PATH=/app/policies
 # Metadata labels
 LABEL org.opencontainers.image.title="Gateway Controller with Custom Policies"
 LABEL org.opencontainers.image.description="Gateway Controller extended with custom policy definitions"
-LABEL build.timestamp="2025-12-05T10:14:46Z"
+LABEL build.timestamp="2025-12-08T06:25:26Z"
 LABEL build.builder-version="v1.0.0"
 LABEL build.base-image="ghcr.io/wso2/api-platform/gateway-controller:0.0.1"
 LABEL build.builder-version="v1.0.0"
 LABEL build.policy-count="11"
-LABEL build.timestamp="2025-12-05T10:14:46Z"
+LABEL build.timestamp="2025-12-08T06:25:26Z"

@@ -109,12 +109,40 @@ func (p *AzureContentSafetyContentModerationPolicy) Validate(params map[string]i
 
 // OnRequest performs Azure Content Safety validation on request
 func (p *AzureContentSafetyContentModerationPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	return p.validateContent(ctx.Body, params, false)
+	// Check if request configuration exists
+	requestParams, ok := params["request"]
+	if !ok {
+		// No request configuration, pass through
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract request params (could be a map or the params themselves if no request/response separation)
+	requestConfig, ok := requestParams.(map[string]interface{})
+	if !ok {
+		// If request is not a map, use params directly (backward compatibility)
+		requestConfig = params
+	}
+
+	return p.validateContent(ctx.Body, requestConfig, false)
 }
 
 // OnResponse performs Azure Content Safety validation on response
 func (p *AzureContentSafetyContentModerationPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	return p.validateContentResponse(ctx.ResponseBody, params, true)
+	// Check if response configuration exists
+	responseParams, ok := params["response"]
+	if !ok {
+		// No response configuration, pass through
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Extract response params (could be a map or the params themselves if no request/response separation)
+	responseConfig, ok := responseParams.(map[string]interface{})
+	if !ok {
+		// If response is not a map, use params directly (backward compatibility)
+		responseConfig = params
+	}
+
+	return p.validateContentResponse(ctx.ResponseBody, responseConfig, true)
 }
 
 // validateContent validates content using Azure Content Safety API

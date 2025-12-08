@@ -26,13 +26,22 @@ spec:
           version: v1.0.0
           enabled: true
           params:
-            piiServiceURL: "https://your-pii-service.com/validate"
-            piiServiceAPIKey: "YOUR_API_KEY"
-            piiEntities:
-              - "EMAIL"
-              - "PHONE"
-              - "SSN"
-            redactPII: false
+            request:
+              piiServiceURL: "https://your-pii-service.com/validate"
+              piiServiceAPIKey: "YOUR_API_KEY"
+              piiEntities:
+                - "EMAIL"
+                - "PHONE"
+                - "SSN"
+              redactPII: false
+            response:
+              piiServiceURL: "https://your-pii-service.com/validate"
+              piiServiceAPIKey: "YOUR_API_KEY"
+              piiEntities:
+                - "EMAIL"
+                - "PHONE"
+                - "SSN"
+              redactPII: false
 EOF
 
 # echo -e "\n\nTest 1: Request with PII (should be masked by AI service)"

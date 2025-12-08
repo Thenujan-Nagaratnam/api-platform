@@ -73,12 +73,40 @@ func (p *RegexGuardrailPolicy) Validate(params map[string]interface{}) error {
 
 // OnRequest performs regex validation on request
 func (p *RegexGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	return p.validateRegex(ctx.Body, params, false)
+	// Check if request configuration exists
+	requestParams, ok := params["request"]
+	if !ok {
+		// No request configuration, pass through
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract request params (could be a map or the params themselves if no request/response separation)
+	requestConfig, ok := requestParams.(map[string]interface{})
+	if !ok {
+		// If request is not a map, use params directly (backward compatibility)
+		requestConfig = params
+	}
+
+	return p.validateRegex(ctx.Body, requestConfig, false)
 }
 
 // OnResponse performs regex validation on response
 func (p *RegexGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	return p.validateRegexResponse(ctx.ResponseBody, params, true)
+	// Check if response configuration exists
+	responseParams, ok := params["response"]
+	if !ok {
+		// No response configuration, pass through
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Extract response params (could be a map or the params themselves if no request/response separation)
+	responseConfig, ok := responseParams.(map[string]interface{})
+	if !ok {
+		// If response is not a map, use params directly (backward compatibility)
+		responseConfig = params
+	}
+
+	return p.validateRegexResponse(ctx.ResponseBody, responseConfig, true)
 }
 
 // validateRegex validates regex pattern for request
@@ -87,7 +115,16 @@ func (p *RegexGuardrailPolicy) validateRegex(body *policy.Body, params map[strin
 		return policy.UpstreamRequestModifications{}
 	}
 
-	regexStr := params["regex"].(string)
+	// Safely get regex parameter
+	regexRaw, ok := params["regex"]
+	if !ok {
+		return p.buildErrorResponse("'regex' parameter is required", "", "", isResponse)
+	}
+	regexStr, ok := regexRaw.(string)
+	if !ok || regexStr == "" {
+		return p.buildErrorResponse("'regex' must be a non-empty string", "", "", isResponse)
+	}
+
 	jsonPath := ""
 	if jsonPathRaw, ok := params["jsonPath"]; ok {
 		jsonPath = jsonPathRaw.(string)
@@ -111,12 +148,23 @@ func (p *RegexGuardrailPolicy) validateRegex(body *policy.Body, params map[strin
 		return p.buildErrorResponse("Error matching regex: "+err.Error(), regexStr, jsonPath, isResponse)
 	}
 
-	if matched && inverted {
-		return p.buildErrorResponse("Regex matched and inverted condition is true", regexStr, jsonPath, isResponse)
-	} else if !matched && !inverted {
-		return p.buildErrorResponse("Regex did not match", regexStr, jsonPath, isResponse)
+	// Logic based on policy definition:
+	// - invert=false (default): Content MUST match pattern (validation mode - require pattern)
+	//   - Pattern matches → PASS (content is valid)
+	//   - Pattern doesn't match → BLOCK (content is invalid)
+	// - invert=true: Content MUST NOT match pattern (guardrail mode - block pattern)
+	//   - Pattern matches → BLOCK (bad content detected)
+	//   - Pattern doesn't match → PASS (content is safe)
+	if !matched && !inverted {
+		// Pattern didn't match and not inverted: block (validation mode - require pattern)
+		return p.buildErrorResponse("Regex pattern did not match", regexStr, jsonPath, isResponse)
+	} else if matched && inverted {
+		// Pattern matched and inverted: block (guardrail mode - block bad content)
+		return p.buildErrorResponse("Regex pattern matched (inverted mode)", regexStr, jsonPath, isResponse)
 	}
 
+	// Pattern matched with invert=false: allow (validation passed)
+	// Pattern didn't match with invert=true: allow (guardrail passed - no bad content)
 	return policy.UpstreamRequestModifications{}
 }
 
@@ -126,7 +174,16 @@ func (p *RegexGuardrailPolicy) validateRegexResponse(body *policy.Body, params m
 		return policy.UpstreamResponseModifications{}
 	}
 
-	regexStr := params["regex"].(string)
+	// Safely get regex parameter
+	regexRaw, ok := params["regex"]
+	if !ok {
+		return p.buildErrorResponseResponse("'regex' parameter is required", "", "", isResponse)
+	}
+	regexStr, ok := regexRaw.(string)
+	if !ok || regexStr == "" {
+		return p.buildErrorResponseResponse("'regex' must be a non-empty string", "", "", isResponse)
+	}
+
 	jsonPath := ""
 	if jsonPathRaw, ok := params["jsonPath"]; ok {
 		jsonPath = jsonPathRaw.(string)
@@ -150,12 +207,23 @@ func (p *RegexGuardrailPolicy) validateRegexResponse(body *policy.Body, params m
 		return p.buildErrorResponseResponse("Error matching regex: "+err.Error(), regexStr, jsonPath, isResponse)
 	}
 
-	if matched && inverted {
-		return p.buildErrorResponseResponse("Regex matched and inverted condition is true", regexStr, jsonPath, isResponse)
-	} else if !matched && !inverted {
-		return p.buildErrorResponseResponse("Regex did not match", regexStr, jsonPath, isResponse)
+	// Logic based on policy definition:
+	// - invert=false (default): Content MUST match pattern (validation mode - require pattern)
+	//   - Pattern matches → PASS (content is valid)
+	//   - Pattern doesn't match → BLOCK (content is invalid)
+	// - invert=true: Content MUST NOT match pattern (guardrail mode - block pattern)
+	//   - Pattern matches → BLOCK (bad content detected)
+	//   - Pattern doesn't match → PASS (content is safe)
+	if !matched && !inverted {
+		// Pattern didn't match and not inverted: block (validation mode - require pattern)
+		return p.buildErrorResponseResponse("Regex pattern did not match", regexStr, jsonPath, isResponse)
+	} else if matched && inverted {
+		// Pattern matched and inverted: block (guardrail mode - block bad content)
+		return p.buildErrorResponseResponse("Regex pattern matched (inverted mode)", regexStr, jsonPath, isResponse)
 	}
 
+	// Pattern matched with invert=false: allow (validation passed)
+	// Pattern didn't match with invert=true: allow (guardrail passed - no bad content)
 	return policy.UpstreamResponseModifications{}
 }
 
@@ -242,4 +310,3 @@ func extractValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
 		return fmt.Sprintf("%v", v), nil
 	}
 }
-

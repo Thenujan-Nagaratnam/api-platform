@@ -96,12 +96,26 @@ func (p *AWSBedrockGuardrailPolicy) Validate(params map[string]interface{}) erro
 
 // OnRequest performs AWS Bedrock Guardrail validation on request
 func (p *AWSBedrockGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
+	// Check if request configuration exists
+	requestParams, ok := params["request"]
+	if !ok {
+		// No request configuration, pass through
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract request params (could be a map or the params themselves if no request/response separation)
+	requestConfig, ok := requestParams.(map[string]interface{})
+	if !ok {
+		// If request is not a map, use params directly (backward compatibility)
+		requestConfig = params
+	}
+
 	if ctx.Body == nil || !ctx.Body.Present || len(ctx.Body.Content) == 0 {
 		return policy.UpstreamRequestModifications{}
 	}
 
 	jsonPath := ""
-	if jsonPathRaw, ok := params["jsonPath"]; ok {
+	if jsonPathRaw, ok := requestConfig["jsonPath"]; ok {
 		jsonPath = jsonPathRaw.(string)
 	}
 
@@ -129,12 +143,26 @@ func (p *AWSBedrockGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params
 
 // OnResponse performs AWS Bedrock Guardrail validation on response
 func (p *AWSBedrockGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
+	// Check if response configuration exists
+	responseParams, ok := params["response"]
+	if !ok {
+		// No response configuration, pass through
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Extract response params (could be a map or the params themselves if no request/response separation)
+	responseConfig, ok := responseParams.(map[string]interface{})
+	if !ok {
+		// If response is not a map, use params directly (backward compatibility)
+		responseConfig = params
+	}
+
 	if ctx.ResponseBody == nil || !ctx.ResponseBody.Present || len(ctx.ResponseBody.Content) == 0 {
 		return policy.UpstreamResponseModifications{}
 	}
 
 	jsonPath := ""
-	if jsonPathRaw, ok := params["jsonPath"]; ok {
+	if jsonPathRaw, ok := responseConfig["jsonPath"]; ok {
 		jsonPath = jsonPathRaw.(string)
 	}
 
@@ -239,4 +267,3 @@ func extractValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
 		return fmt.Sprintf("%v", v), nil
 	}
 }
-

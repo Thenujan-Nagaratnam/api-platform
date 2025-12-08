@@ -82,12 +82,40 @@ func (p *URLGuardrailPolicy) Validate(params map[string]interface{}) error {
 
 // OnRequest performs URL validation on request
 func (p *URLGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	return p.validateURLs(ctx.Body, params, false)
+	// Check if request configuration exists
+	requestParams, ok := params["request"]
+	if !ok {
+		// No request configuration, pass through
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract request params (could be a map or the params themselves if no request/response separation)
+	requestConfig, ok := requestParams.(map[string]interface{})
+	if !ok {
+		// If request is not a map, use params directly (backward compatibility)
+		requestConfig = params
+	}
+
+	return p.validateURLs(ctx.Body, requestConfig, false)
 }
 
 // OnResponse performs URL validation on response
 func (p *URLGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	return p.validateURLsResponse(ctx.ResponseBody, params, true)
+	// Check if response configuration exists
+	responseParams, ok := params["response"]
+	if !ok {
+		// No response configuration, pass through
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Extract response params (could be a map or the params themselves if no request/response separation)
+	responseConfig, ok := responseParams.(map[string]interface{})
+	if !ok {
+		// If response is not a map, use params directly (backward compatibility)
+		responseConfig = params
+	}
+
+	return p.validateURLsResponse(ctx.ResponseBody, responseConfig, true)
 }
 
 // validateURLs validates URLs for request
@@ -361,4 +389,3 @@ func extractValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
 		return fmt.Sprintf("%v", v), nil
 	}
 }
-

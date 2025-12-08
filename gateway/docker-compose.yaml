@@ -102,6 +102,24 @@ services:
     networks:
       - gateway-network
 
+  mock-backend:
+    build:
+      context: ./mock-backend
+      dockerfile: Dockerfile
+    container_name: mock-backend
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+    networks:
+      - gateway-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
 volumes:
   controller-data:
     driver: local

@@ -111,12 +111,40 @@ func (p *ContentLengthGuardrailPolicy) Validate(params map[string]interface{}) e
 
 // OnRequest performs content length validation on request
 func (p *ContentLengthGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	return p.validateContentLength(ctx.Body, params, false)
+	// Check if request configuration exists
+	requestParams, ok := params["request"]
+	if !ok {
+		// No request configuration, pass through
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract request params (could be a map or the params themselves if no request/response separation)
+	requestConfig, ok := requestParams.(map[string]interface{})
+	if !ok {
+		// If request is not a map, use params directly (backward compatibility)
+		requestConfig = params
+	}
+
+	return p.validateContentLength(ctx.Body, requestConfig, false)
 }
 
 // OnResponse performs content length validation on response
 func (p *ContentLengthGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	return p.validateContentLengthResponse(ctx.ResponseBody, params, true)
+	// Check if response configuration exists
+	responseParams, ok := params["response"]
+	if !ok {
+		// No response configuration, pass through
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Extract response params (could be a map or the params themselves if no request/response separation)
+	responseConfig, ok := responseParams.(map[string]interface{})
+	if !ok {
+		// If response is not a map, use params directly (backward compatibility)
+		responseConfig = params
+	}
+
+	return p.validateContentLengthResponse(ctx.ResponseBody, responseConfig, true)
 }
 
 // validateContentLength validates content length for request
@@ -126,8 +154,28 @@ func (p *ContentLengthGuardrailPolicy) validateContentLength(body *policy.Body, 
 		return policy.UpstreamRequestModifications{}
 	}
 
-	min := int(params["min"].(float64))
-	max := int(params["max"].(float64))
+	// Safely get min parameter
+	minRaw, ok := params["min"]
+	if !ok {
+		return p.buildErrorResponse("'min' parameter is required", "", isResponse)
+	}
+	min, ok := minRaw.(float64)
+	if !ok {
+		return p.buildErrorResponse("'min' must be a number", "", isResponse)
+	}
+	minInt := int(min)
+
+	// Safely get max parameter
+	maxRaw, ok := params["max"]
+	if !ok {
+		return p.buildErrorResponse("'max' parameter is required", "", isResponse)
+	}
+	max, ok := maxRaw.(float64)
+	if !ok {
+		return p.buildErrorResponse("'max' must be a number", "", isResponse)
+	}
+	maxInt := int(max)
+
 	jsonPath := ""
 	if jsonPathRaw, ok := params["jsonPath"]; ok {
 		jsonPath = jsonPathRaw.(string)
@@ -154,19 +202,19 @@ func (p *ContentLengthGuardrailPolicy) validateContentLength(body *policy.Body, 
 	// Count bytes
 	byteCount := len([]byte(extractedValue))
 
-	isWithinRange := byteCount >= min && byteCount <= max
+	isWithinRange := byteCount >= minInt && byteCount <= maxInt
 
 	if inverted {
 		// When inverted, fail if content length is within the range
 		if isWithinRange {
-			return p.buildErrorResponse(fmt.Sprintf("Content length validation failed (inverted): %d bytes found, should NOT be between %d and %d bytes", byteCount, min, max), jsonPath, isResponse)
+			return p.buildErrorResponse(fmt.Sprintf("Content length validation failed (inverted): %d bytes found, should NOT be between %d and %d bytes", byteCount, minInt, maxInt), jsonPath, isResponse)
 		}
 		return policy.UpstreamRequestModifications{}
 	}
 
 	// When not inverted, fail if content length is outside the range
 	if !isWithinRange {
-		return p.buildErrorResponse(fmt.Sprintf("Content length validation failed: %d bytes found, expected between %d and %d bytes", byteCount, min, max), jsonPath, isResponse)
+		return p.buildErrorResponse(fmt.Sprintf("Content length validation failed: %d bytes found, expected between %d and %d bytes", byteCount, minInt, maxInt), jsonPath, isResponse)
 	}
 
 	return policy.UpstreamRequestModifications{}
@@ -179,8 +227,28 @@ func (p *ContentLengthGuardrailPolicy) validateContentLengthResponse(body *polic
 		return policy.UpstreamResponseModifications{}
 	}
 
-	min := int(params["min"].(float64))
-	max := int(params["max"].(float64))
+	// Safely get min parameter
+	minRaw, ok := params["min"]
+	if !ok {
+		return p.buildErrorResponseResponse("'min' parameter is required", "", isResponse)
+	}
+	min, ok := minRaw.(float64)
+	if !ok {
+		return p.buildErrorResponseResponse("'min' must be a number", "", isResponse)
+	}
+	minInt := int(min)
+
+	// Safely get max parameter
+	maxRaw, ok := params["max"]
+	if !ok {
+		return p.buildErrorResponseResponse("'max' parameter is required", "", isResponse)
+	}
+	max, ok := maxRaw.(float64)
+	if !ok {
+		return p.buildErrorResponseResponse("'max' must be a number", "", isResponse)
+	}
+	maxInt := int(max)
+
 	jsonPath := ""
 	if jsonPathRaw, ok := params["jsonPath"]; ok {
 		jsonPath = jsonPathRaw.(string)
@@ -207,19 +275,19 @@ func (p *ContentLengthGuardrailPolicy) validateContentLengthResponse(body *polic
 	// Count bytes
 	byteCount := len([]byte(extractedValue))
 
-	isWithinRange := byteCount >= min && byteCount <= max
+	isWithinRange := byteCount >= minInt && byteCount <= maxInt
 
 	if inverted {
 		// When inverted, fail if content length is within the range
 		if isWithinRange {
-			return p.buildErrorResponseResponse(fmt.Sprintf("Content length validation failed (inverted): %d bytes found, should NOT be between %d and %d bytes", byteCount, min, max), jsonPath, isResponse)
+			return p.buildErrorResponseResponse(fmt.Sprintf("Content length validation failed (inverted): %d bytes found, should NOT be between %d and %d bytes", byteCount, minInt, maxInt), jsonPath, isResponse)
 		}
 		return policy.UpstreamResponseModifications{}
 	}
 
 	// When not inverted, fail if content length is outside the range
 	if !isWithinRange {
-		return p.buildErrorResponseResponse(fmt.Sprintf("Content length validation failed: %d bytes found, expected between %d and %d bytes", byteCount, min, max), jsonPath, isResponse)
+		return p.buildErrorResponseResponse(fmt.Sprintf("Content length validation failed: %d bytes found, expected between %d and %d bytes", byteCount, minInt, maxInt), jsonPath, isResponse)
 	}
 
 	return policy.UpstreamResponseModifications{}
@@ -312,4 +380,3 @@ func extractValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
 		return fmt.Sprintf("%v", v), nil
 	}
 }
-
