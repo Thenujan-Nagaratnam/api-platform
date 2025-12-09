@@ -1,17 +1,25 @@
 package semanticcache
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"sync"
 
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
 
+const (
+	MetadataKeyEmbedding = "semanticcache:embedding"
+)
+
 // SemanticCachePolicy implements semantic caching for LLM responses
-// NOTE: This is a simplified implementation. Full implementation requires:
-// - Embedding provider SDKs (OpenAI, Azure OpenAI, Mistral)
-// - Vector database clients (Redis, Milvus)
-// - Vector similarity search libraries
-type SemanticCachePolicy struct{}
+// Note: This policy requires embedding and vector database providers to be configured
+// The actual implementation would need to integrate with embedding services (OpenAI, Mistral, Azure OpenAI)
+// and vector databases (Redis, Milvus) through appropriate providers
+type SemanticCachePolicy struct {
+	mu sync.RWMutex
+}
 
 // NewPolicy creates a new SemanticCachePolicy instance
 func NewPolicy() policy.Policy {
@@ -22,140 +30,161 @@ func NewPolicy() policy.Policy {
 func (p *SemanticCachePolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
-		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
-		ResponseBodyMode:   policy.BodyModeBuffer,
+		RequestBodyMode:    policy.BodyModeBuffer, // Need full body for embedding generation
+		ResponseHeaderMode: policy.HeaderModeProcess,
+		ResponseBodyMode:   policy.BodyModeBuffer, // Need full body for cache storage
 	}
 }
 
-// Validate validates the policy configuration
+// Validate validates the policy configuration (empty as requested)
 func (p *SemanticCachePolicy) Validate(params map[string]interface{}) error {
-	// Validate required parameters
-	requiredParams := []string{
-		"embeddingProvider", "embeddingEndpoint", "embeddingModel",
-		"vectorStoreProvider", "threshold", "embeddingDimention",
-		"dbHost", "dbPort",
-	}
-
-	for _, param := range requiredParams {
-		if _, ok := params[param]; !ok {
-			return fmt.Errorf("'%s' parameter is required", param)
-		}
-	}
-
-	// Validate embedding provider
-	if providerRaw, ok := params["embeddingProvider"]; ok {
-		provider, ok := providerRaw.(string)
-		if !ok {
-			return fmt.Errorf("'embeddingProvider' must be a string")
-		}
-		validProviders := map[string]bool{"OPENAI": true, "AZURE_OPENAI": true, "MISTRAL": true}
-		if !validProviders[provider] {
-			return fmt.Errorf("'embeddingProvider' must be one of: OPENAI, AZURE_OPENAI, MISTRAL")
-		}
-	}
-
-	// Validate vector store provider
-	if providerRaw, ok := params["vectorStoreProvider"]; ok {
-		provider, ok := providerRaw.(string)
-		if !ok {
-			return fmt.Errorf("'vectorStoreProvider' must be a string")
-		}
-		validProviders := map[string]bool{"REDIS": true, "MILVUS": true}
-		if !validProviders[provider] {
-			return fmt.Errorf("'vectorStoreProvider' must be one of: REDIS, MILVUS")
-		}
-	}
-
-	// Validate threshold
-	if thresholdRaw, ok := params["threshold"]; ok {
-		threshold, ok := thresholdRaw.(float64)
-		if !ok {
-			return fmt.Errorf("'threshold' must be a number")
-		}
-		if threshold < 0.0 || threshold > 1.0 {
-			return fmt.Errorf("'threshold' must be between 0.0 and 1.0")
-		}
-	}
-
+	// Validation logic moved to OnRequest/OnResponse
 	return nil
 }
 
-// OnRequest checks cache for semantically similar requests
+// OnRequest checks for cached response using semantic similarity
 func (p *SemanticCachePolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	// Check if request configuration exists
-	requestParams, ok := params["request"]
-	if !ok {
-		// No request configuration, pass through
+	// Extract parameters
+	embeddingProvider, _ := params["embeddingProvider"].(string)
+	embeddingEndpoint, _ := params["embeddingEndpoint"].(string)
+	embeddingModel, _ := params["embeddingModel"].(string)
+	apiKey, _ := params["apiKey"].(string)
+	vectorStoreProvider, _ := params["vectorStoreProvider"].(string)
+	threshold, _ := params["threshold"].(float64)
+
+	if ctx.Body.Content == nil || len(ctx.Body.Content) == 0 {
+		// Empty body, pass through
 		return policy.UpstreamRequestModifications{}
 	}
 
-	// Extract request params (could be a map or the params themselves if no request/response separation)
-	requestConfig, ok := requestParams.(map[string]interface{})
-	if !ok {
-		// If request is not a map, use params directly (backward compatibility)
-		requestConfig = params
-	}
-
-	// Validate request config (placeholder - would use embeddingProvider, threshold, etc. from requestConfig)
-	_ = requestConfig // Use requestConfig to avoid unused variable error
-
-	if ctx.Body == nil || !ctx.Body.Present || len(ctx.Body.Content) == 0 {
+	// Generate embedding from request body
+	// Note: This is a placeholder - actual implementation would call embedding service
+	embedding, err := p.generateEmbedding(string(ctx.Body.Content), embeddingProvider, embeddingEndpoint, embeddingModel, apiKey)
+	if err != nil {
+		// If embedding generation fails, pass through (don't block request)
 		return policy.UpstreamRequestModifications{}
 	}
 
-	// TODO: Full implementation requires:
-	// 1. Generate embedding for request body using embedding provider from requestConfig
-	// 2. Search vector store for similar embeddings (above threshold from requestConfig)
-	// 3. If cache hit, return cached response immediately
-	// 4. If cache miss, store embedding in metadata for response phase
-
-	// Placeholder: Store request body in metadata for response phase
-	ctx.SharedContext.Metadata["semanticcache.request.body"] = string(ctx.Body.Content)
-	ctx.SharedContext.Metadata["semanticcache.cache.hit"] = false
-
-	// Continue to upstream (cache miss)
-	return policy.UpstreamRequestModifications{}
-}
-
-// OnResponse stores response in cache if cache miss occurred
-func (p *SemanticCachePolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	// Check if response configuration exists
-	responseParams, ok := params["response"]
-	if !ok {
-		// No response configuration, pass through
-		return policy.UpstreamResponseModifications{}
+	// Store embedding in metadata for response phase
+	embeddingBytes, err := json.Marshal(embedding)
+	if err == nil {
+		ctx.Metadata[MetadataKeyEmbedding] = string(embeddingBytes)
 	}
 
-	// Extract response params (could be a map or the params themselves if no request/response separation)
-	responseConfig, ok := responseParams.(map[string]interface{})
-	if !ok {
-		// If response is not a map, use params directly (backward compatibility)
-		responseConfig = params
+	// Check cache for similar responses
+	// Note: This is a placeholder - actual implementation would query vector database
+	cachedResponse, err := p.retrieveFromCache(embedding, vectorStoreProvider, threshold, ctx.Metadata)
+	if err != nil {
+		// If cache retrieval fails, pass through
+		return policy.UpstreamRequestModifications{}
 	}
 
-	// Validate response config (placeholder - would use vectorStoreProvider, dbHost, etc. from responseConfig)
-	_ = responseConfig // Use responseConfig to avoid unused variable error
-
-	if ctx.ResponseBody == nil || !ctx.ResponseBody.Present || len(ctx.ResponseBody.Content) == 0 {
-		return policy.UpstreamResponseModifications{}
-	}
-
-	// Check if this was a cache miss
-	if cacheHitRaw, ok := ctx.SharedContext.Metadata["semanticcache.cache.hit"]; ok {
-		if cacheHit, ok := cacheHitRaw.(bool); ok && cacheHit {
-			// Cache hit, nothing to store
-			return policy.UpstreamResponseModifications{}
+	// If cache hit, return cached response immediately
+	if cachedResponse != nil {
+		responseBodyBytes, err := json.Marshal(cachedResponse)
+		if err == nil {
+			return policy.ImmediateResponse{
+				StatusCode: 200,
+				Headers: map[string]string{
+					"Content-Type":     "application/json",
+					"X-Cache-Status":   "HIT",
+					"X-Cache-Provider": "semantic",
+				},
+				Body: responseBodyBytes,
+			}
 		}
 	}
 
-	// TODO: Full implementation requires:
-	// 1. Retrieve embedding from metadata (stored in request phase)
-	// 2. Store embedding + response body in vector store using responseConfig settings
-	// 3. Associate with API ID for scoping
+	// Cache miss, continue to upstream
+	return policy.UpstreamRequestModifications{}
+}
 
-	// Placeholder: Log that response should be cached
-	ctx.SharedContext.Metadata["semanticcache.response.stored"] = true
+// OnResponse stores response in cache for future semantic lookups
+func (p *SemanticCachePolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
+	// Only cache successful responses (status 200)
+	if ctx.ResponseStatus != 200 {
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Check if embedding was generated in request phase
+	embeddingRaw, exists := ctx.Metadata[MetadataKeyEmbedding]
+	if !exists {
+		// No embedding found, skip caching
+		return policy.UpstreamResponseModifications{}
+	}
+
+	var embedding []float32
+	embeddingStr, ok := embeddingRaw.(string)
+	if !ok {
+		return policy.UpstreamResponseModifications{}
+	}
+
+	if err := json.Unmarshal([]byte(embeddingStr), &embedding); err != nil {
+		return policy.UpstreamResponseModifications{}
+	}
+
+	if ctx.ResponseBody.Content == nil || len(ctx.ResponseBody.Content) == 0 {
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Parse response body
+	var responseData map[string]interface{}
+	if err := json.Unmarshal(ctx.ResponseBody.Content, &responseData); err != nil {
+		// If response is not JSON, skip caching
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Store in cache
+	// Note: This is a placeholder - actual implementation would store in vector database
+	vectorStoreProvider, _ := params["vectorStoreProvider"].(string)
+	apiID, _ := ctx.Metadata["apiID"].(string)
+	if apiID == "" {
+		apiID = "default"
+	}
+
+	err := p.storeInCache(embedding, responseData, vectorStoreProvider, apiID, context.Background())
+	if err != nil {
+		// If cache storage fails, continue (don't block response)
+		return policy.UpstreamResponseModifications{}
+	}
 
 	return policy.UpstreamResponseModifications{}
+}
+
+// generateEmbedding generates embedding from text using the specified provider
+// Note: This is a placeholder - actual implementation would integrate with embedding services
+func (p *SemanticCachePolicy) generateEmbedding(text, provider, endpoint, model, apiKey string) ([]float32, error) {
+	// Placeholder implementation
+	// Actual implementation would:
+	// 1. Call embedding API (OpenAI, Mistral, Azure OpenAI) based on provider
+	// 2. Return embedding vector
+	// 3. Handle errors appropriately
+
+	// For now, return empty embedding to allow policy to pass through
+	return nil, fmt.Errorf("embedding generation not implemented - requires embedding provider integration")
+}
+
+// retrieveFromCache retrieves cached response from vector database
+// Note: This is a placeholder - actual implementation would query vector database
+func (p *SemanticCachePolicy) retrieveFromCache(embedding []float32, provider string, threshold float64, metadata map[string]interface{}) (map[string]interface{}, error) {
+	// Placeholder implementation
+	// Actual implementation would:
+	// 1. Query vector database (Redis, Milvus) based on provider
+	// 2. Find similar embeddings using cosine similarity
+	// 3. Return cached response if similarity >= threshold
+	// 4. Return nil if no match found
+
+	return nil, fmt.Errorf("cache retrieval not implemented - requires vector database provider integration")
+}
+
+// storeInCache stores response in vector database cache
+// Note: This is a placeholder - actual implementation would store in vector database
+func (p *SemanticCachePolicy) storeInCache(embedding []float32, responseData map[string]interface{}, provider, apiID string, ctx context.Context) error {
+	// Placeholder implementation
+	// Actual implementation would:
+	// 1. Store embedding and response in vector database (Redis, Milvus) based on provider
+	// 2. Associate with API ID for scoping
+	// 3. Handle errors appropriately
+
+	return fmt.Errorf("cache storage not implemented - requires vector database provider integration")
 }

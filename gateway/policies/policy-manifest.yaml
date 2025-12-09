@@ -70,13 +70,3 @@ policies:
   - name: JSONSchemaGuardrail
     version: v1.0.0
     filePath: ./json-schema-guardrail/v1.0.0
-
-  # PromptDecorator Policy
-  - name: PromptDecorator
-    version: v1.0.0
-    filePath: ./prompt-decorator/v1.0.0
-
-  # PromptTemplate Policy
-  - name: PromptTemplate
-    version: v1.0.0
-    filePath: ./prompt-template/v1.0.0

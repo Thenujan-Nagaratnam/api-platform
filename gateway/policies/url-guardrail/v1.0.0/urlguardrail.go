@@ -15,12 +15,20 @@ import (
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
 
-var (
-	textCleanRegex = regexp.MustCompile(`^"|"$`)
-	urlRegex       = regexp.MustCompile(`https?://[^\s,"'{}\[\]\\` + "`" + `*]+`)
+const (
+	GuardrailErrorCode         = 446
+	GuardrailAPIMExceptionCode = 900514
+	TextCleanRegex             = "^\"|\"$"
+	URLRegex                   = "https?://[^\\s,\"'{}\\[\\]\\\\`*]+"
+	DefaultTimeout             = 3000 // milliseconds
 )
 
-// URLGuardrailPolicy implements URL validation
+var (
+	textCleanRegexCompiled = regexp.MustCompile(TextCleanRegex)
+	urlRegexCompiled       = regexp.MustCompile(URLRegex)
+)
+
+// URLGuardrailPolicy implements URL validation guardrail
 type URLGuardrailPolicy struct{}
 
 // NewPolicy creates a new URLGuardrailPolicy instance
@@ -33,13 +41,58 @@ func (p *URLGuardrailPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
 		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseHeaderMode: policy.HeaderModeProcess,
 		ResponseBodyMode:   policy.BodyModeBuffer,
 	}
 }
 
-// Validate validates the policy configuration
+// Validate validates the policy configuration (empty as requested)
 func (p *URLGuardrailPolicy) Validate(params map[string]interface{}) error {
+	// Validation logic moved to OnRequest/OnResponse
+	return nil
+}
+
+// OnRequest validates URLs in request body
+func (p *URLGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
+	name, _ := params["name"].(string)
+
+	var requestParams map[string]interface{}
+	if reqParams, ok := params["request"].(map[string]interface{}); ok {
+		requestParams = reqParams
+	} else {
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Validate parameters
+	if err := p.validateParams(requestParams); err != nil {
+		return p.buildErrorResponse(fmt.Sprintf("parameter validation failed: %v", err), name, false, false, []string{}).(policy.RequestAction)
+	}
+
+	return p.validatePayload(ctx.Body.Content, requestParams, name, false).(policy.RequestAction)
+}
+
+// OnResponse validates URLs in response body
+func (p *URLGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
+	name, _ := params["name"].(string)
+
+	var responseParams map[string]interface{}
+	if respParams, ok := params["response"].(map[string]interface{}); ok {
+		responseParams = respParams
+	} else {
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Validate parameters
+	if err := p.validateParams(responseParams); err != nil {
+		return p.buildErrorResponse(fmt.Sprintf("parameter validation failed: %v", err), name, true, false, []string{}).(policy.ResponseAction)
+	}
+
+	return p.validatePayload(ctx.ResponseBody.Content, responseParams, name, true).(policy.ResponseAction)
+}
+
+// validateParams validates the actual policy parameters
+func (p *URLGuardrailPolicy) validateParams(params map[string]interface{}) error {
+	// Validate optional parameters
 	if jsonPathRaw, ok := params["jsonPath"]; ok {
 		_, ok := jsonPathRaw.(string)
 		if !ok {
@@ -55,18 +108,22 @@ func (p *URLGuardrailPolicy) Validate(params map[string]interface{}) error {
 	}
 
 	if timeoutRaw, ok := params["timeout"]; ok {
-		switch v := timeoutRaw.(type) {
-		case float64:
-			if v < 0 {
-				return fmt.Errorf("'timeout' cannot be negative")
+		timeout, ok := timeoutRaw.(float64)
+		if !ok {
+			if timeoutInt, ok := timeoutRaw.(int); ok {
+				timeout = float64(timeoutInt)
+			} else if timeoutStr, ok := timeoutRaw.(string); ok {
+				var err error
+				timeout, err = strconv.ParseFloat(timeoutStr, 64)
+				if err != nil {
+					return fmt.Errorf("'timeout' must be a number")
+				}
+			} else {
+				return fmt.Errorf("'timeout' must be a number")
 			}
-		case string:
-			timeout, err := strconv.Atoi(v)
-			if err != nil || timeout < 0 {
-				return fmt.Errorf("'timeout' must be a non-negative number")
-			}
-		default:
-			return fmt.Errorf("'timeout' must be a number")
+		}
+		if timeout < 0 {
+			return fmt.Errorf("'timeout' cannot be negative")
 		}
 	}
 
@@ -80,162 +137,60 @@ func (p *URLGuardrailPolicy) Validate(params map[string]interface{}) error {
 	return nil
 }
 
-// OnRequest performs URL validation on request
-func (p *URLGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	// Check if request configuration exists
-	requestParams, ok := params["request"]
-	if !ok {
-		// No request configuration, pass through
-		return policy.UpstreamRequestModifications{}
-	}
+// validatePayload validates URLs in payload
+func (p *URLGuardrailPolicy) validatePayload(payload []byte, params map[string]interface{}, name string, isResponse bool) interface{} {
+	jsonPath, _ := params["jsonPath"].(string)
+	onlyDNS, _ := params["onlyDNS"].(bool)
+	showAssessment, _ := params["showAssessment"].(bool)
 
-	// Extract request params (could be a map or the params themselves if no request/response separation)
-	requestConfig, ok := requestParams.(map[string]interface{})
-	if !ok {
-		// If request is not a map, use params directly (backward compatibility)
-		requestConfig = params
-	}
-
-	return p.validateURLs(ctx.Body, requestConfig, false)
-}
-
-// OnResponse performs URL validation on response
-func (p *URLGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	// Check if response configuration exists
-	responseParams, ok := params["response"]
-	if !ok {
-		// No response configuration, pass through
-		return policy.UpstreamResponseModifications{}
-	}
-
-	// Extract response params (could be a map or the params themselves if no request/response separation)
-	responseConfig, ok := responseParams.(map[string]interface{})
-	if !ok {
-		// If response is not a map, use params directly (backward compatibility)
-		responseConfig = params
-	}
-
-	return p.validateURLsResponse(ctx.ResponseBody, responseConfig, true)
-}
-
-// validateURLs validates URLs for request
-func (p *URLGuardrailPolicy) validateURLs(body *policy.Body, params map[string]interface{}, isResponse bool) policy.RequestAction {
-	if body == nil || !body.Present || len(body.Content) == 0 {
-		return policy.UpstreamRequestModifications{}
-	}
-
-	jsonPath := ""
-	if jsonPathRaw, ok := params["jsonPath"]; ok {
-		jsonPath = jsonPathRaw.(string)
-	}
-	onlyDNS := false
-	if onlyDNSRaw, ok := params["onlyDNS"]; ok {
-		onlyDNS = onlyDNSRaw.(bool)
-	}
-	timeout := 3000
+	timeout := DefaultTimeout
 	if timeoutRaw, ok := params["timeout"]; ok {
-		switch v := timeoutRaw.(type) {
-		case float64:
-			timeout = int(v)
-		case string:
-			if t, err := strconv.Atoi(v); err == nil {
-				timeout = t
-			}
+		if timeoutFloat, ok := timeoutRaw.(float64); ok {
+			timeout = int(timeoutFloat)
+		} else if timeoutInt, ok := timeoutRaw.(int); ok {
+			timeout = timeoutInt
 		}
 	}
 
-	extractedValue := string(body.Content)
-	if jsonPath != "" {
-		var err error
-		extractedValue, err = extractValueFromJSONPath(body.Content, jsonPath)
-		if err != nil {
-			return p.buildErrorResponse("Error extracting value from JSON using JSONPath: "+err.Error(), nil, isResponse)
-		}
+	if payload == nil {
+		return p.buildErrorResponse("body is empty", name, isResponse, showAssessment, []string{})
 	}
 
-	extractedValue = textCleanRegex.ReplaceAllString(extractedValue, "")
+	// Extract value using JSONPath
+	extractedValue, err := extractStringValueFromJSONPath(payload, jsonPath)
+	if err != nil {
+		return p.buildErrorResponse(fmt.Sprintf("error extracting value from JSONPath: %v", err), name, isResponse, showAssessment, []string{})
+	}
+
+	// Clean and trim
+	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
 	extractedValue = strings.TrimSpace(extractedValue)
 
-	urls := urlRegex.FindAllString(extractedValue, -1)
+	// Extract URLs from the value
+	urls := urlRegexCompiled.FindAllString(extractedValue, -1)
 	invalidURLs := make([]string, 0)
 
 	for _, urlStr := range urls {
-		var valid bool
+		var isValid bool
 		if onlyDNS {
-			valid = p.checkDNS(urlStr, timeout)
+			isValid = p.checkDNS(urlStr, timeout)
 		} else {
-			valid = p.checkURL(urlStr, timeout)
+			isValid = p.checkURL(urlStr, timeout)
 		}
-		if !valid {
+
+		if !isValid {
 			invalidURLs = append(invalidURLs, urlStr)
 		}
 	}
 
 	if len(invalidURLs) > 0 {
-		return p.buildErrorResponse("One or more URLs failed validation", invalidURLs, isResponse)
+		return p.buildErrorResponse("violation of url validity detected", name, isResponse, showAssessment, invalidURLs)
 	}
 
+	if isResponse {
+		return policy.UpstreamResponseModifications{}
+	}
 	return policy.UpstreamRequestModifications{}
-}
-
-// validateURLsResponse validates URLs for response
-func (p *URLGuardrailPolicy) validateURLsResponse(body *policy.Body, params map[string]interface{}, isResponse bool) policy.ResponseAction {
-	if body == nil || !body.Present || len(body.Content) == 0 {
-		return policy.UpstreamResponseModifications{}
-	}
-
-	jsonPath := ""
-	if jsonPathRaw, ok := params["jsonPath"]; ok {
-		jsonPath = jsonPathRaw.(string)
-	}
-	onlyDNS := false
-	if onlyDNSRaw, ok := params["onlyDNS"]; ok {
-		onlyDNS = onlyDNSRaw.(bool)
-	}
-	timeout := 3000
-	if timeoutRaw, ok := params["timeout"]; ok {
-		switch v := timeoutRaw.(type) {
-		case float64:
-			timeout = int(v)
-		case string:
-			if t, err := strconv.Atoi(v); err == nil {
-				timeout = t
-			}
-		}
-	}
-
-	extractedValue := string(body.Content)
-	if jsonPath != "" {
-		var err error
-		extractedValue, err = extractValueFromJSONPath(body.Content, jsonPath)
-		if err != nil {
-			return p.buildErrorResponseResponse("Error extracting value from JSON using JSONPath: "+err.Error(), nil, isResponse)
-		}
-	}
-
-	extractedValue = textCleanRegex.ReplaceAllString(extractedValue, "")
-	extractedValue = strings.TrimSpace(extractedValue)
-
-	urls := urlRegex.FindAllString(extractedValue, -1)
-	invalidURLs := make([]string, 0)
-
-	for _, urlStr := range urls {
-		var valid bool
-		if onlyDNS {
-			valid = p.checkDNS(urlStr, timeout)
-		} else {
-			valid = p.checkURL(urlStr, timeout)
-		}
-		if !valid {
-			invalidURLs = append(invalidURLs, urlStr)
-		}
-	}
-
-	if len(invalidURLs) > 0 {
-		return p.buildErrorResponseResponse("One or more URLs failed validation", invalidURLs, isResponse)
-	}
-
-	return policy.UpstreamResponseModifications{}
 }
 
 // checkDNS checks if the URL is resolved via DNS
@@ -246,6 +201,11 @@ func (p *URLGuardrailPolicy) checkDNS(target string, timeout int) bool {
 	}
 
 	host := parsedURL.Hostname()
+	if host == "" {
+		return false
+	}
+
+	// Create a custom resolver with timeout
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -256,6 +216,7 @@ func (p *URLGuardrailPolicy) checkDNS(target string, timeout int) bool {
 		},
 	}
 
+	// Look up IP addresses
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Millisecond)
 	defer cancel()
 
@@ -285,34 +246,35 @@ func (p *URLGuardrailPolicy) checkURL(target string, timeout int) bool {
 	}
 	defer resp.Body.Close()
 
-	return resp.StatusCode >= 200 && resp.StatusCode < 400
+	statusCode := resp.StatusCode
+	return statusCode >= 200 && statusCode < 400
 }
 
-// buildErrorResponse builds an error response for request
-func (p *URLGuardrailPolicy) buildErrorResponse(message string, invalidURLs []string, isResponse bool) policy.RequestAction {
-	responseBody := map[string]interface{}{
-		"code": 900514,
-		"type": "URL_GUARDRAIL",
-		"message": map[string]interface{}{
-			"action":               "GUARDRAIL_INTERVENED",
-			"interveningGuardrail": "URLGuardrail",
-			"direction":            "REQUEST",
-			"actionReason":         "Violation of url validity detected.",
-		},
-	}
+// buildErrorResponse builds an error response for both request and response phases
+func (p *URLGuardrailPolicy) buildErrorResponse(reason string, name string, isResponse bool, showAssessment bool, invalidURLs []string) interface{} {
+	assessment := p.buildAssessmentObject(name, isResponse, reason, showAssessment, invalidURLs)
 
-	if invalidURLs != nil && len(invalidURLs) > 0 {
-		if msg, ok := responseBody["message"].(map[string]interface{}); ok {
-			msg["assessments"] = map[string]interface{}{
-				"message":     message,
-				"invalidUrls": invalidURLs,
-			}
-		}
+	responseBody := map[string]interface{}{
+		"code":    GuardrailAPIMExceptionCode,
+		"type":    "URL_GUARDRAIL",
+		"message": assessment,
 	}
 
 	bodyBytes, _ := json.Marshal(responseBody)
+
+	if isResponse {
+		statusCode := GuardrailErrorCode
+		return policy.UpstreamResponseModifications{
+			StatusCode: &statusCode,
+			Body:       bodyBytes,
+			SetHeaders: map[string]string{
+				"Content-Type": "application/json",
+			},
+		}
+	}
+
 	return policy.ImmediateResponse{
-		StatusCode: 446,
+		StatusCode: GuardrailErrorCode,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
@@ -320,72 +282,135 @@ func (p *URLGuardrailPolicy) buildErrorResponse(message string, invalidURLs []st
 	}
 }
 
-// buildErrorResponseResponse builds an error response for response
-func (p *URLGuardrailPolicy) buildErrorResponseResponse(message string, invalidURLs []string, isResponse bool) policy.ResponseAction {
-	responseBody := map[string]interface{}{
-		"code": 900514,
-		"type": "URL_GUARDRAIL",
-		"message": map[string]interface{}{
-			"action":               "GUARDRAIL_INTERVENED",
-			"interveningGuardrail": "URLGuardrail",
-			"direction":            "RESPONSE",
-			"actionReason":         "Violation of url validity detected.",
-		},
+// buildAssessmentObject builds the assessment object
+func (p *URLGuardrailPolicy) buildAssessmentObject(name string, isResponse bool, reason string, showAssessment bool, invalidURLs []string) map[string]interface{} {
+	assessment := map[string]interface{}{
+		"action":               "GUARDRAIL_INTERVENED",
+		"interveningGuardrail": name,
+		"actionReason":         "Violation of url validity detected.",
 	}
 
-	if invalidURLs != nil && len(invalidURLs) > 0 {
-		if msg, ok := responseBody["message"].(map[string]interface{}); ok {
-			msg["assessments"] = map[string]interface{}{
-				"message":     message,
-				"invalidUrls": invalidURLs,
-			}
+	if isResponse {
+		assessment["direction"] = "RESPONSE"
+	} else {
+		assessment["direction"] = "REQUEST"
+	}
+
+	if showAssessment && len(invalidURLs) > 0 {
+		assessmentDetails := map[string]interface{}{
+			"message":     "One or more URLs in the payload failed validation.",
+			"invalidUrls": invalidURLs,
 		}
+		assessment["assessments"] = assessmentDetails
 	}
 
-	bodyBytes, _ := json.Marshal(responseBody)
-	return policy.UpstreamResponseModifications{
-		Body:       bodyBytes,
-		StatusCode: intPtr(446),
-	}
+	return assessment
 }
 
-func intPtr(i int) *int {
-	return &i
-}
-
-func extractValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
+// extractStringValueFromJSONPath extracts a value from JSON using JSONPath
+func extractStringValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
 	if jsonPath == "" {
 		return string(payload), nil
 	}
 
 	var jsonData map[string]interface{}
 	if err := json.Unmarshal(payload, &jsonData); err != nil {
+		return "", fmt.Errorf("error unmarshaling JSON: %w", err)
+	}
+
+	value, err := extractValueFromJSONPath(jsonData, jsonPath)
+	if err != nil {
 		return "", err
 	}
 
-	keys := strings.Split(strings.TrimPrefix(jsonPath, "$."), ".")
-	current := interface{}(jsonData)
-
-	for _, key := range keys {
-		if m, ok := current.(map[string]interface{}); ok {
-			if val, exists := m[key]; exists {
-				current = val
-			} else {
-				return "", fmt.Errorf("key not found: %s", key)
-			}
-		} else {
-			return "", fmt.Errorf("invalid structure at key: %s", key)
-		}
-	}
-
-	switch v := current.(type) {
+	// Convert to string
+	switch v := value.(type) {
 	case string:
 		return v, nil
 	case float64:
-		return fmt.Sprintf("%.0f", v), nil
+		return strconv.FormatFloat(v, 'f', -1, 64), nil
 	case int:
-		return fmt.Sprintf("%d", v), nil
+		return strconv.Itoa(v), nil
 	default:
 		return fmt.Sprintf("%v", v), nil
 	}
+}
+
+// extractValueFromJSONPath extracts a value from a nested JSON structure based on a JSON path
+func extractValueFromJSONPath(data map[string]interface{}, jsonPath string) (interface{}, error) {
+	keys := strings.Split(jsonPath, ".")
+	if len(keys) > 0 && keys[0] == "$" {
+		keys = keys[1:]
+	}
+
+	return extractRecursive(data, keys)
+}
+
+func extractRecursive(current interface{}, keys []string) (interface{}, error) {
+	if len(keys) == 0 {
+		return current, nil
+	}
+
+	key := keys[0]
+	remaining := keys[1:]
+
+	// Handle array indexing
+	arrayIndexRegex := regexp.MustCompile(`^([a-zA-Z0-9_]+)\[(-?\d+)\]$`)
+	if matches := arrayIndexRegex.FindStringSubmatch(key); len(matches) == 3 {
+		arrayName := matches[1]
+		idxStr := matches[2]
+		idx := 0
+		fmt.Sscanf(idxStr, "%d", &idx)
+
+		if node, ok := current.(map[string]interface{}); ok {
+			if arrVal, exists := node[arrayName]; exists {
+				if arr, ok := arrVal.([]interface{}); ok {
+					if idx < 0 {
+						idx = len(arr) + idx
+					}
+					if idx < 0 || idx >= len(arr) {
+						return nil, fmt.Errorf("array index out of range: %d", idx)
+					}
+					return extractRecursive(arr[idx], remaining)
+				}
+				return nil, fmt.Errorf("not an array: %s", arrayName)
+			}
+			return nil, fmt.Errorf("key not found: %s", arrayName)
+		}
+		return nil, fmt.Errorf("invalid structure for key: %s", arrayName)
+	}
+
+	// Handle wildcard
+	if key == "*" {
+		var results []interface{}
+		switch node := current.(type) {
+		case map[string]interface{}:
+			for _, v := range node {
+				res, err := extractRecursive(v, remaining)
+				if err == nil {
+					results = append(results, res)
+				}
+			}
+		case []interface{}:
+			for _, v := range node {
+				res, err := extractRecursive(v, remaining)
+				if err == nil {
+					results = append(results, res)
+				}
+			}
+		default:
+			return nil, fmt.Errorf("wildcard used on non-iterable node")
+		}
+		return results, nil
+	}
+
+	// Regular object key
+	if node, ok := current.(map[string]interface{}); ok {
+		if val, exists := node[key]; exists {
+			return extractRecursive(val, remaining)
+		}
+		return nil, fmt.Errorf("key not found: %s", key)
+	}
+
+	return nil, fmt.Errorf("invalid structure for key: %s", key)
 }

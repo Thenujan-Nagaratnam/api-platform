@@ -1,7 +1,0 @@
-module github.com/wso2/api-platform/policies/prompt-template
-
-go 1.23.0
-
-require github.com/wso2/api-platform/sdk v1.0.0
-
-replace github.com/wso2/api-platform/sdk => ../../../../sdk

@@ -1,98 +1,49 @@
 name: JSONSchemaGuardrail
 version: v1.0.0
 description: |
-  Validates that the request or response body adheres to a defined JSON schema.
-  Supports JSONPath extraction to validate specific fields within the payload.
-  Can be inverted to fail when content matches the schema.
-  
-  Parameters can be configured separately for request and response phases by nesting them
-  under 'request' and 'response' sections. If not nested, parameters apply to both phases.
+  Validates request or response body content against a JSON Schema.
+  Supports JSONPath extraction to validate specific fields within JSON payloads.
+  Can be configured with inverted logic to pass when schema validation fails.
 
 parameters:
-  - name: request
-    type: object
-    required: false
-    description: |
-      Configuration for request phase validation.
-      Contains parameters: schema, jsonPath, invert, showAssessment
-    properties:
-      - name: schema
-        type: string
-        required: true
-        description: JSON Schema string used to validate the request body
-      - name: jsonPath
-        type: string
-        required: false
-        description: JSONPath to extract field from request body
-      - name: invert
-        type: boolean
-        required: false
-        default: false
-        description: Invert validation logic for request
-      - name: showAssessment
-        type: boolean
-        required: false
-        default: false
-        description: Include assessment details in request error responses
+  - name: name
+    type: string
+    required: true
+    description: Name of the guardrail policy for identification
+    validation:
+      minLength: 1
+      maxLength: 256
 
-  - name: response
-    type: object
-    required: false
-    description: |
-      Configuration for response phase validation.
-      Contains parameters: schema, jsonPath, invert, showAssessment
-    properties:
-      - name: schema
-        type: string
-        required: true
-        description: JSON Schema string used to validate the response body
-      - name: jsonPath
-        type: string
-        required: false
-        description: JSONPath to extract field from response body
-      - name: invert
-        type: boolean
-        required: false
-        default: false
-        description: Invert validation logic for response
-      - name: showAssessment
-        type: boolean
-        required: false
-        default: false
-        description: Include assessment details in response error responses
-
-  # Legacy parameters (for backward compatibility - can be used directly or nested under request/response)
   - name: schema
     type: string
     required: true
     description: |
-      JSON Schema string used to validate the payload.
-      The schema must be valid JSON Schema format.
+      JSON Schema as a string (must be valid JSON).
+      Supports all JSON Schema draft 7 features including types, properties, required fields, constraints, etc.
+      Example: '{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer","minimum":18}},"required":["name","age"]}'
 
   - name: jsonPath
     type: string
     required: false
+    default: ""
     description: |
-      JSONPath expression to extract a specific field from the payload for validation.
-      If not specified, the entire body is validated.
+      JSONPath expression to extract a specific value from JSON payload for validation.
+      If empty, validates the entire payload against the schema.
+      Examples: "$.data", "$.userInfo", "$.items[0]"
 
   - name: invert
     type: boolean
     required: false
     default: false
     description: |
-      If true, validation is inverted: fails when content matches the schema,
-      passes when content does not match the schema.
+      If true, validation passes when schema validation FAILS (inverted logic).
+      If false (default), validation passes when schema validation succeeds.
 
   - name: showAssessment
     type: boolean
     required: false
     default: false
     description: |
-      If true, includes detailed assessment information in error responses.
+      If true, includes detailed validation error information in error responses.
+      If false, returns minimal error information.
 
-metadata:
-  sets:
-    - key: jsonschema.validation.passed
-      type: boolean
-      description: True if JSON schema validation passed, false otherwise

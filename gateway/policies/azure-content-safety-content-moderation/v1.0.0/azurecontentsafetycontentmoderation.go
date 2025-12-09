@@ -14,27 +14,24 @@ import (
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
 
-var (
-	textCleanRegex = regexp.MustCompile(`^"|"$`)
-)
-
 const (
-	azureContentSafetyAPIVersion = "2024-09-01"
-	azureContentSafetyEndpoint   = "/contentsafety/text:analyze"
+	GuardrailErrorCode         = 446
+	GuardrailAPIMExceptionCode = 900514
+	TextCleanRegex             = "^\"|\"$"
+	endpointSuffix             = "/contentsafety/text:analyze?api-version=2024-09-01"
+	requestTimeout             = 30 * time.Second
+	maxRetries                 = 5
+	retryDelay                 = 1 * time.Second
 )
 
-// AzureContentSafetyContentModerationPolicy implements Azure Content Safety validation
-type AzureContentSafetyContentModerationPolicy struct {
-	httpClient *http.Client
-}
+var textCleanRegexCompiled = regexp.MustCompile(TextCleanRegex)
+
+// AzureContentSafetyContentModerationPolicy implements Azure Content Safety content moderation
+type AzureContentSafetyContentModerationPolicy struct{}
 
 // NewPolicy creates a new AzureContentSafetyContentModerationPolicy instance
 func NewPolicy() policy.Policy {
-	return &AzureContentSafetyContentModerationPolicy{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
+	return &AzureContentSafetyContentModerationPolicy{}
 }
 
 // Mode returns the processing mode for this policy
@@ -42,42 +39,103 @@ func (p *AzureContentSafetyContentModerationPolicy) Mode() policy.ProcessingMode
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
 		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseHeaderMode: policy.HeaderModeProcess,
 		ResponseBodyMode:   policy.BodyModeBuffer,
 	}
 }
 
-// Validate validates the policy configuration
+// Validate validates the policy configuration (empty as requested)
 func (p *AzureContentSafetyContentModerationPolicy) Validate(params map[string]interface{}) error {
-	// Validate required parameters
-	if endpointRaw, ok := params["azureContentSafetyEndpoint"]; ok {
-		endpoint, ok := endpointRaw.(string)
-		if !ok || endpoint == "" {
-			return fmt.Errorf("'azureContentSafetyEndpoint' must be a non-empty string")
-		}
+	// Validation logic moved to OnRequest/OnResponse
+	return nil
+}
+
+// OnRequest validates request body content
+func (p *AzureContentSafetyContentModerationPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
+	name, _ := params["name"].(string)
+
+	var requestParams map[string]interface{}
+	if reqParams, ok := params["request"].(map[string]interface{}); ok {
+		requestParams = reqParams
 	} else {
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Validate parameters
+	if err := p.validateParams(requestParams); err != nil {
+		return p.buildErrorResponse(fmt.Sprintf("parameter validation failed: %v", err), name, false, false, nil).(policy.RequestAction)
+	}
+
+	return p.validatePayload(ctx.Body.Content, requestParams, name, false).(policy.RequestAction)
+}
+
+// OnResponse validates response body content
+func (p *AzureContentSafetyContentModerationPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
+	name, _ := params["name"].(string)
+
+	var responseParams map[string]interface{}
+	if respParams, ok := params["response"].(map[string]interface{}); ok {
+		responseParams = respParams
+	} else {
+		return policy.UpstreamResponseModifications{}
+	}
+
+	// Validate parameters
+	if err := p.validateParams(responseParams); err != nil {
+		return p.buildErrorResponse(fmt.Sprintf("parameter validation failed: %v", err), name, true, false, nil).(policy.ResponseAction)
+	}
+
+	return p.validatePayload(ctx.ResponseBody.Content, responseParams, name, true).(policy.ResponseAction)
+}
+
+// validateParams validates the actual policy parameters
+func (p *AzureContentSafetyContentModerationPolicy) validateParams(params map[string]interface{}) error {
+	// Validate azureContentSafetyEndpoint (required)
+	endpointRaw, ok := params["azureContentSafetyEndpoint"]
+	if !ok {
 		return fmt.Errorf("'azureContentSafetyEndpoint' parameter is required")
 	}
-
-	if keyRaw, ok := params["azureContentSafetyKey"]; ok {
-		_, ok := keyRaw.(string)
-		if !ok {
-			return fmt.Errorf("'azureContentSafetyKey' must be a string")
-		}
-	} else {
-		return fmt.Errorf("'azureContentSafetyKey' parameter is required")
+	endpoint, ok := endpointRaw.(string)
+	if !ok {
+		return fmt.Errorf("'azureContentSafetyEndpoint' must be a string")
+	}
+	if endpoint == "" {
+		return fmt.Errorf("'azureContentSafetyEndpoint' cannot be empty")
 	}
 
-	// Validate category thresholds (0-7 or -1 to disable)
+	// Validate azureContentSafetyKey (required)
+	apiKeyRaw, ok := params["azureContentSafetyKey"]
+	if !ok {
+		return fmt.Errorf("'azureContentSafetyKey' parameter is required")
+	}
+	apiKey, ok := apiKeyRaw.(string)
+	if !ok {
+		return fmt.Errorf("'azureContentSafetyKey' must be a string")
+	}
+	if apiKey == "" {
+		return fmt.Errorf("'azureContentSafetyKey' cannot be empty")
+	}
+
+	// Validate category thresholds (optional, -1 to 7)
 	categories := []string{"hateCategory", "sexualCategory", "selfHarmCategory", "violenceCategory"}
-	for _, cat := range categories {
-		if catRaw, ok := params[cat]; ok {
-			catVal, ok := catRaw.(float64)
+	for _, catName := range categories {
+		if catRaw, ok := params[catName]; ok {
+			cat, ok := catRaw.(float64)
 			if !ok {
-				return fmt.Errorf("'%s' must be a number", cat)
+				if catInt, ok := catRaw.(int); ok {
+					cat = float64(catInt)
+				} else if catStr, ok := catRaw.(string); ok {
+					var err error
+					cat, err = strconv.ParseFloat(catStr, 64)
+					if err != nil {
+						return fmt.Errorf("'%s' must be a number", catName)
+					}
+				} else {
+					return fmt.Errorf("'%s' must be a number", catName)
+				}
 			}
-			if catVal != -1 && (catVal < 0 || catVal > 7) {
-				return fmt.Errorf("'%s' must be between 0-7 or -1 to disable", cat)
+			if cat < -1 || cat > 7 {
+				return fmt.Errorf("'%s' must be between -1 and 7", catName)
 			}
 		}
 	}
@@ -90,8 +148,8 @@ func (p *AzureContentSafetyContentModerationPolicy) Validate(params map[string]i
 		}
 	}
 
-	if passthroughRaw, ok := params["passthroughOnError"]; ok {
-		_, ok := passthroughRaw.(bool)
+	if passthroughOnErrorRaw, ok := params["passthroughOnError"]; ok {
+		_, ok := passthroughOnErrorRaw.(bool)
 		if !ok {
 			return fmt.Errorf("'passthroughOnError' must be a boolean")
 		}
@@ -107,319 +165,270 @@ func (p *AzureContentSafetyContentModerationPolicy) Validate(params map[string]i
 	return nil
 }
 
-// OnRequest performs Azure Content Safety validation on request
-func (p *AzureContentSafetyContentModerationPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	// Check if request configuration exists
-	requestParams, ok := params["request"]
-	if !ok {
-		// No request configuration, pass through
-		return policy.UpstreamRequestModifications{}
-	}
+// validatePayload validates payload against Azure Content Safety
+func (p *AzureContentSafetyContentModerationPolicy) validatePayload(payload []byte, params map[string]interface{}, name string, isResponse bool) interface{} {
+	jsonPath, _ := params["jsonPath"].(string)
+	passthroughOnError, _ := params["passthroughOnError"].(bool)
+	showAssessment, _ := params["showAssessment"].(bool)
 
-	// Extract request params (could be a map or the params themselves if no request/response separation)
-	requestConfig, ok := requestParams.(map[string]interface{})
-	if !ok {
-		// If request is not a map, use params directly (backward compatibility)
-		requestConfig = params
-	}
+	// Extract Azure configuration
+	endpoint, _ := params["azureContentSafetyEndpoint"].(string)
+	apiKey, _ := params["azureContentSafetyKey"].(string)
 
-	return p.validateContent(ctx.Body, requestConfig, false)
-}
-
-// OnResponse performs Azure Content Safety validation on response
-func (p *AzureContentSafetyContentModerationPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	// Check if response configuration exists
-	responseParams, ok := params["response"]
-	if !ok {
-		// No response configuration, pass through
-		return policy.UpstreamResponseModifications{}
-	}
-
-	// Extract response params (could be a map or the params themselves if no request/response separation)
-	responseConfig, ok := responseParams.(map[string]interface{})
-	if !ok {
-		// If response is not a map, use params directly (backward compatibility)
-		responseConfig = params
-	}
-
-	return p.validateContentResponse(ctx.ResponseBody, responseConfig, true)
-}
-
-// validateContent validates content using Azure Content Safety API
-func (p *AzureContentSafetyContentModerationPolicy) validateContent(body *policy.Body, params map[string]interface{}, isResponse bool) policy.RequestAction {
-	if body == nil || !body.Present || len(body.Content) == 0 {
-		return policy.UpstreamRequestModifications{}
-	}
-
-	endpoint := params["azureContentSafetyEndpoint"].(string)
-	apiKey := params["azureContentSafetyKey"].(string)
-	jsonPath := ""
-	if jsonPathRaw, ok := params["jsonPath"]; ok {
-		jsonPath = jsonPathRaw.(string)
-	}
-	passthroughOnError := false
-	if passthroughRaw, ok := params["passthroughOnError"]; ok {
-		passthroughOnError = passthroughRaw.(bool)
-	}
-
-	extractedValue := string(body.Content)
-	if jsonPath != "" {
-		var err error
-		extractedValue, err = extractValueFromJSONPath(body.Content, jsonPath)
-		if err != nil {
-			return p.buildErrorResponse("Error extracting value from JSON using JSONPath: "+err.Error(), jsonPath, isResponse, passthroughOnError)
+	if endpoint == "" || apiKey == "" {
+		if passthroughOnError {
+			if isResponse {
+				return policy.UpstreamResponseModifications{}
+			}
+			return policy.UpstreamRequestModifications{}
 		}
+		return p.buildErrorResponse("azureContentSafetyEndpoint and azureContentSafetyKey are required", name, isResponse, showAssessment, nil)
 	}
 
-	extractedValue = textCleanRegex.ReplaceAllString(extractedValue, "")
-	extractedValue = strings.TrimSpace(extractedValue)
-
-	// Build category map
-	categoryMap := make(map[string]int)
-	categories := []string{}
-	for _, cat := range []struct {
-		name string
-		key  string
-	}{
-		{"Hate", "hateCategory"},
-		{"Sexual", "sexualCategory"},
-		{"SelfHarm", "selfHarmCategory"},
-		{"Violence", "violenceCategory"},
-	} {
-		threshold := -1
-		if catRaw, ok := params[cat.key]; ok {
-			threshold = int(catRaw.(float64))
-		}
-		if threshold >= 0 && threshold <= 7 {
-			categoryMap[cat.name] = threshold
-			categories = append(categories, cat.name)
-		}
-	}
+	// Extract category thresholds
+	categoryMap := p.buildCategoryMap(params)
+	categories := p.getValidCategories(categoryMap)
 
 	if len(categories) == 0 {
-		// No categories configured, allow through
+		// No valid categories, pass through
+		if isResponse {
+			return policy.UpstreamResponseModifications{}
+		}
 		return policy.UpstreamRequestModifications{}
 	}
 
+	if payload == nil {
+		if isResponse {
+			return policy.UpstreamResponseModifications{}
+		}
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// Extract value using JSONPath
+	extractedValue, err := extractStringValueFromJSONPath(payload, jsonPath)
+	if err != nil {
+		if passthroughOnError {
+			if isResponse {
+				return policy.UpstreamResponseModifications{}
+			}
+			return policy.UpstreamRequestModifications{}
+		}
+		return p.buildErrorResponse(fmt.Sprintf("error extracting value from JSONPath: %v", err), name, isResponse, showAssessment, nil)
+	}
+
+	// Clean and trim
+	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
+	extractedValue = strings.TrimSpace(extractedValue)
+
 	// Call Azure Content Safety API
-	apiURL := strings.TrimSuffix(endpoint, "/") + azureContentSafetyEndpoint + "?api-version=" + azureContentSafetyAPIVersion
-	requestBody := map[string]interface{}{
-		"text":               extractedValue,
-		"categories":         categories,
-		"haltOnBlocklistHit": true,
-		"outputType":         "EightSeverityLevels",
-	}
-
-	bodyBytes, _ := json.Marshal(requestBody)
-	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(bodyBytes))
+	categoriesAnalysis, err := p.callAzureContentSafetyAPI(endpoint, apiKey, extractedValue, categories)
 	if err != nil {
 		if passthroughOnError {
+			if isResponse {
+				return policy.UpstreamResponseModifications{}
+			}
 			return policy.UpstreamRequestModifications{}
 		}
-		return p.buildErrorResponse("Failed to create Azure API request: "+err.Error(), jsonPath, isResponse, passthroughOnError)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		if passthroughOnError {
-			return policy.UpstreamRequestModifications{}
-		}
-		return p.buildErrorResponse("Failed to call Azure Content Safety API: "+err.Error(), jsonPath, isResponse, passthroughOnError)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		if passthroughOnError {
-			return policy.UpstreamRequestModifications{}
-		}
-		return p.buildErrorResponse(fmt.Sprintf("Azure API returned status %d: %s", resp.StatusCode, string(bodyBytes)), jsonPath, isResponse, passthroughOnError)
-	}
-
-	var responseBody map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
-		if passthroughOnError {
-			return policy.UpstreamRequestModifications{}
-		}
-		return p.buildErrorResponse("Failed to decode Azure API response: "+err.Error(), jsonPath, isResponse, passthroughOnError)
-	}
-
-	categoriesAnalysis, ok := responseBody["categoriesAnalysis"].([]interface{})
-	if !ok {
-		if passthroughOnError {
-			return policy.UpstreamRequestModifications{}
-		}
-		return p.buildErrorResponse("Invalid response format from Azure API", jsonPath, isResponse, passthroughOnError)
+		return p.buildErrorResponse(fmt.Sprintf("error calling Azure Content Safety API: %v", err), name, isResponse, showAssessment, nil)
 	}
 
 	// Check for violations
-	for _, item := range categoriesAnalysis {
-		analysis, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	for _, analysis := range categoriesAnalysis {
 		category, _ := analysis["category"].(string)
 		severityFloat, _ := analysis["severity"].(float64)
 		severity := int(severityFloat)
 		threshold := categoryMap[category]
+
 		if threshold >= 0 && severity >= threshold {
-			return p.buildErrorResponse(fmt.Sprintf("Content safety violation detected: %s category severity %d exceeds threshold %d", category, severity, threshold), jsonPath, isResponse, passthroughOnError)
+			// Violation detected
+			return p.buildErrorResponse("violation of Azure content safety content moderation detected", name, isResponse, showAssessment, categoriesAnalysis)
 		}
 	}
 
+	// No violations, continue
+	if isResponse {
+		return policy.UpstreamResponseModifications{}
+	}
 	return policy.UpstreamRequestModifications{}
 }
 
-// validateContentResponse validates response content
-func (p *AzureContentSafetyContentModerationPolicy) validateContentResponse(body *policy.Body, params map[string]interface{}, isResponse bool) policy.ResponseAction {
-	if body == nil || !body.Present || len(body.Content) == 0 {
-		return policy.UpstreamResponseModifications{}
+// buildCategoryMap builds category threshold map from parameters
+func (p *AzureContentSafetyContentModerationPolicy) buildCategoryMap(params map[string]interface{}) map[string]int {
+	categoryMap := map[string]int{
+		"Hate":     -1,
+		"Sexual":   -1,
+		"SelfHarm": -1,
+		"Violence": -1,
 	}
 
-	endpoint := params["azureContentSafetyEndpoint"].(string)
-	apiKey := params["azureContentSafetyKey"].(string)
-	jsonPath := ""
-	if jsonPathRaw, ok := params["jsonPath"]; ok {
-		jsonPath = jsonPathRaw.(string)
-	}
-	passthroughOnError := false
-	if passthroughRaw, ok := params["passthroughOnError"]; ok {
-		passthroughOnError = passthroughRaw.(bool)
-	}
-
-	extractedValue := string(body.Content)
-	if jsonPath != "" {
-		var err error
-		extractedValue, err = extractValueFromJSONPath(body.Content, jsonPath)
-		if err != nil {
-			return p.buildErrorResponseResponse("Error extracting value from JSON using JSONPath: "+err.Error(), jsonPath, isResponse, passthroughOnError)
+	if hateRaw, ok := params["hateCategory"]; ok {
+		if hateFloat, ok := hateRaw.(float64); ok {
+			categoryMap["Hate"] = int(hateFloat)
+		} else if hateInt, ok := hateRaw.(int); ok {
+			categoryMap["Hate"] = hateInt
 		}
 	}
 
-	extractedValue = textCleanRegex.ReplaceAllString(extractedValue, "")
-	extractedValue = strings.TrimSpace(extractedValue)
+	if sexualRaw, ok := params["sexualCategory"]; ok {
+		if sexualFloat, ok := sexualRaw.(float64); ok {
+			categoryMap["Sexual"] = int(sexualFloat)
+		} else if sexualInt, ok := sexualRaw.(int); ok {
+			categoryMap["Sexual"] = sexualInt
+		}
+	}
 
-	// Build category map
-	categoryMap := make(map[string]int)
+	if selfHarmRaw, ok := params["selfHarmCategory"]; ok {
+		if selfHarmFloat, ok := selfHarmRaw.(float64); ok {
+			categoryMap["SelfHarm"] = int(selfHarmFloat)
+		} else if selfHarmInt, ok := selfHarmRaw.(int); ok {
+			categoryMap["SelfHarm"] = selfHarmInt
+		}
+	}
+
+	if violenceRaw, ok := params["violenceCategory"]; ok {
+		if violenceFloat, ok := violenceRaw.(float64); ok {
+			categoryMap["Violence"] = int(violenceFloat)
+		} else if violenceInt, ok := violenceRaw.(int); ok {
+			categoryMap["Violence"] = violenceInt
+		}
+	}
+
+	return categoryMap
+}
+
+// getValidCategories returns list of valid categories (threshold between 0-7)
+func (p *AzureContentSafetyContentModerationPolicy) getValidCategories(categoryMap map[string]int) []string {
 	categories := []string{}
-	for _, cat := range []struct {
-		name string
-		key  string
-	}{
-		{"Hate", "hateCategory"},
-		{"Sexual", "sexualCategory"},
-		{"SelfHarm", "selfHarmCategory"},
-		{"Violence", "violenceCategory"},
-	} {
-		threshold := -1
-		if catRaw, ok := params[cat.key]; ok {
-			threshold = int(catRaw.(float64))
-		}
-		if threshold >= 0 && threshold <= 7 {
-			categoryMap[cat.name] = threshold
-			categories = append(categories, cat.name)
+	for name, val := range categoryMap {
+		if val >= 0 && val <= 7 {
+			categories = append(categories, name)
 		}
 	}
+	return categories
+}
 
-	if len(categories) == 0 {
-		return policy.UpstreamResponseModifications{}
+// callAzureContentSafetyAPI calls Azure Content Safety API
+func (p *AzureContentSafetyContentModerationPolicy) callAzureContentSafetyAPI(endpoint, apiKey, text string, categories []string) ([]map[string]interface{}, error) {
+	// Ensure endpoint doesn't end with /
+	if strings.HasSuffix(endpoint, "/") {
+		endpoint = strings.TrimSuffix(endpoint, "/")
 	}
 
-	// Call Azure Content Safety API
-	apiURL := strings.TrimSuffix(endpoint, "/") + azureContentSafetyEndpoint + "?api-version=" + azureContentSafetyAPIVersion
+	serviceURL := endpoint + endpointSuffix
+
 	requestBody := map[string]interface{}{
-		"text":               extractedValue,
+		"text":               text,
 		"categories":         categories,
 		"haltOnBlocklistHit": true,
 		"outputType":         "EightSeverityLevels",
 	}
 
-	bodyBytes, _ := json.Marshal(requestBody)
-	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(bodyBytes))
+	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
-		if passthroughOnError {
-			return policy.UpstreamResponseModifications{}
-		}
-		return p.buildErrorResponseResponse("Failed to create Azure API request: "+err.Error(), jsonPath, isResponse, passthroughOnError)
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Ocp-Apim-Subscription-Key", apiKey)
+	headers := map[string]string{
+		"Content-Type":              "application/json",
+		"Ocp-Apim-Subscription-Key": apiKey,
+	}
 
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		if passthroughOnError {
-			return policy.UpstreamResponseModifications{}
+	// Make HTTP request with retry
+	var resp *http.Response
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(retryDelay)
 		}
-		return p.buildErrorResponseResponse("Failed to call Azure Content Safety API: "+err.Error(), jsonPath, isResponse, passthroughOnError)
+
+		resp, lastErr = p.makeHTTPRequest("POST", serviceURL, headers, bodyBytes)
+		if lastErr == nil && resp.StatusCode == http.StatusOK {
+			break
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to call Azure Content Safety API after %d attempts: %w", maxRetries, lastErr)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		if passthroughOnError {
-			return policy.UpstreamResponseModifications{}
-		}
-		return p.buildErrorResponseResponse(fmt.Sprintf("Azure API returned status %d: %s", resp.StatusCode, string(bodyBytes)), jsonPath, isResponse, passthroughOnError)
+		return nil, fmt.Errorf("Azure Content Safety API returned non-200 status code: %d, body: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	var responseBody map[string]interface{}
+	responseBody := make(map[string]interface{})
 	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
-		if passthroughOnError {
-			return policy.UpstreamResponseModifications{}
-		}
-		return p.buildErrorResponseResponse("Failed to decode Azure API response: "+err.Error(), jsonPath, isResponse, passthroughOnError)
+		return nil, fmt.Errorf("failed to decode response body: %w", err)
 	}
 
-	categoriesAnalysis, ok := responseBody["categoriesAnalysis"].([]interface{})
+	categoriesAnalysisRaw, ok := responseBody["categoriesAnalysis"].([]interface{})
 	if !ok {
-		if passthroughOnError {
-			return policy.UpstreamResponseModifications{}
-		}
-		return p.buildErrorResponseResponse("Invalid response format from Azure API", jsonPath, isResponse, passthroughOnError)
+		return nil, fmt.Errorf("categoriesAnalysis missing or invalid in Azure Content Safety API response")
 	}
 
-	// Check for violations
-	for _, item := range categoriesAnalysis {
-		analysis, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		category, _ := analysis["category"].(string)
-		severityFloat, _ := analysis["severity"].(float64)
-		severity := int(severityFloat)
-		threshold := categoryMap[category]
-		if threshold >= 0 && severity >= threshold {
-			return p.buildErrorResponseResponse(fmt.Sprintf("Content safety violation detected: %s category severity %d exceeds threshold %d", category, severity, threshold), jsonPath, isResponse, passthroughOnError)
+	// Convert []interface{} to []map[string]interface{}
+	var categoriesAnalysis []map[string]interface{}
+	for _, item := range categoriesAnalysisRaw {
+		if analysis, ok := item.(map[string]interface{}); ok {
+			categoriesAnalysis = append(categoriesAnalysis, analysis)
 		}
 	}
 
-	return policy.UpstreamResponseModifications{}
+	return categoriesAnalysis, nil
 }
 
-// buildErrorResponse builds an error response for request
-func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponse(message, jsonPath string, isResponse bool, passthroughOnError bool) policy.RequestAction {
-	if passthroughOnError {
-		return policy.UpstreamRequestModifications{}
+// makeHTTPRequest makes an HTTP request
+func (p *AzureContentSafetyContentModerationPolicy) makeHTTPRequest(method, url string, headers map[string]string, body []byte) (*http.Response, error) {
+	client := &http.Client{
+		Timeout: requestTimeout,
 	}
 
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// buildErrorResponse builds an error response for both request and response phases
+func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponse(reason string, name string, isResponse bool, showAssessment bool, categoriesAnalysis []map[string]interface{}) interface{} {
+	assessment := p.buildAssessmentObject(name, isResponse, reason, showAssessment, categoriesAnalysis)
+
 	responseBody := map[string]interface{}{
-		"code": 900514,
-		"type": "AZURE_CONTENT_SAFETY_CONTENT_MODERATION",
-		"message": map[string]interface{}{
-			"action":               "GUARDRAIL_INTERVENED",
-			"interveningGuardrail": "AzureContentSafetyContentModeration",
-			"direction":            "REQUEST",
-			"actionReason":         "Violation of applied Azure content safety constraints detected.",
-		},
+		"code":    GuardrailAPIMExceptionCode,
+		"type":    "AZURE_CONTENT_SAFETY_CONTENT_MODERATION",
+		"message": assessment,
 	}
 
 	bodyBytes, _ := json.Marshal(responseBody)
+
+	if isResponse {
+		statusCode := GuardrailErrorCode
+		return policy.UpstreamResponseModifications{
+			StatusCode: &statusCode,
+			Body:       bodyBytes,
+			SetHeaders: map[string]string{
+				"Content-Type": "application/json",
+			},
+		}
+	}
+
 	return policy.ImmediateResponse{
-		StatusCode: 446,
+		StatusCode: GuardrailErrorCode,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
@@ -427,63 +436,66 @@ func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponse(message, 
 	}
 }
 
-// buildErrorResponseResponse builds an error response for response
-func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponseResponse(message, jsonPath string, isResponse bool, passthroughOnError bool) policy.ResponseAction {
-	if passthroughOnError {
-		return policy.UpstreamResponseModifications{}
+// buildAssessmentObject builds the assessment object
+func (p *AzureContentSafetyContentModerationPolicy) buildAssessmentObject(name string, isResponse bool, reason string, showAssessment bool, categoriesAnalysis []map[string]interface{}) map[string]interface{} {
+	assessment := map[string]interface{}{
+		"action":               "GUARDRAIL_INTERVENED",
+		"interveningGuardrail": name,
+		"actionReason":         "Violation of Azure content safety content moderation detected.",
 	}
 
-	responseBody := map[string]interface{}{
-		"code": 900514,
-		"type": "AZURE_CONTENT_SAFETY_CONTENT_MODERATION",
-		"message": map[string]interface{}{
-			"action":               "GUARDRAIL_INTERVENED",
-			"interveningGuardrail": "AzureContentSafetyContentModeration",
-			"direction":            "RESPONSE",
-			"actionReason":         "Violation of applied Azure content safety constraints detected.",
-		},
+	if isResponse {
+		assessment["direction"] = "RESPONSE"
+	} else {
+		assessment["direction"] = "REQUEST"
 	}
 
-	bodyBytes, _ := json.Marshal(responseBody)
-	return policy.UpstreamResponseModifications{
-		SetHeaders: map[string]string{
-			"Content-Type": "application/json",
-		},
-		Body:       bodyBytes,
-		StatusCode: intPtr(446),
+	if showAssessment && len(categoriesAnalysis) > 0 {
+		assessmentsWrapper := map[string]interface{}{
+			"inspectedContent": reason,
+		}
+
+		var assessmentsArray []map[string]interface{}
+		for _, analysis := range categoriesAnalysis {
+			category, _ := analysis["category"].(string)
+			severityFloat, _ := analysis["severity"].(float64)
+			severity := int(severityFloat)
+
+			categoryAssessment := map[string]interface{}{
+				"category": category,
+				"severity": severity,
+				"result":   "FAIL", // If we're here, it's a violation
+			}
+			assessmentsArray = append(assessmentsArray, categoryAssessment)
+		}
+
+		assessmentsWrapper["categories"] = assessmentsArray
+		assessment["assessments"] = assessmentsWrapper
+	} else if showAssessment {
+		assessment["assessments"] = categoriesAnalysis
 	}
+
+	return assessment
 }
 
-func intPtr(i int) *int {
-	return &i
-}
-
-func extractValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
+// extractStringValueFromJSONPath extracts a value from JSON using JSONPath
+func extractStringValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
 	if jsonPath == "" {
 		return string(payload), nil
 	}
 
 	var jsonData map[string]interface{}
 	if err := json.Unmarshal(payload, &jsonData); err != nil {
+		return "", fmt.Errorf("error unmarshaling JSON: %w", err)
+	}
+
+	value, err := extractValueFromJSONPath(jsonData, jsonPath)
+	if err != nil {
 		return "", err
 	}
 
-	keys := strings.Split(strings.TrimPrefix(jsonPath, "$."), ".")
-	current := interface{}(jsonData)
-
-	for _, key := range keys {
-		if m, ok := current.(map[string]interface{}); ok {
-			if val, exists := m[key]; exists {
-				current = val
-			} else {
-				return "", fmt.Errorf("key not found: %s", key)
-			}
-		} else {
-			return "", fmt.Errorf("invalid structure at key: %s", key)
-		}
-	}
-
-	switch v := current.(type) {
+	// Convert to string
+	switch v := value.(type) {
 	case string:
 		return v, nil
 	case float64:
@@ -493,4 +505,83 @@ func extractValueFromJSONPath(payload []byte, jsonPath string) (string, error) {
 	default:
 		return fmt.Sprintf("%v", v), nil
 	}
+}
+
+// extractValueFromJSONPath extracts a value from a nested JSON structure based on a JSON path
+func extractValueFromJSONPath(data map[string]interface{}, jsonPath string) (interface{}, error) {
+	keys := strings.Split(jsonPath, ".")
+	if len(keys) > 0 && keys[0] == "$" {
+		keys = keys[1:]
+	}
+
+	return extractRecursive(data, keys)
+}
+
+func extractRecursive(current interface{}, keys []string) (interface{}, error) {
+	if len(keys) == 0 {
+		return current, nil
+	}
+
+	key := keys[0]
+	remaining := keys[1:]
+
+	// Handle array indexing
+	arrayIndexRegex := regexp.MustCompile(`^([a-zA-Z0-9_]+)\[(-?\d+)\]$`)
+	if matches := arrayIndexRegex.FindStringSubmatch(key); len(matches) == 3 {
+		arrayName := matches[1]
+		idxStr := matches[2]
+		idx := 0
+		fmt.Sscanf(idxStr, "%d", &idx)
+
+		if node, ok := current.(map[string]interface{}); ok {
+			if arrVal, exists := node[arrayName]; exists {
+				if arr, ok := arrVal.([]interface{}); ok {
+					if idx < 0 {
+						idx = len(arr) + idx
+					}
+					if idx < 0 || idx >= len(arr) {
+						return nil, fmt.Errorf("array index out of range: %d", idx)
+					}
+					return extractRecursive(arr[idx], remaining)
+				}
+				return nil, fmt.Errorf("not an array: %s", arrayName)
+			}
+			return nil, fmt.Errorf("key not found: %s", arrayName)
+		}
+		return nil, fmt.Errorf("invalid structure for key: %s", arrayName)
+	}
+
+	// Handle wildcard
+	if key == "*" {
+		var results []interface{}
+		switch node := current.(type) {
+		case map[string]interface{}:
+			for _, v := range node {
+				res, err := extractRecursive(v, remaining)
+				if err == nil {
+					results = append(results, res)
+				}
+			}
+		case []interface{}:
+			for _, v := range node {
+				res, err := extractRecursive(v, remaining)
+				if err == nil {
+					results = append(results, res)
+				}
+			}
+		default:
+			return nil, fmt.Errorf("wildcard used on non-iterable node")
+		}
+		return results, nil
+	}
+
+	// Regular object key
+	if node, ok := current.(map[string]interface{}); ok {
+		if val, exists := node[key]; exists {
+			return extractRecursive(val, remaining)
+		}
+		return nil, fmt.Errorf("key not found: %s", key)
+	}
+
+	return nil, fmt.Errorf("invalid structure for key: %s", key)
 }

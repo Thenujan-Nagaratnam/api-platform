@@ -1,4 +1,4 @@
-module github.com/wso2/api-platform/policies/json-schema-guardrail
+module github.com/policy-engine/policies/json-schema-guardrail
 
 go 1.23.0
 
@@ -13,3 +13,4 @@ require (
 )
 
 replace github.com/wso2/api-platform/sdk => ../../../../sdk
+
