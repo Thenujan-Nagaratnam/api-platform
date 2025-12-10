@@ -107,3 +107,11 @@ parameters:
     required: false
     description: Vector database name (optional)
 
+  - name: jsonPath
+    type: string
+    required: false
+    description: |
+      JSONPath expression to extract text from request body for embedding generation
+      If not specified, uses the entire request body
+      Example: "$.messages[0].content"
+

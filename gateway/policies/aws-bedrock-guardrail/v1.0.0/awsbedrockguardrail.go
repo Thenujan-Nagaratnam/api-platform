@@ -11,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
@@ -69,7 +71,10 @@ func (p *AWSBedrockGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params
 		return p.buildErrorResponse(fmt.Sprintf("parameter validation failed: %v", err), name, false, false, nil).(policy.RequestAction)
 	}
 
-	return p.validatePayload(ctx.Body.Content, requestParams, name, false, ctx.Metadata).(policy.RequestAction)
+	// Merge AWS config params with request params
+	mergedParams := p.mergeParams(params, requestParams)
+
+	return p.validatePayload(ctx.Body.Content, mergedParams, name, false, ctx.Metadata).(policy.RequestAction)
 }
 
 // OnResponse validates response body using AWS Bedrock Guardrail
@@ -93,7 +98,10 @@ func (p *AWSBedrockGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, para
 		return p.buildErrorResponse(fmt.Sprintf("parameter validation failed: %v", err), name, true, false, nil).(policy.ResponseAction)
 	}
 
-	return p.validatePayload(ctx.ResponseBody.Content, responseParams, name, true, ctx.Metadata).(policy.ResponseAction)
+	// Merge AWS config params with response params
+	mergedParams := p.mergeParams(params, responseParams)
+
+	return p.validatePayload(ctx.ResponseBody.Content, mergedParams, name, true, ctx.Metadata).(policy.ResponseAction)
 }
 
 // validateAWSConfigParams validates AWS configuration parameters (top-level)
@@ -230,6 +238,47 @@ func (p *AWSBedrockGuardrailPolicy) validateRequestResponseParams(params map[str
 	return nil
 }
 
+// mergeParams merges AWS config params from top-level params with request/response params
+func (p *AWSBedrockGuardrailPolicy) mergeParams(topLevelParams, requestResponseParams map[string]interface{}) map[string]interface{} {
+	merged := make(map[string]interface{})
+
+	// Copy AWS config params from top-level
+	if region, ok := topLevelParams["region"]; ok {
+		merged["region"] = region
+	}
+	if guardrailID, ok := topLevelParams["guardrailID"]; ok {
+		merged["guardrailID"] = guardrailID
+	}
+	if guardrailVersion, ok := topLevelParams["guardrailVersion"]; ok {
+		merged["guardrailVersion"] = guardrailVersion
+	}
+	if awsAccessKeyID, ok := topLevelParams["awsAccessKeyID"]; ok {
+		merged["awsAccessKeyID"] = awsAccessKeyID
+	}
+	if awsSecretAccessKey, ok := topLevelParams["awsSecretAccessKey"]; ok {
+		merged["awsSecretAccessKey"] = awsSecretAccessKey
+	}
+	if awsSessionToken, ok := topLevelParams["awsSessionToken"]; ok {
+		merged["awsSessionToken"] = awsSessionToken
+	}
+	if awsRoleARN, ok := topLevelParams["awsRoleARN"]; ok {
+		merged["awsRoleARN"] = awsRoleARN
+	}
+	if awsRoleRegion, ok := topLevelParams["awsRoleRegion"]; ok {
+		merged["awsRoleRegion"] = awsRoleRegion
+	}
+	if awsRoleExternalID, ok := topLevelParams["awsRoleExternalID"]; ok {
+		merged["awsRoleExternalID"] = awsRoleExternalID
+	}
+
+	// Copy request/response specific params (these override top-level if they exist)
+	for k, v := range requestResponseParams {
+		merged[k] = v
+	}
+
+	return merged
+}
+
 // validatePayload validates payload against AWS Bedrock Guardrail
 func (p *AWSBedrockGuardrailPolicy) validatePayload(payload []byte, params map[string]interface{}, name string, isResponse bool, metadata map[string]interface{}) interface{} {
 	jsonPath, _ := params["jsonPath"].(string)
@@ -315,7 +364,8 @@ func (p *AWSBedrockGuardrailPolicy) validatePayload(payload []byte, params map[s
 	}
 
 	// Evaluate guardrail response
-	violation, modifiedContent, err := p.evaluateGuardrailResponse(output, extractedValue, redactPII, !isResponse, metadata)
+	var outputInterface interface{} = output
+	violation, modifiedContent, err := p.evaluateGuardrailResponse(outputInterface, extractedValue, redactPII, !isResponse, metadata)
 	if err != nil {
 		if passthroughOnError {
 			if isResponse {
@@ -440,34 +490,39 @@ func (p *AWSBedrockGuardrailPolicy) loadAWSConfigWithAssumeRole(ctx context.Cont
 }
 
 // applyBedrockGuardrail calls AWS Bedrock Guardrail ApplyGuardrail API
-// NOTE: This requires AWS SDK v2 with ApplyGuardrail API support. The current SDK version may not have these types.
-// TODO: Update AWS SDK to a version that includes ApplyGuardrail API (bedrockruntime v1.8.0+)
-func (p *AWSBedrockGuardrailPolicy) applyBedrockGuardrail(ctx context.Context, awsCfg aws.Config, guardrailID, guardrailVersion, content string) (interface{}, error) {
-	// TODO: Implement ApplyGuardrail API call when SDK version is updated
-	// The ApplyGuardrail API and its types are not available in the current SDK version
-	// This is a placeholder that will need to be implemented with the correct types:
-	// - bedrockruntime.ApplyGuardrailInput
-	// - bedrockruntime.ApplyGuardrailOutput
-	// - types.GuardrailContentSourceInput
-	// - types.GuardrailContentBlock
-	// - types.GuardrailContentBlockMemberText
-	// - types.GuardrailTextBlock
+func (p *AWSBedrockGuardrailPolicy) applyBedrockGuardrail(ctx context.Context, awsCfg aws.Config, guardrailID, guardrailVersion, content string) (*bedrockruntime.ApplyGuardrailOutput, error) {
+	// Create Bedrock Runtime client
+	client := bedrockruntime.NewFromConfig(awsCfg)
 
-	return nil, fmt.Errorf("ApplyGuardrail API not available in current AWS SDK version - please update bedrockruntime to v1.8.0+")
+	// Prepare ApplyGuardrail input
+	input := &bedrockruntime.ApplyGuardrailInput{
+		GuardrailIdentifier: aws.String(guardrailID),
+		GuardrailVersion:    aws.String(guardrailVersion),
+		Source:              types.GuardrailContentSourceInput,
+		Content: []types.GuardrailContentBlock{
+			&types.GuardrailContentBlockMemberText{
+				Value: types.GuardrailTextBlock{
+					Text: aws.String(content),
+				},
+			},
+		},
+	}
+
+	// Call ApplyGuardrail API
+	output, err := client.ApplyGuardrail(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("ApplyGuardrail API call failed: %w", err)
+	}
+
+	return output, nil
 }
 
 // evaluateGuardrailResponse processes the AWS Bedrock Guardrail response
-// NOTE: This function expects ApplyGuardrailOutput type which is not available in current SDK version
 func (p *AWSBedrockGuardrailPolicy) evaluateGuardrailResponse(output interface{}, originalContent string, redactPII bool, isRequest bool, metadata map[string]interface{}) (bool, string, error) {
 	if output == nil {
 		return true, "", fmt.Errorf("AWS Bedrock Guardrails API returned an invalid response")
 	}
 
-	// TODO: Type assert to *bedrockruntime.ApplyGuardrailOutput when SDK is updated
-	// For now, return error as the API is not available
-	return true, "", fmt.Errorf("ApplyGuardrail API not available in current AWS SDK version")
-
-	/* Code below requires SDK update - uncomment when types are available:
 	outputTyped, ok := output.(*bedrockruntime.ApplyGuardrailOutput)
 	if !ok {
 		return true, "", fmt.Errorf("invalid output type")
@@ -475,16 +530,21 @@ func (p *AWSBedrockGuardrailPolicy) evaluateGuardrailResponse(output interface{}
 
 	// Check if guardrail intervened
 	if outputTyped.Action == types.GuardrailActionGuardrailIntervened {
-		reason := aws.ToString(outputTyped.ActionReason)
-
-		// Check if guardrail blocked the request
-		if reason == "Guardrail blocked." {
-			return true, "", nil // Violation detected, block the request
+		// Check if there are PII entities or sensitive information that was masked
+		hasPIIMasking := false
+		if len(outputTyped.Assessments) > 0 {
+			for _, assessment := range outputTyped.Assessments {
+				if assessment.SensitiveInformationPolicy != nil {
+					if len(assessment.SensitiveInformationPolicy.PiiEntities) > 0 || len(assessment.SensitiveInformationPolicy.Regexes) > 0 {
+						hasPIIMasking = true
+						break
+					}
+				}
+			}
 		}
 
-		// Check if guardrail masked any PII
-		maskApplied := reason == "Guardrail masked."
-		if maskApplied {
+		// If PII masking was applied
+		if hasPIIMasking {
 			if redactPII {
 				// Redaction mode: extract redacted content
 				redactedContent := p.extractRedactedContent(outputTyped, originalContent)
@@ -499,7 +559,7 @@ func (p *AWSBedrockGuardrailPolicy) evaluateGuardrailResponse(output interface{}
 			}
 		}
 
-		// Other intervention reasons - block by default
+		// Other intervention reasons - block by default (content policy, topic policy, word policy violations)
 		return true, "", nil // Violation detected, block content
 	}
 
@@ -510,21 +570,76 @@ func (p *AWSBedrockGuardrailPolicy) evaluateGuardrailResponse(output interface{}
 
 	// Unexpected response
 	return true, "", fmt.Errorf("AWS Bedrock Guardrails returned unexpected response action: %s", string(outputTyped.Action))
-	*/
 }
 
 // processPIIEntitiesForMasking handles PII masking when redactPII is disabled
-// NOTE: This function expects ApplyGuardrailOutput type which is not available in current SDK version
-func (p *AWSBedrockGuardrailPolicy) processPIIEntitiesForMasking(output interface{}, originalContent string) (string, map[string]string) {
-	// TODO: Implement when SDK is updated with ApplyGuardrail types
-	return originalContent, nil
+func (p *AWSBedrockGuardrailPolicy) processPIIEntitiesForMasking(output *bedrockruntime.ApplyGuardrailOutput, originalContent string) (string, map[string]string) {
+	if output == nil || len(output.Assessments) == 0 {
+		return originalContent, nil
+	}
+
+	maskedPII := make(map[string]string)
+	updatedContent := originalContent
+	counter := 0
+
+	for _, assessment := range output.Assessments {
+		if assessment.SensitiveInformationPolicy != nil {
+			// Process PII entities
+			if len(assessment.SensitiveInformationPolicy.PiiEntities) > 0 {
+				for _, entity := range assessment.SensitiveInformationPolicy.PiiEntities {
+					if entity.Action == types.GuardrailSensitiveInformationPolicyActionAnonymized {
+						match := aws.ToString(entity.Match)
+						if match != "" && maskedPII[match] == "" {
+							entityType := string(entity.Type)
+							replacement := fmt.Sprintf("%s_%04x", entityType, counter)
+							updatedContent = strings.ReplaceAll(updatedContent, match, replacement)
+							maskedPII[match] = replacement
+							counter++
+						}
+					}
+				}
+			}
+
+			// Process regex matches
+			if len(assessment.SensitiveInformationPolicy.Regexes) > 0 {
+				for _, regex := range assessment.SensitiveInformationPolicy.Regexes {
+					if regex.Action == types.GuardrailSensitiveInformationPolicyActionAnonymized {
+						match := aws.ToString(regex.Match)
+						name := aws.ToString(regex.Name)
+						if match != "" && maskedPII[match] == "" {
+							replacement := fmt.Sprintf("%s_%04x", name, counter)
+							updatedContent = strings.ReplaceAll(updatedContent, match, replacement)
+							maskedPII[match] = replacement
+							counter++
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return updatedContent, maskedPII
 }
 
 // extractRedactedContent extracts redacted content from guardrail outputs
-// NOTE: This function expects ApplyGuardrailOutput type which is not available in current SDK version
-func (p *AWSBedrockGuardrailPolicy) extractRedactedContent(output interface{}, originalContent string) string {
-	// TODO: Implement when SDK is updated with ApplyGuardrail types
-	return originalContent
+func (p *AWSBedrockGuardrailPolicy) extractRedactedContent(output *bedrockruntime.ApplyGuardrailOutput, originalContent string) string {
+	redactedText := originalContent
+	// Replace all PII entity matches with *****
+	if output != nil && len(output.Assessments) > 0 && output.Assessments[0].SensitiveInformationPolicy != nil {
+		for _, entity := range output.Assessments[0].SensitiveInformationPolicy.PiiEntities {
+			match := aws.ToString(entity.Match)
+			if match != "" {
+				redactedText = strings.ReplaceAll(redactedText, match, "*****")
+			}
+		}
+		for _, regex := range output.Assessments[0].SensitiveInformationPolicy.Regexes {
+			match := aws.ToString(regex.Match)
+			if match != "" {
+				redactedText = strings.ReplaceAll(redactedText, match, "*****")
+			}
+		}
+	}
+	return redactedText
 }
 
 // restorePIIInResponse handles PII restoration in responses when redactPII is disabled
@@ -614,36 +729,23 @@ func (p *AWSBedrockGuardrailPolicy) buildAssessmentObject(name string, isRespons
 	}
 
 	if showAssessment {
-		// TODO: Type assert to *bedrockruntime.ApplyGuardrailOutput when SDK is updated
-		// For now, skip assessment details as types are not available
-		// if bedrockOutput, ok := output.(*bedrockruntime.ApplyGuardrailOutput); ok && bedrockOutput != nil {
-		// 	if len(bedrockOutput.Assessments) > 0 {
-		// 		firstAssessment := p.convertBedrockAssessmentToMap(bedrockOutput.Assessments[0])
-		// 		assessment["assessments"] = firstAssessment
-		// 	}
-		// }
+		if bedrockOutput, ok := output.(*bedrockruntime.ApplyGuardrailOutput); ok && bedrockOutput != nil {
+			if len(bedrockOutput.Assessments) > 0 {
+				firstAssessment := p.convertBedrockAssessmentToMap(bedrockOutput.Assessments[0])
+				assessment["assessments"] = firstAssessment
+			}
+		}
 	}
 
 	return assessment
 }
 
 // convertBedrockAssessmentToMap converts a Bedrock assessment to a map structure
-// NOTE: This function expects types.GuardrailAssessment which is not available in current SDK version
-func (p *AWSBedrockGuardrailPolicy) convertBedrockAssessmentToMap(assessment interface{}) map[string]interface{} {
-	// TODO: Implement when SDK is updated with GuardrailAssessment type (bedrockruntime v1.8.0+)
-	// Placeholder implementation - will be implemented when SDK types are available
-	return make(map[string]interface{})
-
-	/* Code below requires SDK update - remove comment markers when types are available:
-	assessmentTyped, ok := assessment.(types.GuardrailAssessment)
-	if !ok {
-		return make(map[string]interface{})
-	}
-
+func (p *AWSBedrockGuardrailPolicy) convertBedrockAssessmentToMap(assessment types.GuardrailAssessment) map[string]interface{} {
 	assessmentMap := make(map[string]interface{})
 
 	// Handle content policy assessment
-	if assessmentTyped.ContentPolicy != nil {
+	if assessment.ContentPolicy != nil {
 		contentPolicy := make(map[string]interface{})
 		if len(assessment.ContentPolicy.Filters) > 0 {
 			filters := make([]map[string]interface{}, 0, len(assessment.ContentPolicy.Filters))
@@ -738,7 +840,6 @@ func (p *AWSBedrockGuardrailPolicy) convertBedrockAssessmentToMap(assessment int
 	}
 
 	return assessmentMap
-	*/
 }
 
 // extractStringValueFromJSONPath extracts a value from JSON using JSONPath
