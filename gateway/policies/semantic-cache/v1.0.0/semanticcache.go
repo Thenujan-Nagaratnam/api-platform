@@ -29,16 +29,11 @@ func NewPolicy() policy.Policy {
 // Mode returns the processing mode for this policy
 func (p *SemanticCachePolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestHeaderMode:  policy.HeaderModeProcess,
 		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseHeaderMode: policy.HeaderModeProcess,
 		ResponseBodyMode:   policy.BodyModeBuffer,
 	}
-}
-
-// Validate validates the policy configuration (empty as requested)
-func (p *SemanticCachePolicy) Validate(params map[string]interface{}) error {
-	return nil
 }
 
 // validateParams validates all required parameters
@@ -52,38 +47,52 @@ func (p *SemanticCachePolicy) validateParams(params map[string]interface{}) erro
 	if !ok {
 		return fmt.Errorf("'embeddingProvider' must be a string")
 	}
-	if embeddingProvider != "OPENAI" && embeddingProvider != "MISTRAL" && embeddingProvider != "AZURE_OPENAI" {
-		return fmt.Errorf("'embeddingProvider' must be one of: OPENAI, MISTRAL, AZURE_OPENAI")
+	if embeddingProvider != "OPENAI" && embeddingProvider != "MISTRAL" && embeddingProvider != "AZURE_OPENAI" && embeddingProvider != "HUGOT" {
+		return fmt.Errorf("'embeddingProvider' must be one of: OPENAI, MISTRAL, AZURE_OPENAI, HUGOT")
 	}
 
-	// Validate embedding endpoint
-	embeddingEndpointRaw, ok := params["embeddingEndpoint"]
-	if !ok {
-		return fmt.Errorf("'embeddingEndpoint' parameter is required")
-	}
-	_, ok = embeddingEndpointRaw.(string)
-	if !ok {
-		return fmt.Errorf("'embeddingEndpoint' must be a string")
-	}
+	// For Hugot, validate different parameters
+	if embeddingProvider == "HUGOT" {
+		// Validate modelName
+		modelNameRaw, ok := params["modelName"]
+		if !ok {
+			return fmt.Errorf("'modelName' parameter is required for HUGOT provider")
+		}
+		_, ok = modelNameRaw.(string)
+		if !ok {
+			return fmt.Errorf("'modelName' must be a string")
+		}
+		// modelDownloadPath is optional, defaults to "./models"
+	} else {
+		// Validate embedding endpoint (required for API providers)
+		embeddingEndpointRaw, ok := params["embeddingEndpoint"]
+		if !ok {
+			return fmt.Errorf("'embeddingEndpoint' parameter is required")
+		}
+		_, ok = embeddingEndpointRaw.(string)
+		if !ok {
+			return fmt.Errorf("'embeddingEndpoint' must be a string")
+		}
 
-	// Validate embedding model
-	embeddingModelRaw, ok := params["embeddingModel"]
-	if !ok {
-		return fmt.Errorf("'embeddingModel' parameter is required")
-	}
-	_, ok = embeddingModelRaw.(string)
-	if !ok {
-		return fmt.Errorf("'embeddingModel' must be a string")
-	}
+		// Validate embedding model (required for API providers)
+		embeddingModelRaw, ok := params["embeddingModel"]
+		if !ok {
+			return fmt.Errorf("'embeddingModel' parameter is required")
+		}
+		_, ok = embeddingModelRaw.(string)
+		if !ok {
+			return fmt.Errorf("'embeddingModel' must be a string")
+		}
 
-	// Validate API key
-	apiKeyRaw, ok := params["apiKey"]
-	if !ok {
-		return fmt.Errorf("'apiKey' parameter is required")
-	}
-	_, ok = apiKeyRaw.(string)
-	if !ok {
-		return fmt.Errorf("'apiKey' must be a string")
+		// Validate API key (required for API providers)
+		apiKeyRaw, ok := params["apiKey"]
+		if !ok {
+			return fmt.Errorf("'apiKey' parameter is required")
+		}
+		_, ok = apiKeyRaw.(string)
+		if !ok {
+			return fmt.Errorf("'apiKey' must be a string")
+		}
 	}
 
 	// Validate vector store provider
@@ -157,7 +166,17 @@ func (p *SemanticCachePolicy) getOrCreateEmbeddingProvider(params map[string]int
 	}
 
 	// Create a unique key for this provider configuration
-	providerKey := fmt.Sprintf("%s:%s:%s", embeddingProvider, embeddingEndpoint, embeddingModel)
+	var providerKey string
+	if embeddingProvider == "HUGOT" {
+		modelName, _ := params["modelName"].(string)
+		modelDownloadPath, _ := params["modelDownloadPath"].(string)
+		if modelDownloadPath == "" {
+			modelDownloadPath = "./models"
+		}
+		providerKey = fmt.Sprintf("%s:%s:%s", embeddingProvider, modelName, modelDownloadPath)
+	} else {
+		providerKey = fmt.Sprintf("%s:%s:%s", embeddingProvider, embeddingEndpoint, embeddingModel)
+	}
 
 	p.mu.RLock()
 	if provider, exists := p.embeddingProviders[providerKey]; exists {
@@ -175,6 +194,7 @@ func (p *SemanticCachePolicy) getOrCreateEmbeddingProvider(params map[string]int
 	}
 
 	var provider EmbeddingProvider
+	var err error
 	timeout := DefaultTimeout
 
 	switch embeddingProvider {
@@ -184,6 +204,16 @@ func (p *SemanticCachePolicy) getOrCreateEmbeddingProvider(params map[string]int
 		provider = NewMistralEmbeddingProvider(headerName, apiKey, embeddingEndpoint, embeddingModel, timeout)
 	case "AZURE_OPENAI":
 		provider = NewAzureOpenAIEmbeddingProvider(headerName, apiKey, embeddingEndpoint, timeout)
+	case "HUGOT":
+		modelName, _ := params["modelName"].(string)
+		modelDownloadPath, _ := params["modelDownloadPath"].(string)
+		if modelDownloadPath == "" {
+			modelDownloadPath = "./models"
+		}
+		provider, err = NewHugotEmbeddingProvider(modelName, modelDownloadPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Hugot provider: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider: %s", embeddingProvider)
 	}
@@ -202,8 +232,21 @@ func (p *SemanticCachePolicy) getOrCreateVectorDBProvider(params map[string]inte
 	password, _ := params["password"].(string)
 	database, _ := params["database"].(string)
 
-	embeddingDimensionRaw, _ := params["embeddingDimension"].(float64)
-	embeddingDimension := int(embeddingDimensionRaw)
+	var embeddingDimension int
+	if embeddingDimensionRaw, ok := params["embeddingDimension"]; ok {
+		switch v := embeddingDimensionRaw.(type) {
+		case int64:
+			embeddingDimension = int(v)
+		case float64:
+			embeddingDimension = int(v)
+		case int:
+			embeddingDimension = v
+		case string:
+			if dim, err := strconv.Atoi(v); err == nil {
+				embeddingDimension = dim
+			}
+		}
+	}
 	if embeddingDimension == 0 {
 		// Default dimensions based on provider
 		embeddingDimension = 1536 // OpenAI ada-002 default
@@ -370,7 +413,6 @@ func (p *SemanticCachePolicy) OnResponse(ctx *policy.ResponseContext, params map
 	// Get vector DB provider
 	vectorDBProvider, err := p.getOrCreateVectorDBProvider(params)
 	if err != nil {
-		// If provider creation fails, continue
 		return policy.UpstreamResponseModifications{}
 	}
 

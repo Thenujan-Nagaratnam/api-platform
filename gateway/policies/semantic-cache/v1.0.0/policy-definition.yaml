@@ -13,40 +13,64 @@ parameters:
     type: string
     required: true
     description: |
-      Embedding provider type: "OPENAI", "MISTRAL", or "AZURE_OPENAI"
+      Embedding provider type: "OPENAI", "MISTRAL", "AZURE_OPENAI", or "HUGOT"
+      HUGOT uses local ONNX models and doesn't require API endpoints or keys
     validation:
       enum:
         - OPENAI
         - MISTRAL
         - AZURE_OPENAI
+        - HUGOT
 
   - name: embeddingEndpoint
     type: string
-    required: true
+    required: false
     description: |
-      Endpoint URL for the embedding service
+      Endpoint URL for the embedding service (required for OPENAI, MISTRAL, AZURE_OPENAI)
       For OpenAI: "https://api.openai.com/v1/embeddings"
       For Mistral: "https://api.mistral.ai/v1/embeddings"
       For Azure OpenAI: Azure OpenAI endpoint URL
+      Not required for HUGOT provider
     validation:
       minLength: 1
 
   - name: embeddingModel
     type: string
-    required: true
+    required: false
     description: |
-      Embedding model name (e.g., "text-embedding-ada-002", "mistral-embed")
+      Embedding model name (required for OPENAI, MISTRAL, AZURE_OPENAI)
+      For OpenAI: "text-embedding-ada-002"
+      For Mistral: "mistral-embed"
+      Not required for HUGOT provider (use modelName instead)
     validation:
       minLength: 1
 
   - name: apiKey
     type: string
-    required: true
+    required: false
     description: |
-      API key for the embedding service
+      API key for the embedding service (required for OPENAI, MISTRAL, AZURE_OPENAI)
       For Azure OpenAI, this may be the API key or the header name for authentication
+      Not required for HUGOT provider
     validation:
       minLength: 1
+
+  - name: modelName
+    type: string
+    required: false
+    description: |
+      Hugot model name (required for HUGOT provider only)
+      Example: "sentence-transformers/all-MiniLM-L6-v2"
+      Not required for other providers
+    validation:
+      minLength: 1
+
+  - name: modelDownloadPath
+    type: string
+    required: false
+    description: |
+      Directory path where Hugot models are stored/downloaded (optional, defaults to "./models")
+      Only used for HUGOT provider
 
   - name: headerName
     type: string

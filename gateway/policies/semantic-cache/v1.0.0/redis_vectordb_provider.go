@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,30 +73,36 @@ func (r *RedisVectorDBProvider) createIndex() error {
 		return nil
 	}
 
-	_, err = r.client.FTCreate(ctx,
+	// Create index using raw Redis command
+	// FT.CREATE index_name ON HASH PREFIX 1 doc: SCHEMA api_id TAG embedding VECTOR HNSW 6 TYPE FLOAT32 DIM dimension DISTANCE_METRIC L2
+	createCmd := []interface{}{
+		"FT.CREATE",
 		r.indexID,
-		&redis.FTCreateOptions{
-			OnHash: true,
-			Prefix: []any{"doc:"},
-		},
-		&redis.FieldSchema{
-			FieldName: "api_id",
-			FieldType: redis.SearchFieldTypeTag,
-		},
-		&redis.FieldSchema{
-			FieldName: embeddingField,
-			FieldType: redis.SearchFieldTypeVector,
-			VectorArgs: &redis.FTVectorArgs{
-				HNSWOptions: &redis.FTHNSWOptions{
-					Dim:            r.dimension,
-					DistanceMetric: "L2",
-					Type:           "FLOAT32",
-				},
-			},
-		},
-	).Result()
+		"ON", "HASH",
+		"PREFIX", "1", keyPrefix,
+		"SCHEMA",
+		"api_id", "TAG",
+		embeddingField, "VECTOR", "HNSW", "6",
+		"TYPE", "FLOAT32",
+		"DIM", r.dimension,
+		"DISTANCE_METRIC", "L2",
+	}
 
-	return err
+	result, err := r.client.Do(ctx, createCmd...).Result()
+	if err != nil {
+		// Check if error is because index already exists (race condition)
+		errStr := err.Error()
+		if strings.Contains(errStr, "Index already exists") || strings.Contains(errStr, "already exists") {
+			// Index already exists, that's fine
+			return nil
+		}
+		// Any other error is a real problem
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	// Verify index was created (result should be "OK" or similar)
+	_ = result // Result is typically "OK" for FT.CREATE
+	return nil
 }
 
 func (r *RedisVectorDBProvider) GetType() string {
@@ -103,6 +110,11 @@ func (r *RedisVectorDBProvider) GetType() string {
 }
 
 func (r *RedisVectorDBProvider) Store(embedding []float32, responseData map[string]interface{}, apiID string, ctx context.Context) error {
+	// Ensure index exists before storing
+	if err := r.createIndex(); err != nil {
+		return fmt.Errorf("failed to ensure index exists: %w", err)
+	}
+
 	embeddingBytes := floatsToBytes(embedding)
 	responseBytes, err := json.Marshal(responseData)
 	if err != nil {
@@ -135,39 +147,104 @@ func (r *RedisVectorDBProvider) Store(embedding []float32, responseData map[stri
 func (r *RedisVectorDBProvider) Retrieve(embedding []float32, threshold float64, apiID string, ctx context.Context) (map[string]interface{}, error) {
 	embeddingBytes := floatsToBytes(embedding)
 
-	knnQuery := fmt.Sprintf(
-		"@api_id:{\"%s\"}=>[KNN $K @%s $vec AS score]",
-		apiID, embeddingField,
-	)
+	// Build FT.SEARCH command with KNN query
+	// Format: FT.SEARCH index "@api_id:{apiID} => [KNN 1 @embedding $vec AS score]" PARAMS 2 vec <embedding_bytes> DIALECT 2 RETURN 2 response score LIMIT 0 1
+	// Use literal 1 for K (number of neighbors) instead of parameter
+	knnQuery := fmt.Sprintf("@api_id:{%s} => [KNN 1 @%s $vec AS score]", apiID, embeddingField)
 
-	results, err := r.client.FTSearchWithArgs(ctx,
+	searchCmd := []interface{}{
+		"FT.SEARCH",
 		r.indexID,
 		knnQuery,
-		&redis.FTSearchOptions{
-			Return: []redis.FTSearchReturn{
-				{FieldName: responseField},
-				{FieldName: "score"},
-			},
-			DialectVersion: 2,
-			Params: map[string]any{
-				"K":   1,
-				"vec": embeddingBytes,
-			},
-		},
-	).Result()
+		"PARAMS", 2,
+		"vec", embeddingBytes,
+		"DIALECT", 2,
+		"RETURN", 2,
+		responseField,
+		"score",
+		"LIMIT", 0, 1,
+	}
 
+	result, err := r.client.Do(ctx, searchCmd...).Result()
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
 
-	if results.Total == 0 {
+	// Parse result - FT.SEARCH returns: [total_count, doc_id, [field1, value1, field2, value2, ...], ...]
+	resultArray, ok := result.([]interface{})
+	if !ok || len(resultArray) == 0 {
 		return nil, fmt.Errorf("no results found")
 	}
 
-	doc := results.Docs[0]
-	score, err := strconv.ParseFloat(doc.Fields["score"], 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid score: %w", err)
+	// First element is total count
+	totalCount, ok := resultArray[0].(int64)
+	if !ok {
+		// Try as string
+		if totalStr, ok := resultArray[0].(string); ok {
+			var err error
+			totalCount, err = strconv.ParseInt(totalStr, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid result format: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("invalid result format: total count not found")
+		}
+	}
+
+	if totalCount == 0 {
+		return nil, fmt.Errorf("no results found")
+	}
+
+	// Second element is doc ID, third is fields array
+	if len(resultArray) < 3 {
+		return nil, fmt.Errorf("invalid result format: insufficient data")
+	}
+
+	docID, ok := resultArray[1].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid result format: doc ID not found")
+	}
+
+	fieldsArray, ok := resultArray[2].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid result format: fields not found")
+	}
+
+	// Parse fields: [field1, value1, field2, value2, ...]
+	var score float64
+	var responseStr string
+	for i := 0; i < len(fieldsArray)-1; i += 2 {
+		fieldName, ok := fieldsArray[i].(string)
+		if !ok {
+			continue
+		}
+		fieldValue := fieldsArray[i+1]
+
+		if fieldName == "score" {
+			scoreStr, ok := fieldValue.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid score format")
+			}
+			var err error
+			score, err = strconv.ParseFloat(scoreStr, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid score: %w", err)
+			}
+		} else if fieldName == responseField {
+			responseStr, ok = fieldValue.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid response format")
+			}
+		}
+	}
+
+	// If response wasn't in RETURN, fetch it from hash
+	if responseStr == "" {
+		respBytes, err := r.client.HGet(ctx, docID, responseField).Bytes()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get response: %w", err)
+		}
+		responseStr = string(respBytes)
 	}
 
 	// For L2 distance, lower is better. Convert to similarity (higher is better)
@@ -176,13 +253,8 @@ func (r *RedisVectorDBProvider) Retrieve(embedding []float32, threshold float64,
 		return nil, fmt.Errorf("similarity %f below threshold %f", similarity, threshold)
 	}
 
-	respBytes, err := r.client.HGet(ctx, doc.ID, responseField).Bytes()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get response: %w", err)
-	}
-
 	var responseData map[string]interface{}
-	if err := json.Unmarshal(respBytes, &responseData); err != nil {
+	if err := json.Unmarshal([]byte(responseStr), &responseData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 

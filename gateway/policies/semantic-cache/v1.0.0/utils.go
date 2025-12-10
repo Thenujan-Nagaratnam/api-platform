@@ -10,11 +10,12 @@ import (
 )
 
 // floatsToBytes converts float32 slice to byte array for storing in Redis
+// Uses little-endian byte order as required by RediSearch
 func floatsToBytes(fs []float32) []byte {
 	buf := make([]byte, len(fs)*4)
 	for i, f := range fs {
 		u := math.Float32bits(f)
-		binary.NativeEndian.PutUint32(buf[i*4:], u)
+		binary.LittleEndian.PutUint32(buf[i*4:], u)
 	}
 	return buf
 }
