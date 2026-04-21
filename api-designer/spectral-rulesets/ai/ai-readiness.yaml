@@ -437,7 +437,7 @@ rulesetContent:
       then:
         function: pattern
         functionOptions:
-          notMatch: "(?i)^(https?://)?(localhost(:[0-9]+)?|127\\.0\\.0\\.1|example\\.com|your-api|api\\.example|placeholder|todo|fixme)"
+          notMatch: "^(https?://)?(localhost(:[0-9]+)?|127\\.0\\.0\\.1|example\\.com|your-api|api\\.example|placeholder|todo|fixme)"
 
     # ============================================================================
     # Strict Typing & Schema Constraints
