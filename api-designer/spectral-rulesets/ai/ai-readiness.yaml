@@ -14,7 +14,6 @@ description: >-
 ruleCategory: SPECTRAL
 ruleType: API_DEFINITION
 artifactType: REST_API
-documentationLink: "https://apim.docs.wso2.com/en/4.5.0/reference/governance/wso2-rest-api-design-guidelines/"
 provider: WSO2
 rulesetContent:
   extends: [[spectral:oas, off]]
@@ -80,6 +79,14 @@ rulesetContent:
       then:
         field: operationId
         function: truthy
+
+    ai-readiness-operation-id-uniqueness-normalized:
+      description: operationId should remain unique when case and separators are normalized
+      message: "operationId conflicts after case-insensitive/separator-insensitive normalization"
+      severity: error
+      given: $
+      then:
+        function: aiReadinessOperationIdUniqueness
 
     ai-readiness-operation-id-casing:
       description: operationIds should use a consistent naming style across the API
@@ -492,6 +499,16 @@ rulesetContent:
         functionOptions:
           category: typing
 
+    ai-readiness-schema-validation-constraints:
+      description: Scalar schema properties should define validation constraints
+      message: "Schema property '{{property}}' should define constraints (pattern/minLength/maxLength/minimum/maximum) to guide deterministic AI payload generation"
+      severity: warn
+      given: $.components.schemas[*].properties[*]
+      then:
+        function: aiReadinessSchemaHasConstraints
+        functionOptions:
+          category: typing
+
     # ============================================================================
     # Rich Error Semantics (RFC 7807)
     # ============================================================================
@@ -531,14 +548,14 @@ rulesetContent:
 
     ai-readiness-error-schema-actionable:
       description: Validation error schemas should carry expected and received context for agent self-correction
-      message: "422 error schema should include 'expected' or 'received' fields so AI agents can automatically correct malformed requests"
+      message: "422 error schema should include both 'expected' and 'received' fields so AI agents can automatically correct malformed requests"
       severity: warn
       given: "$.paths[*][*].responses['422'].content[*].schema"
       then:
-        function: aiReadinessErrorSchemaAnyFields
+        function: aiReadinessErrorSchemaStructure
         functionOptions:
           category: errorSemantics
-          anyFields: [expected, received]
+          requiredFields: [expected, received]
 
     # ============================================================================
     # Operational Header Signals
