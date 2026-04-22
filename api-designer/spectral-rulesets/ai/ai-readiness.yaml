@@ -596,9 +596,9 @@ rulesetContent:
       description: API should define security schemes for AI understanding
       message: "API should define security schemes in components for AI readiness"
       severity: warn
-      given: $
+      given: $.components
       then:
-        field: components.securitySchemes
+        field: securitySchemes
         function: truthy
 
     ai-readiness-security-description:
