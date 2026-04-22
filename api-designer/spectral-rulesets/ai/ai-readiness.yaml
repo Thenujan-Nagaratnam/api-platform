@@ -80,14 +80,6 @@ rulesetContent:
         field: operationId
         function: truthy
 
-    ai-readiness-operation-id-uniqueness-normalized:
-      description: operationId should remain unique when case and separators are normalized
-      message: "operationId conflicts after case-insensitive/separator-insensitive normalization"
-      severity: error
-      given: $
-      then:
-        function: aiReadinessOperationIdUniqueness
-
     ai-readiness-operation-id-casing:
       description: operationIds should use a consistent naming style across the API
       message: "operationId style should be consistent across operations for reliable AI references"
