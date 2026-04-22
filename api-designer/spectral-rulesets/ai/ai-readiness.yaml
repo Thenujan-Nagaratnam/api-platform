@@ -82,14 +82,14 @@ rulesetContent:
         function: truthy
 
     ai-readiness-operation-id-casing:
-      description: operationId should use a consistent machine-friendly naming style
-      message: "operationId '{{value}}' should use only letters, numbers, hyphens, or underscores (no spaces/special symbols) for reliable AI references"
+      description: operationIds should use a consistent naming style across the API
+      message: "operationId style should be consistent across operations for reliable AI references"
       severity: warn
-      given: $.paths[*][get,post,put,patch,delete,head,options].operationId
+      given: $
       then:
-        function: pattern
+        function: aiReadinessOperationIdConsistency
         functionOptions:
-          match: "^[A-Za-z][A-Za-z0-9_-]*$"
+          allowedStyles: [camel, snake, kebab, pascal]
 
     ai-readiness-operation-tags:
       description: All operations should have tags for AI categorization
