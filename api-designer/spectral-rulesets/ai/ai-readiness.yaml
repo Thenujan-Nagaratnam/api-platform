@@ -27,7 +27,7 @@ rulesetContent:
     ai-readiness-api-description:
       description: API must have a comprehensive description for AI understanding
       message: "API description is required and should be at least 50 characters for AI readiness"
-      severity: error
+      severity: warn
       given: $.info
       then:
         function: aiReadinessFieldCoverage
@@ -52,7 +52,7 @@ rulesetContent:
     ai-readiness-operation-summary:
       description: All operations must have a summary for AI understanding
       message: "Operation '{{property}}' must have a summary for AI readiness"
-      severity: error
+      severity: warn
       given: $.paths[*][get,post,put,patch,delete,head,options]
       then:
         function: aiReadinessFieldCoverage
@@ -63,7 +63,7 @@ rulesetContent:
     ai-readiness-operation-description:
       description: All operations must have a detailed description
       message: "Operation '{{property}}' must have a description (min 30 characters) for AI readiness"
-      severity: error
+      severity: warn
       given: $.paths[*][get,post,put,patch,delete,head,options]
       then:
         function: aiReadinessFieldCoverage
@@ -75,7 +75,7 @@ rulesetContent:
     ai-readiness-operation-id:
       description: All operations must have an operationId for AI reference
       message: "Operation must have an operationId for AI readiness"
-      severity: error
+      severity: warn
       given: $.paths[*][get,post,put,patch,delete,head,options]
       then:
         field: operationId
@@ -107,7 +107,7 @@ rulesetContent:
     ai-readiness-parameter-description:
       description: All parameters must have descriptions
       message: "Parameter '{{value.name}}' must have a description for AI readiness"
-      severity: error
+      severity: warn
       given: $.paths[*][*].parameters[*]
       then:
         function: aiReadinessFieldCoverage
@@ -144,7 +144,7 @@ rulesetContent:
     ai-readiness-request-body-description:
       description: Request bodies must have descriptions
       message: "Request body must have a description for AI readiness"
-      severity: error
+      severity: warn
       given: $.paths[*][post,put,patch].requestBody
       then:
         function: aiReadinessFieldCoverage
@@ -166,7 +166,7 @@ rulesetContent:
     ai-readiness-request-body-schema-typed:
       description: Request body schemas must have explicit types
       message: "Request body schema should have an explicit type so AI agents construct valid payloads"
-      severity: error
+      severity: warn
       given: $.paths[*][post,put,patch].requestBody.content[*].schema
       then:
         function: aiReadinessSchemaTyping
@@ -189,7 +189,7 @@ rulesetContent:
     ai-readiness-response-description:
       description: All responses must have descriptions
       message: "Response '{{property}}' must have a description for AI readiness"
-      severity: error
+      severity: warn
       given: $.paths[*][*].responses[*]
       then:
         function: aiReadinessFieldCoverage
@@ -201,7 +201,7 @@ rulesetContent:
       description: Success responses should have examples
       message: "Response should have an example for AI understanding"
       severity: warn
-      given: $.paths[*][*].responses[2??].content[*]
+      given: $.paths[*][*].responses[?(@property >= 200 && @property < 300)].content[*]
       then:
         function: aiReadinessFieldCoverage
         functionOptions:
@@ -212,7 +212,7 @@ rulesetContent:
       description: Responses should specify content types
       message: "Response should specify content type (e.g., application/json) for AI understanding"
       severity: warn
-      given: $.paths[*][*].responses[2??]
+      given: $.paths[*][*].responses[?(@property >= 200 && @property < 300)]
       then:
         field: content
         function: truthy
@@ -220,7 +220,7 @@ rulesetContent:
     ai-readiness-response-schema-typed:
       description: Response schemas must have explicit types
       message: "Response schema should have an explicit type so AI agents can parse response payloads"
-      severity: error
+      severity: warn
       given: $.paths[*][*].responses[*].content[*].schema
       then:
         function: aiReadinessSchemaTyping
@@ -230,8 +230,8 @@ rulesetContent:
     ai-readiness-success-response-content:
       description: All success responses must define structured payload content
       message: "2xx response '{{property}}' must define response content so AI agents can reliably parse success payloads"
-      severity: error
-      given: $.paths[*][*].responses[2??]
+      severity: warn
+      given: $.paths[*][*].responses[?(@property >= 200 && @property < 300)]
       then:
         field: content
         function: truthy
@@ -239,8 +239,8 @@ rulesetContent:
     ai-readiness-success-response-json-schema:
       description: JSON success responses must define a schema
       message: "2xx response '{{property}}' application/json content must define a schema for consistent AI consumption"
-      severity: error
-      given: "$.paths[*][*].responses[2??].content['application/json']"
+      severity: warn
+      given: "$.paths[*][*].responses[?(@property >= 200 && @property < 300)].content['application/json']"
       then:
         field: schema
         function: truthy
@@ -248,8 +248,8 @@ rulesetContent:
     ai-readiness-error-response-content:
       description: All error responses must define structured payload content
       message: "Error response '{{property}}' must define response content so AI agents can parse failures consistently"
-      severity: error
-      given: $.paths[*][*].responses[4??,5??]
+      severity: warn
+      given: $.paths[*][*].responses[?(@property >= 400)]
       then:
         field: content
         function: truthy
@@ -257,8 +257,8 @@ rulesetContent:
     ai-readiness-error-response-json-schema:
       description: JSON error responses must define a schema
       message: "Error response '{{property}}' application/json content must define a schema for consistent AI error handling"
-      severity: error
-      given: "$.paths[*][*].responses[4??,5??].content['application/json']"
+      severity: warn
+      given: "$.paths[*][*].responses[?(@property >= 400)].content['application/json']"
       then:
         field: schema
         function: truthy
@@ -270,7 +270,7 @@ rulesetContent:
     ai-readiness-success-response:
       description: Operations must have success responses
       message: "Operation must define at least one success response (2xx) for AI understanding"
-      severity: error
+      severity: warn
       given: $.paths[*][get,post,put,patch,delete]
       then:
         field: responses
@@ -292,7 +292,7 @@ rulesetContent:
     ai-readiness-error-responses-4xx:
       description: Operations must define 4xx error responses
       message: "Operation must define at least one 4xx error response for AI error handling"
-      severity: error
+      severity: warn
       given: $.paths[*][get,post,put,patch,delete]
       then:
         function: aiReadinessErrorResponseCoverage
@@ -326,7 +326,7 @@ rulesetContent:
       description: Error responses should have proper schemas
       message: "Error response should have a schema definition for AI error handling"
       severity: warn
-      given: $.paths[*][*].responses[4??,5??].content[*]
+      given: $.paths[*][*].responses[?(@property >= 400)].content[*]
       then:
         field: schema
         function: truthy
@@ -335,7 +335,7 @@ rulesetContent:
       description: Error responses should include meaningful descriptions
       message: "Error response '{{property}}' description should be at least 20 characters so AI agents can understand failure semantics"
       severity: warn
-      given: $.paths[*][*].responses[4??,5??]
+      given: $.paths[*][*].responses[?(@property >= 400)]
       then:
         field: description
         function: length
@@ -349,7 +349,7 @@ rulesetContent:
     ai-readiness-schema-description:
       description: All schemas must have descriptions
       message: "Schema '{{property}}' must have a description for AI readiness"
-      severity: error
+      severity: warn
       given: $.components.schemas[*]
       then:
         function: aiReadinessFieldCoverage
@@ -380,7 +380,7 @@ rulesetContent:
     ai-readiness-schema-example:
       description: All schemas must have examples
       message: "Schema '{{property}}' must have an example for AI understanding"
-      severity: error
+      severity: warn
       given: $.components.schemas[*]
       then:
         function: aiReadinessFieldCoverage
@@ -391,7 +391,7 @@ rulesetContent:
     ai-readiness-schema-property-description:
       description: Schema properties must have descriptions
       message: "Property '{{property}}' in schema must have a description"
-      severity: error
+      severity: warn
       given: $.components.schemas[*].properties[*]
       then:
         function: aiReadinessFieldCoverage
@@ -426,7 +426,7 @@ rulesetContent:
     ai-readiness-schema-property-type:
       description: All schema properties must have an explicit type
       message: "Schema property '{{property}}' must have an explicit type defined to prevent ambiguous AI interpretation"
-      severity: error
+      severity: warn
       given: $.components.schemas[*].properties[*]
       then:
         function: aiReadinessSchemaTyping
@@ -436,7 +436,7 @@ rulesetContent:
     ai-readiness-parameter-schema-type:
       description: All parameter schemas must have explicit types
       message: "Parameter schema at '{{property}}' must have an explicit type"
-      severity: error
+      severity: warn
       given: $.paths[*][*].parameters[*].schema
       then:
         function: aiReadinessSchemaTyping
@@ -455,7 +455,7 @@ rulesetContent:
     ai-readiness-schema-no-empty-object:
       description: Object schemas must define their structure — empty type:object is ambiguous
       message: "Schema '{{property}}' is typed as 'object' but declares no properties — define properties, additionalProperties, or a composition keyword"
-      severity: error
+      severity: warn
       given: $.components.schemas[*]
       then:
         function: aiReadinessSchemaNoEmptyObject
@@ -465,7 +465,7 @@ rulesetContent:
     ai-readiness-schema-property-no-empty-object:
       description: Object-typed properties must define their structure
       message: "Property '{{property}}' is typed as 'object' but declares no properties — empty object types prevent AI agents from constructing valid payloads"
-      severity: error
+      severity: warn
       given: $.components.schemas[*].properties[*]
       then:
         function: aiReadinessSchemaNoEmptyObject
@@ -475,7 +475,7 @@ rulesetContent:
     ai-readiness-array-items-defined:
       description: Array schemas must define their item type
       message: "Array schema '{{property}}' must define an 'items' schema so AI agents understand the element type"
-      severity: error
+      severity: warn
       given: $.components.schemas[*]
       then:
         function: aiReadinessArrayItemsDefined
@@ -485,7 +485,7 @@ rulesetContent:
     ai-readiness-array-property-items-defined:
       description: Array-type properties must define their item schema
       message: "Array property '{{property}}' must define an 'items' schema — untyped arrays are ambiguous for AI agents"
-      severity: error
+      severity: warn
       given: $.components.schemas[*].properties[*]
       then:
         function: aiReadinessArrayItemsDefined
@@ -499,49 +499,45 @@ rulesetContent:
     ai-readiness-error-schema-fields:
       description: Error response schemas must contain structured fields for AI self-correction
       message: "Error schema must define 'message' and 'code' properties so AI agents can interpret and correct failed requests"
-      severity: error
-      given: $.paths[*][*].responses[*].content[*].schema
+      severity: warn
+      given: $.paths[*][*].responses[?(@property >= 400)].content[*].schema
       then:
         function: aiReadinessErrorSchemaStructure
         functionOptions:
           category: errorSemantics
-          responseCodePattern: "^[45][0-9][0-9]$"
           requiredFields: [message, code]
 
     ai-readiness-error-schema-rfc7807:
       description: Error responses should follow RFC 7807 problem detail structure
       message: "Error schema should include 'type', 'title', and 'detail' fields per RFC 7807 for rich AI error semantics"
       severity: warn
-      given: $.paths[*][*].responses[*].content[*].schema
+      given: $.paths[*][*].responses[?(@property >= 400)].content[*].schema
       then:
         function: aiReadinessErrorSchemaStructure
         functionOptions:
           category: errorSemantics
-          responseCodePattern: "^[45][0-9][0-9]$"
           requiredFields: [type, title, detail]
 
     ai-readiness-error-schema-details:
       description: Error schemas should include a details field for additional context
       message: "Error schema should include a 'details' field so AI agents receive contextual information about what failed"
       severity: warn
-      given: $.paths[*][*].responses[*].content[*].schema
+      given: $.paths[*][*].responses[?(@property >= 400)].content[*].schema
       then:
         function: aiReadinessErrorSchemaStructure
         functionOptions:
           category: errorSemantics
-          responseCodePattern: "^[45][0-9][0-9]$"
           requiredFields: [details]
 
     ai-readiness-error-schema-actionable:
       description: Validation error schemas should carry expected and received context for agent self-correction
       message: "422 error schema should include 'expected' or 'received' fields so AI agents can automatically correct malformed requests"
       severity: warn
-      given: $.paths[*][*].responses[*].content[*].schema
+      given: "$.paths[*][*].responses['422'].content[*].schema"
       then:
         function: aiReadinessErrorSchemaAnyFields
         functionOptions:
           category: errorSemantics
-          responseCodes: ['422']
           anyFields: [expected, received]
 
     # ============================================================================
@@ -551,7 +547,7 @@ rulesetContent:
     ai-readiness-429-rate-limit-headers:
       description: Rate-limited responses must include retry guidance headers
       message: "429 response must declare Retry-After or X-RateLimit-* headers so AI agents can back off and retry safely"
-      severity: error
+      severity: warn
       given: "$.paths[*][*].responses['429']"
       then:
         function: aiReadinessRateLimitHeader
@@ -576,7 +572,7 @@ rulesetContent:
       description: List endpoint responses must include pagination metadata
       message: "GET list operation response schema should include pagination metadata (has_more, next_cursor, or total) so AI agents know when to stop paginating"
       severity: warn
-      given: $.paths[*].get.responses[2??].content[*].schema
+      given: $.paths[*].get.responses[?(@property >= 200 && @property < 300)].content[*].schema
       then:
         function: aiReadinessPaginationMeta
         functionOptions:
@@ -589,7 +585,7 @@ rulesetContent:
     ai-readiness-no-interactive-auth:
       description: Security schemes must not use interactive OAuth flows
       message: "Security scheme '{{property}}' uses an interactive OAuth flow (implicit/authorizationCode) — AI agents cannot complete browser-based authentication"
-      severity: error
+      severity: warn
       given: $.components.securitySchemes[*]
       then:
         function: aiReadinessSecurityScheme
