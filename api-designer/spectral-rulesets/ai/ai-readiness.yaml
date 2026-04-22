@@ -44,6 +44,15 @@ rulesetContent:
         field: contact
         function: truthy
 
+    ai-readiness-server-description:
+      description: Server entries should have descriptions
+      message: "Server should have a description (e.g., production, staging) for AI context"
+      severity: info
+      given: $.servers[*]
+      then:
+        field: description
+        function: truthy
+
     # ============================================================================
     # Operation-Level Documentation
     # ============================================================================
@@ -58,6 +67,46 @@ rulesetContent:
         functionOptions:
           field: summary
           category: summaries
+
+    ai-readiness-callback-operation-summary:
+      description: Callback operations should have summaries for AI understanding
+      message: "Callback operation '{{property}}' should have a summary for AI readiness"
+      severity: warn
+      given: $.paths[*][get,post,put,patch,delete,head,options].callbacks[*][*][get,post,put,patch,delete,head,options]
+      then:
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: summary
+          category: summaries
+
+    ai-readiness-webhook-operation-summary:
+      description: Webhook operations should have summaries for AI understanding
+      message: "Webhook operation '{{property}}' should have a summary for AI readiness"
+      severity: warn
+      given: $.webhooks[*][get,post,put,patch,delete,head,options]
+      then:
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          field: summary
+          category: summaries
+
+    ai-readiness-path-item-summary:
+      description: Path items should have summaries to provide route-level context
+      message: "Path item should include a summary for better AI route understanding"
+      severity: info
+      given: $.paths[*]
+      then:
+        field: summary
+        function: truthy
+
+    ai-readiness-path-item-description:
+      description: Path items should have descriptions to provide route-level context
+      message: "Path item should include a description for better AI route understanding"
+      severity: info
+      given: $.paths[*]
+      then:
+        field: description
+        function: truthy
 
     ai-readiness-operation-description:
       description: All operations must have a detailed description
@@ -133,7 +182,40 @@ rulesetContent:
       then:
         function: aiReadinessFieldCoverage
         functionOptions:
-          field: example
+          fields: [example, examples, externalValue]
+          category: examples
+
+    ai-readiness-path-parameter-example:
+      description: Path-level parameters should have examples
+      message: "Path-level parameter '{{value.name}}' should have an example for AI understanding"
+      severity: warn
+      given: $.paths[*].parameters[?(@.in == 'query' || @.in == 'path')]
+      then:
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          fields: [example, examples, externalValue]
+          category: examples
+
+    ai-readiness-parameter-content-example:
+      description: Parameters using content should include examples
+      message: "Parameter '{{value.name}}' content should include an example for AI understanding"
+      severity: warn
+      given: $.paths[*][*].parameters[?(@.content)].content[*]
+      then:
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          fields: [example, examples]
+          category: examples
+
+    ai-readiness-path-parameter-content-example:
+      description: Path-level parameters using content should include examples
+      message: "Path-level parameter content should include an example for AI understanding"
+      severity: warn
+      given: $.paths[*].parameters[?(@.content)].content[*]
+      then:
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          fields: [example, examples]
           category: examples
 
     # ============================================================================
@@ -159,7 +241,7 @@ rulesetContent:
       then:
         function: aiReadinessFieldCoverage
         functionOptions:
-          fields: [example, examples]
+          fields: [example, examples, externalValue]
           category: examples
 
     ai-readiness-request-body-schema-typed:
@@ -201,6 +283,17 @@ rulesetContent:
       message: "Response should have an example for AI understanding"
       severity: warn
       given: $.paths[*][*].responses[?(@property >= 200 && @property < 300)].content[*]
+      then:
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          fields: [example, examples, externalValue]
+          category: examples
+
+    ai-readiness-response-header-example:
+      description: Response headers should have examples
+      message: "Response header '{{property}}' should include an example for AI understanding"
+      severity: warn
+      given: $.paths[*][*].responses[*].headers[*]
       then:
         function: aiReadinessFieldCoverage
         functionOptions:
@@ -406,7 +499,18 @@ rulesetContent:
       then:
         function: aiReadinessFieldCoverage
         functionOptions:
-          field: example
+          fields: [example, examples, externalValue]
+          category: examples
+
+    ai-readiness-component-header-example:
+      description: Component headers should have examples
+      message: "Header '{{property}}' should include an example for AI understanding"
+      severity: warn
+      given: $.components.headers[*]
+      then:
+        function: aiReadinessFieldCoverage
+        functionOptions:
+          fields: [example, examples]
           category: examples
 
     ai-readiness-schema-enum-description:
