@@ -198,6 +198,8 @@ rulesetContent:
           },
         ```
       message: Contact object should have "url".
+      fixSuggestion: >-
+        In `info.contact`, add a `url` string pointing to your product or support website so consumers know where to get help.
 
     contact-email:
       given:
@@ -219,6 +221,8 @@ rulesetContent:
           },
         ```
       message: Contact object should have "email"
+      fixSuggestion: >-
+        Set `info.contact.email` to a monitored address (e.g. api-support@company.com) for security and integration questions.
 
     info-contact:
       given:
@@ -245,6 +249,8 @@ rulesetContent:
         }
         ```
       message: Info object should have "contact" object.
+      fixSuggestion: >-
+        Add an `info.contact` object with at least `name` and a reachable `email` or `url` so the API is attributable and supportable.
 
     info-description:
       given:
@@ -267,6 +273,8 @@ rulesetContent:
         }
         ```
       message: Info object should have "description" object.
+      fixSuggestion: >-
+        Write a clear `info.description` summarizing the API’s purpose, scope, and any auth or base-URL expectations.
 
     info-license:
       given:
@@ -292,6 +300,8 @@ rulesetContent:
         }
         ```
       message: Info object should have "license" object.
+      fixSuggestion: >-
+        Add `info.license` with your SPDX or license name, and include `url` to the full license text when possible.
 
     license-url:
       given:
@@ -314,6 +324,8 @@ rulesetContent:
         }
         ```
       message: License object should include "url".
+      fixSuggestion: >-
+        Set `info.license.url` to the canonical license page (e.g. Creative Commons or Apache) matching `license.name`.
 
     no-eval-in-markdown:
       given:
@@ -338,6 +350,8 @@ rulesetContent:
         }
         ```
       message: Markdown descriptions must not have "eval(".
+      fixSuggestion: >-
+        Remove any `eval(` usage from descriptions; document behavior in static text, diagrams, or links instead.
 
     no-script-tags-in-markdown:
       given:
@@ -361,6 +375,8 @@ rulesetContent:
         }
         ```
       message: Markdown descriptions must not have "<script>" tags.
+      fixSuggestion: >-
+        Delete `<script>` tags and unsafe HTML from markdown; use code fences, links, or static examples only.
 
     openapi-tags-alphabetical:
       given:
@@ -404,6 +420,8 @@ rulesetContent:
         }
         ```
       message: OpenAPI object should have alphabetical "tags".
+      fixSuggestion: >-
+        Sort the global `tags` array by `name` (case-sensitive or locale as your style guide requires) for predictable navigation in docs and tools.
 
     openapi-tags:
       given:
@@ -434,6 +452,8 @@ rulesetContent:
         }
         ```
       message: OpenAPI object should have non-empty "tags" array.
+      fixSuggestion: >-
+        Add at least one top-level `tags` entry in `info` with `name` (and ideally `description`) to group operations in documentation.
 
     operation-description:
       given:
@@ -455,6 +475,8 @@ rulesetContent:
         }
         ```
       message: Operation "description" should be present and non-empty string.
+      fixSuggestion: >-
+        Add a non-empty `description` to each operation summarizing behavior, side effects, idempotency, and error cases.
 
     operation-operationId:
       given:
@@ -477,6 +499,8 @@ rulesetContent:
         }
         ```
       message: Operation should have "operationId".
+      fixSuggestion: >-
+        Assign a unique, stable `operationId` per operation (e.g. `getUserById`) for codegen and client method names.
 
     operation-operationId-valid-in-url:
       given:
@@ -518,6 +542,8 @@ rulesetContent:
         }
         ```
       message: OperationId should not have characters that are invalid when used in URL.
+      fixSuggestion: >-
+        Restrict `operationId` to URL-safe characters: letters, digits, hyphen, underscore, and unreserved URL symbols per your style guide; remove spaces and `|`.
 
     operation-tags:
       given:
@@ -544,6 +570,8 @@ rulesetContent:
         }
         ```
       message: Operation should have non-empty "tags" array.
+      fixSuggestion: >-
+        Add a `tags` array to each operation referencing global tag names (e.g. `["Users"]`) so UIs and SDKs can group endpoints.
 
     path-declarations-must-exist:
       given:
@@ -565,6 +593,8 @@ rulesetContent:
 
         `/users/{userId}`
       message: Path parameter declarations must not be empty, e.g., "/given/{}" is invalid.
+      fixSuggestion: >-
+        Name every path parameter (e.g. `/users/{userId}`) and ensure a matching `parameters` entry with `in: path` and `required: true`.
 
 
     paths-no-trailing-slash:
@@ -602,6 +632,9 @@ rulesetContent:
           }
         }
         ```
+      message: Paths must not end with a trailing slash.
+      fixSuggestion: >-
+        Remove the trailing `/` from `paths` keys (e.g. use `/users` instead of `/users/`) so only one canonical path exists.
 
     contact-name:
       given:
@@ -623,6 +656,8 @@ rulesetContent:
         }
         ```
       message: Contact object should have "name".
+      fixSuggestion: >-
+        Set `info.contact.name` to your organization or API team name as shown to API consumers.
 
     path-not-include-query:
       given:
@@ -663,6 +698,8 @@ rulesetContent:
         }
         ```
       message: Path should not include query string.
+      fixSuggestion: >-
+        Move query parameters out of the path string; use a clean path (e.g. `/users`) and define filters with `in: query` parameters.
 
     tag-description:
       given:
@@ -687,6 +724,8 @@ rulesetContent:
         }
         ```
       message: Tag object should have "description".
+      fixSuggestion: >-
+        For each entry in the root `tags` array, add a `description` explaining what endpoints belong in that group.
 
     parameter-description:
       given:
@@ -715,6 +754,8 @@ rulesetContent:
         }
         ```
       message: Parameter objects must have "description".
+      fixSuggestion: >-
+        Add a non-empty `description` to every parameter (path, query, header) describing format, units, and defaults.
 
     oas3-examples-value-or-externalValue:
       given:
@@ -767,6 +808,8 @@ rulesetContent:
         }
         ```
       message: Examples must have either "value" or "externalValue" field.
+      fixSuggestion: >-
+        For each OAS3 example, provide either an inline `value` or a pointer `externalValue`, not both; remove the redundant field.
       formats:
         - oas3
 
@@ -807,6 +850,8 @@ rulesetContent:
                 type: array
         ```
       message: 'Schemas with "type: array", require a sibling "items" field'
+      fixSuggestion: >-
+        Add an `items` schema under every `type: array` (and nest `items` for arrays of arrays) so element types are unambiguous.
 
     path-parameters-on-path-only:
       given:
@@ -859,6 +904,8 @@ rulesetContent:
         }
         ```
       message: Path parameters should be defined on the path level.
+      fixSuggestion: >-
+        Move `in: path` parameters from individual operations to the path item’s `parameters` so all methods share the same path template.
 
     paths-no-query-params:
       given:
@@ -897,6 +944,8 @@ rulesetContent:
         }
         ```
       message: Paths should not have query parameters in them. They should be defined separately in the OpenAPI.
+      fixSuggestion: >-
+        Remove `?` and query-like segments from `paths` keys; model query fields with `parameters` using `in: query`.
 
     path-casing:
       given:
@@ -932,6 +981,8 @@ rulesetContent:
         }
         ```
       message: Paths must be kebab-case
+      fixSuggestion: >-
+        Use lowercase segments with hyphens between words (e.g. `/user-profiles` not `/userProfiles` or `/user_profiles`).
 
     resource-names-plural:
       given:
@@ -965,6 +1016,8 @@ rulesetContent:
         }
         ```
       message: Resource names should generally be plural
+      fixSuggestion: >-
+        Prefer plural collection paths (e.g. `/users`, `/orders`) unless the path is a singleton resource clearly named in your API style guide.
 
     paths-no-http-verbs:
       given:
@@ -1011,6 +1064,8 @@ rulesetContent:
 
         ```
       message: Paths must not have HTTP verbs in them
+      fixSuggestion: >-
+        Encode the action in the HTTP method and noun-based resources (e.g. `GET /users` not `/getUsers`); rename path segments to remove verb words.
 
     paths-avoid-special-characters:
       given:
@@ -1057,3 +1112,5 @@ rulesetContent:
 
         ```
       message: Avoid using special characters in paths
+      fixSuggestion: >-
+        Use simple path segments; avoid `& $ + , ; = ? @ %` in segment names—split concepts into extra path parts or query parameters instead.
