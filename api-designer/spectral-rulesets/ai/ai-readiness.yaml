@@ -161,15 +161,15 @@ rulesetContent:
         functionOptions:
           allowedStyles: [camel, snake, kebab, pascal]
 
-      ai-readiness-operation-id-unique:
-        description: operationIds must be unique across all operations
-        message: "operationId values must be unique across the API for reliable AI references"
-        fixSuggestion: >-
-          Rename duplicate `operationId` values so each operation has one unique identifier across paths and methods.
-        severity: warn
-        given: $
-        then:
-          function: oasOpIdUnique
+    ai-readiness-operation-id-unique:
+      description: operationIds must be unique across all operations
+      message: "operationId values must be unique across the API for reliable AI references"
+      fixSuggestion: >-
+        Rename duplicate `operationId` values so each operation has one unique identifier across paths and methods.
+      severity: warn
+      given: $
+      then:
+        function: oasOpIdUnique
 
     ai-readiness-operation-tags:
       description: All operations should have tags for AI categorization
