@@ -33,6 +33,9 @@ rulesetContent:
       message: >-
         Security scheme uses HTTP Basic. Use a more secure authentication
         method, like OAuth 2, or OpenID.
+      # Optional: shown in API Designer dashboards as actionable guidance (WSO2 extension)
+      fixSuggestion: >-
+        Replace HTTP Basic with OAuth 2.0 (e.g. client credentials or authorization code) or OpenID Connect; document flows in your securitySchemes and avoid sending credentials in plain headers.
       resolved: true
       formats:
         - oas2
