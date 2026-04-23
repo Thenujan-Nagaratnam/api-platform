@@ -169,7 +169,9 @@ rulesetContent:
       severity: warn
       given: $
       then:
-        function: oasOpIdUnique
+        function: aiReadinessOperationIdUnique
+        functionOptions:
+          category: operationIds
 
     ai-readiness-operation-tags:
       description: All operations should have tags for AI categorization
