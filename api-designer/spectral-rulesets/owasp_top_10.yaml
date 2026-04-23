@@ -200,6 +200,11 @@ rulesetContent:
         also ensures your API/framework/gateway actually has rate limiting set
         up.
       message: 'Operation is missing rate limiting response in {{property}}.'
+      fixSuggestion: >-
+        For each operation under `paths`, add a `429` response with a `content` entry
+        (e.g. `application/json`) and a schema describing the rate-limit / retry body.
+        Document retry semantics and reference gateway rate limits so clients and tests
+        can rely on a stable contract.
       resolved: true
       formats:
         - oas2
