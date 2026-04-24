@@ -1,4 +1,20 @@
 extends: [['spectral:oas', off]]
+functionsDir: ./functions
+functions:
+  - aiReadinessFieldCoverage
+  - aiReadinessErrorResponseCoverage
+  - aiReadinessSchemaTyping
+  - aiReadinessErrorSchemaStructure
+  - aiReadinessRateLimitHeader
+  - aiReadinessPaginationParams
+  - aiReadinessPaginationMeta
+  - aiReadinessSecurityScheme
+  - aiReadinessIdempotency
+  - aiReadinessSchemaNoEmptyObject
+  - aiReadinessArrayItemsDefined
+  - aiReadinessOperationIdConsistency
+  - aiReadinessOperationIdUnique
+  - aiReadinessSchemaHasConstraints
 rules:
   # ============================================================================
   # API-Level Documentation
