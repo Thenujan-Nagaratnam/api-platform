@@ -1,5 +1,21 @@
 extends: [[spectral:oas, off]]
 
+functions:
+  - aiReadinessFieldCoverage
+  - aiReadinessOperationIdConsistency
+  - aiReadinessOperationIdUnique
+  - aiReadinessSchemaTyping
+  - aiReadinessErrorSchemaStructure
+  - aiReadinessPaginationParams
+  - aiReadinessPaginationMeta
+  - aiReadinessRateLimitHeader
+  - aiReadinessSecurityScheme
+  - aiReadinessIdempotency
+  - aiReadinessArrayItemsDefined
+  - aiReadinessSchemaHasConstraints
+  - aiReadinessSchemaNoEmptyObject
+  - aiReadinessErrorResponseCoverage
+
 aliases:
 
   # ── Core document root ───────────────────────────────────────────────────────
