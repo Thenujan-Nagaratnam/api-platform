@@ -1,4 +1,4 @@
-name: guardrails-ai-guardrail
+name: guardrails-ai
 version: v1.0.0
 description: |
   Validate LLM request and/or response content against a pre-configured guard on a
@@ -92,18 +92,18 @@ systemParameters:
       description: |
         Base URL of the Guardrails AI server (e.g., "http://guardrails-server:8000").
       minLength: 1
-      "wso2/defaultValue": "${config.guardrails_ai_endpoint}"
+      "wso2/defaultValue": "${config.guardrails_ai.endpoint}"
     apiKey:
       type: string
       description: |
         Bearer token for authenticating with the Guardrails AI server.
         Leave empty if the server does not require authentication.
-      "wso2/defaultValue": "${config.guardrails_ai_api_key}"
+      "wso2/defaultValue": "${config.guardrails_ai.api_key}"
     requestTimeout:
       type: number
       description: |
         HTTP request timeout in seconds for calls to the Guardrails AI server.
       default: 10
-      "wso2/defaultValue": "${config.guardrails_ai_request_timeout}"
+      "wso2/defaultValue": "${config.guardrails_ai.request_timeout}"
   required:
     - guardrailsApiEndpoint

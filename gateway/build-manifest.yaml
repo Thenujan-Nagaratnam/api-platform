@@ -12,6 +12,9 @@ policies:
     - name: aws-bedrock-guardrail
       version: v1.0.2
       gomodule: github.com/wso2/gateway-controllers/policies/aws-bedrock-guardrail@v1
+    - name: guardrails-ai
+      version: v1.0.0
+      filePath: ./dev-policies/guardrails-ai
     - name: azure-content-safety-content-moderation
       version: v1.0.2
       gomodule: github.com/wso2/gateway-controllers/policies/azure-content-safety-content-moderation@v1
