@@ -26,14 +26,6 @@ func stringPtr(s string) *string {
 	return &s
 }
 
-// oauth2ClientAuthMethodPtr returns a pointer to the given
-// LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod value, for use in
-// oauth2 upstream auth test fixtures (client_secret_basic/client_secret_post).
-func oauth2ClientAuthMethodPtr(v string) *management.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod {
-	m := management.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod(v)
-	return &m
-}
-
 // oauth2GrantTypePtr returns a pointer to the given
 // LLMProviderConfigDataUpstreamAuthOauth2GrantType value, for use in oauth2
 // upstream auth test fixtures (client_credentials/password).

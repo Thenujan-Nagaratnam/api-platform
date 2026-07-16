@@ -80,6 +80,18 @@ services:
     networks:
       - gateway-network
 
+  # Shared Redis instance for policies that cache/share state across
+  # gateway-runtime replicas (e.g. advanced-ratelimit, oauth2's token cache).
+  # No password by default, matching the "just works" localhost:6379 default
+  # those policies fall back to when systemParameters.redis isn't configured.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - gateway-network
+    profiles: ["redis"]
+
   jaeger:
     image: jaegertracing/all-in-one:1.76.0
     environment:

@@ -448,9 +448,6 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 			if upstream.Auth.Oauth2ClientSecret == nil || *upstream.Auth.Oauth2ClientSecret == "" {
 				return nil, fmt.Errorf("upstream.auth.oauth2ClientSecret is required")
 			}
-			if upstream.Auth.Oauth2ClientAuthMethod == nil || *upstream.Auth.Oauth2ClientAuthMethod == "" {
-				return nil, fmt.Errorf("upstream.auth.oauth2ClientAuthMethod is required")
-			}
 			// grantType defaults to client_credentials when omitted, and is
 			// forwarded explicitly to the policy rather than left for its own
 			// schema default to apply - so the value validated here is
@@ -478,14 +475,13 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 				password = *upstream.Auth.Oauth2Password
 			}
 			params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
-				GrantType:        grantType,
-				TokenEndpoint:    *upstream.Auth.Oauth2TokenEndpoint,
-				ClientID:         *upstream.Auth.Oauth2ClientId,
-				ClientSecret:     *upstream.Auth.Oauth2ClientSecret,
-				Username:         username,
-				Password:         password,
-				Scope:            scope,
-				ClientAuthMethod: string(*upstream.Auth.Oauth2ClientAuthMethod),
+				GrantType:     grantType,
+				TokenEndpoint: *upstream.Auth.Oauth2TokenEndpoint,
+				ClientID:      *upstream.Auth.Oauth2ClientId,
+				ClientSecret:  *upstream.Auth.Oauth2ClientSecret,
+				Username:      username,
+				Password:      password,
+				Scope:         scope,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
@@ -820,37 +816,35 @@ func GetUpstreamAuthApikeyPolicyParams(header, value string) (map[string]interfa
 // OAuth2UpstreamAuthParams bundles the fields needed to render the oauth2
 // policy's params. A struct rather than positional args now that the set
 // has grown with grantType-conditional fields (Username/Password apply only
-// to the password grant) — positional args for eight mostly-string fields
+// to the password grant) — positional args for seven mostly-string fields
 // invite mixed-up-order bugs.
 type OAuth2UpstreamAuthParams struct {
-	GrantType        string
-	TokenEndpoint    string
-	ClientID         string
-	ClientSecret     string
-	Username         string
-	Password         string
-	Scope            string
-	ClientAuthMethod string
+	GrantType     string
+	TokenEndpoint string
+	ClientID      string
+	ClientSecret  string
+	Username      string
+	Password      string
+	Scope         string
 }
 
 // GetUpstreamAuthOAuth2PolicyParams renders the policy params for the oauth2
 // policy. Built directly as a map rather than via an fmt.Sprintf'd YAML
-// string template like GetUpstreamAuthApikeyPolicyParams — with up to eight
-// fields, several optional, string-templating risks both empty-field YAML
-// breakage and unescaped special characters in credential values. Optional
-// fields (scope, and username/password when the grant isn't password) are
-// omitted from the params entirely rather than sent as empty strings,
-// matching the oauth2 policy's own optional-field handling. grantType is
-// always forwarded explicitly rather than relying on the policy's own
-// schema default, so the value that was actually validated here is exactly
-// what the policy receives.
+// string template like GetUpstreamAuthApikeyPolicyParams — with several
+// optional fields, string-templating risks both empty-field YAML breakage
+// and unescaped special characters in credential values. Optional fields
+// (scope, and username/password when the grant isn't password) are omitted
+// from the params entirely rather than sent as empty strings, matching the
+// oauth2 policy's own optional-field handling. grantType is always
+// forwarded explicitly rather than relying on the policy's own schema
+// default, so the value that was actually validated here is exactly what
+// the policy receives.
 func GetUpstreamAuthOAuth2PolicyParams(p OAuth2UpstreamAuthParams) (map[string]interface{}, error) {
 	m := map[string]interface{}{
-		"grantType":        p.GrantType,
-		"tokenEndpoint":    p.TokenEndpoint,
-		"clientId":         p.ClientID,
-		"clientSecret":     p.ClientSecret,
-		"clientAuthMethod": p.ClientAuthMethod,
+		"grantType":     p.GrantType,
+		"tokenEndpoint": p.TokenEndpoint,
+		"clientId":      p.ClientID,
+		"clientSecret":  p.ClientSecret,
 	}
 	if p.Scope != "" {
 		m["scope"] = p.Scope
@@ -899,9 +893,6 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 		if auth.Oauth2ClientSecret == nil || *auth.Oauth2ClientSecret == "" {
 			return nil, fmt.Errorf("%s.oauth2ClientSecret is required", field)
 		}
-		if auth.Oauth2ClientAuthMethod == nil || *auth.Oauth2ClientAuthMethod == "" {
-			return nil, fmt.Errorf("%s.oauth2ClientAuthMethod is required", field)
-		}
 		// See the sibling logic in transformProvider for why grantType
 		// defaults here and is forwarded explicitly to the policy.
 		grantType := string(api.LLMUpstreamAuthOauth2GrantTypeClientCredentials)
@@ -927,14 +918,13 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 			password = *auth.Oauth2Password
 		}
 		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
-			GrantType:        grantType,
-			TokenEndpoint:    *auth.Oauth2TokenEndpoint,
-			ClientID:         *auth.Oauth2ClientId,
-			ClientSecret:     *auth.Oauth2ClientSecret,
-			Username:         username,
-			Password:         password,
-			Scope:            scope,
-			ClientAuthMethod: string(*auth.Oauth2ClientAuthMethod),
+			GrantType:     grantType,
+			TokenEndpoint: *auth.Oauth2TokenEndpoint,
+			ClientID:      *auth.Oauth2ClientId,
+			ClientSecret:  *auth.Oauth2ClientSecret,
+			Username:      username,
+			Password:      password,
+			Scope:         scope,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to build upstream auth params: %w", err)

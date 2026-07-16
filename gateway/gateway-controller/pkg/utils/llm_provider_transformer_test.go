@@ -191,7 +191,6 @@ func TestTransform_FullProvider(t *testing.T) {
 				Url: stringPtr("https://api.openai.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -486,7 +485,6 @@ func TestTransform_ApiKeyAuth(t *testing.T) {
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -554,7 +552,6 @@ func TestTransform_UnsupportedAuthType(t *testing.T) {
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1687,7 +1684,6 @@ func TestTransform_AuthWithAllowAll(t *testing.T) {
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -2239,7 +2235,6 @@ func TestTransform_UpstreamAuth_Plus_APILevelPolicy_AllowAll(t *testing.T) {
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -2336,7 +2331,6 @@ func TestTransform_UpstreamAuth_Plus_APILevelPolicy_DenyAll(t *testing.T) {
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -3502,7 +3496,6 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_AllowAll(t *testing.T)
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -3640,7 +3633,6 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_DenyAll(t *testing.T) 
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -3985,7 +3977,6 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -4223,7 +4214,6 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_DenyAll(
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -5453,7 +5443,6 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 				Url: stringPtr("https://api.openai.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -5770,7 +5759,6 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 				Url: stringPtr("https://api.openai.com"),
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`

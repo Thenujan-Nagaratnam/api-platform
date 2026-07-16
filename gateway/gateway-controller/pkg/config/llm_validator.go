@@ -506,11 +506,11 @@ func (v *LLMValidator) validateUpstreamWithAuth(fieldPrefix string,
 			}
 		}
 
-		// If type is oauth2, the token endpoint, client ID, client secret,
-		// and client auth method are all required. grantType is optional
-		// (defaults to client_credentials, the only grant currently
-		// implemented) but if set must be a recognized value, so a typo
-		// fails clearly rather than being silently ignored.
+		// If type is oauth2, the token endpoint, client ID, and client
+		// secret are all required. grantType is optional (defaults to
+		// client_credentials, the only grant currently implemented) but if
+		// set must be a recognized value, so a typo fails clearly rather
+		// than being silently ignored.
 		if auth.Type == "oauth2" {
 			if auth.Oauth2TokenEndpoint == nil || *auth.Oauth2TokenEndpoint == "" {
 				errors = append(errors, ValidationError{
@@ -528,12 +528,6 @@ func (v *LLMValidator) validateUpstreamWithAuth(fieldPrefix string,
 				errors = append(errors, ValidationError{
 					Field:   fmt.Sprintf("%s.auth.oauth2ClientSecret", fieldPrefix),
 					Message: "Auth oauth2ClientSecret is required when oauth2 auth type is set",
-				})
-			}
-			if auth.Oauth2ClientAuthMethod == nil || *auth.Oauth2ClientAuthMethod == "" {
-				errors = append(errors, ValidationError{
-					Field:   fmt.Sprintf("%s.auth.oauth2ClientAuthMethod", fieldPrefix),
-					Message: "Auth oauth2ClientAuthMethod is required when oauth2 auth type is set",
 				})
 			}
 			grantType := "client_credentials"
@@ -799,12 +793,6 @@ func (v *LLMValidator) validateLLMUpstreamAuth(fieldPrefix string, auth *api.LLM
 			errors = append(errors, ValidationError{
 				Field:   fieldPrefix + ".oauth2ClientSecret",
 				Message: "Auth oauth2ClientSecret is required when oauth2 auth type is set",
-			})
-		}
-		if auth.Oauth2ClientAuthMethod == nil || *auth.Oauth2ClientAuthMethod == "" {
-			errors = append(errors, ValidationError{
-				Field:   fieldPrefix + ".oauth2ClientAuthMethod",
-				Message: "Auth oauth2ClientAuthMethod is required when oauth2 auth type is set",
 			})
 		}
 		grantType := api.LLMUpstreamAuthOauth2GrantTypeClientCredentials

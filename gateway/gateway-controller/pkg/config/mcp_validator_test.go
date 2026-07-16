@@ -615,7 +615,6 @@ func TestMCPValidator_ValidateUpstreamAuth(t *testing.T) {
 			if tt.auth != nil {
 				upstream.Auth = &struct {
 					Header                 *string                                                   `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientAuthMethod *api.MCPProxyConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                   `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                   `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.MCPProxyConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
