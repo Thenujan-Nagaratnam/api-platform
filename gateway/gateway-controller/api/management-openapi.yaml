@@ -4353,11 +4353,54 @@ components:
           properties:
             type:
               type: string
-              enum: [ api-key ]
+              enum: [ api-key, oauth2 ]
             header:
               type: string
+              description: HTTP header to set on outbound requests. Applies when type is api-key.
             value:
               type: string
+              description: Credential value. Applies when type is api-key.
+            oauth2GrantType:
+              type: string
+              description: >
+                OAuth2 grant type. "client_credentials" (RFC 6749 4.4) is the
+                standard machine-to-machine grant and should be preferred.
+                "password" (RFC 6749 4.3, Resource Owner Password
+                Credentials) is supported for legacy identity providers only
+                - it requires the gateway to handle the resource owner's raw
+                username/password directly, which current OAuth2 security
+                guidance discourages for new integrations. Defaults to
+                client_credentials when type is oauth2 and this field is
+                omitted.
+              enum: [ client_credentials, password ]
+              default: client_credentials
+            oauth2TokenEndpoint:
+              type: string
+              description: OAuth2 token endpoint URL. Required when type is oauth2.
+            oauth2ClientId:
+              type: string
+              description: OAuth2 client ID. Required when type is oauth2.
+            oauth2ClientSecret:
+              type: string
+              description: OAuth2 client secret. Required when type is oauth2.
+            oauth2Username:
+              type: string
+              description: Resource owner username. Required when oauth2GrantType is password; unused otherwise.
+            oauth2Password:
+              type: string
+              description: Resource owner password, paired with oauth2Username. Required when oauth2GrantType is password; unused otherwise.
+            oauth2Scope:
+              type: string
+              description: Optional space-separated list of scopes requested from the token endpoint. Applies when type is oauth2.
+            oauth2ClientAuthMethod:
+              type: string
+              description: >
+                Selects how the client ID/secret are presented to the token endpoint.
+                Required when type is oauth2 - there is no default,
+                since identity providers disagree on convention (e.g. Azure AD requires
+                client_secret_post) and a wrong silent default would fail at request time
+                instead of at configuration time.
+              enum: [ client_secret_basic, client_secret_post ]
 
     LLMUpstreamAuth:
       type: object
@@ -4366,11 +4409,53 @@ components:
       properties:
         type:
           type: string
-          enum: [ api-key ]
+          enum: [ api-key, oauth2 ]
         header:
           type: string
+          description: HTTP header to set on outbound requests. Applies when type is api-key.
         value:
           type: string
+          description: Credential value. Applies when type is api-key.
+        oauth2GrantType:
+          type: string
+          description: >
+            OAuth2 grant type. "client_credentials" (RFC 6749 4.4) is the
+            standard machine-to-machine grant and should be preferred.
+            "password" (RFC 6749 4.3, Resource Owner Password Credentials)
+            is supported for legacy identity providers only - it requires
+            the gateway to handle the resource owner's raw username/password
+            directly, which current OAuth2 security guidance discourages for
+            new integrations. Defaults to client_credentials when type is
+            oauth2 and this field is omitted.
+          enum: [ client_credentials, password ]
+          default: client_credentials
+        oauth2TokenEndpoint:
+          type: string
+          description: OAuth2 token endpoint URL. Required when type is oauth2.
+        oauth2ClientId:
+          type: string
+          description: OAuth2 client ID. Required when type is oauth2.
+        oauth2ClientSecret:
+          type: string
+          description: OAuth2 client secret. Required when type is oauth2.
+        oauth2Username:
+          type: string
+          description: Resource owner username. Required when oauth2GrantType is password; unused otherwise.
+        oauth2Password:
+          type: string
+          description: Resource owner password, paired with oauth2Username. Required when oauth2GrantType is password; unused otherwise.
+        oauth2Scope:
+          type: string
+          description: Optional space-separated list of scopes requested from the token endpoint. Applies when type is oauth2.
+        oauth2ClientAuthMethod:
+          type: string
+          description: >
+            Selects how the client ID/secret are presented to the token endpoint.
+            Required when type is oauth2 - there is no default,
+            since identity providers disagree on convention (e.g. Azure AD requires
+            client_secret_post) and a wrong silent default would fail at request time
+            instead of at configuration time.
+          enum: [ client_secret_basic, client_secret_post ]
 
     LLMProxyProvider:
       type: object

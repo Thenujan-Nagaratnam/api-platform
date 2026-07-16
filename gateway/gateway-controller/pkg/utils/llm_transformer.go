@@ -438,6 +438,66 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 				Name:    constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME,
 				Version: policyVersion, Params: &params}
 			upstreamAuthPolicy = &mh
+		case api.LLMProviderConfigDataUpstreamAuthTypeOauth2:
+			if upstream.Auth.Oauth2TokenEndpoint == nil || *upstream.Auth.Oauth2TokenEndpoint == "" {
+				return nil, fmt.Errorf("upstream.auth.oauth2TokenEndpoint is required")
+			}
+			if upstream.Auth.Oauth2ClientId == nil || *upstream.Auth.Oauth2ClientId == "" {
+				return nil, fmt.Errorf("upstream.auth.oauth2ClientId is required")
+			}
+			if upstream.Auth.Oauth2ClientSecret == nil || *upstream.Auth.Oauth2ClientSecret == "" {
+				return nil, fmt.Errorf("upstream.auth.oauth2ClientSecret is required")
+			}
+			if upstream.Auth.Oauth2ClientAuthMethod == nil || *upstream.Auth.Oauth2ClientAuthMethod == "" {
+				return nil, fmt.Errorf("upstream.auth.oauth2ClientAuthMethod is required")
+			}
+			// grantType defaults to client_credentials when omitted, and is
+			// forwarded explicitly to the policy rather than left for its own
+			// schema default to apply - so the value validated here is
+			// exactly what the policy receives.
+			grantType := string(api.LLMProviderConfigDataUpstreamAuthOauth2GrantTypeClientCredentials)
+			if upstream.Auth.Oauth2GrantType != nil && *upstream.Auth.Oauth2GrantType != "" {
+				grantType = string(*upstream.Auth.Oauth2GrantType)
+			}
+			if grantType != string(api.LLMProviderConfigDataUpstreamAuthOauth2GrantTypeClientCredentials) &&
+				grantType != string(api.LLMProviderConfigDataUpstreamAuthOauth2GrantTypePassword) {
+				return nil, fmt.Errorf("upstream.auth.oauth2GrantType must be one of 'client_credentials', 'password'")
+			}
+			var scope, username, password string
+			if upstream.Auth.Oauth2Scope != nil {
+				scope = *upstream.Auth.Oauth2Scope
+			}
+			if grantType == string(api.LLMProviderConfigDataUpstreamAuthOauth2GrantTypePassword) {
+				if upstream.Auth.Oauth2Username == nil || *upstream.Auth.Oauth2Username == "" {
+					return nil, fmt.Errorf("upstream.auth.oauth2Username is required when oauth2GrantType is password")
+				}
+				if upstream.Auth.Oauth2Password == nil || *upstream.Auth.Oauth2Password == "" {
+					return nil, fmt.Errorf("upstream.auth.oauth2Password is required when oauth2GrantType is password")
+				}
+				username = *upstream.Auth.Oauth2Username
+				password = *upstream.Auth.Oauth2Password
+			}
+			params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
+				GrantType:        grantType,
+				TokenEndpoint:    *upstream.Auth.Oauth2TokenEndpoint,
+				ClientID:         *upstream.Auth.Oauth2ClientId,
+				ClientSecret:     *upstream.Auth.Oauth2ClientSecret,
+				Username:         username,
+				Password:         password,
+				Scope:            scope,
+				ClientAuthMethod: string(*upstream.Auth.Oauth2ClientAuthMethod),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
+			}
+			policyVersion, err := t.resolvePolicyVersion(constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME)
+			if err != nil {
+				return nil, err
+			}
+			mh := api.Policy{
+				Name:    constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME,
+				Version: policyVersion, Params: &params}
+			upstreamAuthPolicy = &mh
 		default:
 			return nil, fmt.Errorf("unsupported upstream auth type: %s", upstream.Auth.Type)
 		}
@@ -757,6 +817,53 @@ func GetUpstreamAuthApikeyPolicyParams(header, value string) (map[string]interfa
 	return m, nil
 }
 
+// OAuth2UpstreamAuthParams bundles the fields needed to render the oauth2
+// policy's params. A struct rather than positional args now that the set
+// has grown with grantType-conditional fields (Username/Password apply only
+// to the password grant) — positional args for eight mostly-string fields
+// invite mixed-up-order bugs.
+type OAuth2UpstreamAuthParams struct {
+	GrantType        string
+	TokenEndpoint    string
+	ClientID         string
+	ClientSecret     string
+	Username         string
+	Password         string
+	Scope            string
+	ClientAuthMethod string
+}
+
+// GetUpstreamAuthOAuth2PolicyParams renders the policy params for the oauth2
+// policy. Built directly as a map rather than via an fmt.Sprintf'd YAML
+// string template like GetUpstreamAuthApikeyPolicyParams — with up to eight
+// fields, several optional, string-templating risks both empty-field YAML
+// breakage and unescaped special characters in credential values. Optional
+// fields (scope, and username/password when the grant isn't password) are
+// omitted from the params entirely rather than sent as empty strings,
+// matching the oauth2 policy's own optional-field handling. grantType is
+// always forwarded explicitly rather than relying on the policy's own
+// schema default, so the value that was actually validated here is exactly
+// what the policy receives.
+func GetUpstreamAuthOAuth2PolicyParams(p OAuth2UpstreamAuthParams) (map[string]interface{}, error) {
+	m := map[string]interface{}{
+		"grantType":        p.GrantType,
+		"tokenEndpoint":    p.TokenEndpoint,
+		"clientId":         p.ClientID,
+		"clientSecret":     p.ClientSecret,
+		"clientAuthMethod": p.ClientAuthMethod,
+	}
+	if p.Scope != "" {
+		m["scope"] = p.Scope
+	}
+	if p.Username != "" {
+		m["username"] = p.Username
+	}
+	if p.Password != "" {
+		m["password"] = p.Password
+	}
+	return m, nil
+}
+
 func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAuth, field string) (*api.Policy, error) {
 	if auth == nil {
 		return nil, nil
@@ -779,6 +886,65 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 		}
 		return &api.Policy{
 			Name:    constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME,
+			Version: policyVersion,
+			Params:  &params,
+		}, nil
+	case api.LLMUpstreamAuthTypeOauth2:
+		if auth.Oauth2TokenEndpoint == nil || *auth.Oauth2TokenEndpoint == "" {
+			return nil, fmt.Errorf("%s.oauth2TokenEndpoint is required", field)
+		}
+		if auth.Oauth2ClientId == nil || *auth.Oauth2ClientId == "" {
+			return nil, fmt.Errorf("%s.oauth2ClientId is required", field)
+		}
+		if auth.Oauth2ClientSecret == nil || *auth.Oauth2ClientSecret == "" {
+			return nil, fmt.Errorf("%s.oauth2ClientSecret is required", field)
+		}
+		if auth.Oauth2ClientAuthMethod == nil || *auth.Oauth2ClientAuthMethod == "" {
+			return nil, fmt.Errorf("%s.oauth2ClientAuthMethod is required", field)
+		}
+		// See the sibling logic in transformProvider for why grantType
+		// defaults here and is forwarded explicitly to the policy.
+		grantType := string(api.LLMUpstreamAuthOauth2GrantTypeClientCredentials)
+		if auth.Oauth2GrantType != nil && *auth.Oauth2GrantType != "" {
+			grantType = string(*auth.Oauth2GrantType)
+		}
+		if grantType != string(api.LLMUpstreamAuthOauth2GrantTypeClientCredentials) &&
+			grantType != string(api.LLMUpstreamAuthOauth2GrantTypePassword) {
+			return nil, fmt.Errorf("%s.oauth2GrantType must be one of 'client_credentials', 'password'", field)
+		}
+		var scope, username, password string
+		if auth.Oauth2Scope != nil {
+			scope = *auth.Oauth2Scope
+		}
+		if grantType == string(api.LLMUpstreamAuthOauth2GrantTypePassword) {
+			if auth.Oauth2Username == nil || *auth.Oauth2Username == "" {
+				return nil, fmt.Errorf("%s.oauth2Username is required when oauth2GrantType is password", field)
+			}
+			if auth.Oauth2Password == nil || *auth.Oauth2Password == "" {
+				return nil, fmt.Errorf("%s.oauth2Password is required when oauth2GrantType is password", field)
+			}
+			username = *auth.Oauth2Username
+			password = *auth.Oauth2Password
+		}
+		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
+			GrantType:        grantType,
+			TokenEndpoint:    *auth.Oauth2TokenEndpoint,
+			ClientID:         *auth.Oauth2ClientId,
+			ClientSecret:     *auth.Oauth2ClientSecret,
+			Username:         username,
+			Password:         password,
+			Scope:            scope,
+			ClientAuthMethod: string(*auth.Oauth2ClientAuthMethod),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
+		}
+		policyVersion, err := t.resolvePolicyVersion(constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME)
+		if err != nil {
+			return nil, err
+		}
+		return &api.Policy{
+			Name:    constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME,
 			Version: policyVersion,
 			Params:  &params,
 		}, nil

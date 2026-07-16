@@ -483,10 +483,10 @@ func (v *LLMValidator) validateUpstreamWithAuth(fieldPrefix string,
 				Field:   fmt.Sprintf("%s.auth.type", fieldPrefix),
 				Message: "Auth type is required",
 			})
-		} else if auth.Type != "api-key" {
+		} else if auth.Type != "api-key" && auth.Type != "oauth2" {
 			errors = append(errors, ValidationError{
 				Field:   fmt.Sprintf("%s.auth.type", fieldPrefix),
-				Message: "Auth type must be 'api-key'",
+				Message: "Auth type must be 'api-key' or 'oauth2'",
 			})
 		}
 
@@ -503,6 +503,66 @@ func (v *LLMValidator) validateUpstreamWithAuth(fieldPrefix string,
 					Field:   fmt.Sprintf("%s.auth.value", fieldPrefix),
 					Message: "Auth value is required when api-key auth type is set",
 				})
+			}
+		}
+
+		// If type is oauth2, the token endpoint, client ID, client secret,
+		// and client auth method are all required. grantType is optional
+		// (defaults to client_credentials, the only grant currently
+		// implemented) but if set must be a recognized value, so a typo
+		// fails clearly rather than being silently ignored.
+		if auth.Type == "oauth2" {
+			if auth.Oauth2TokenEndpoint == nil || *auth.Oauth2TokenEndpoint == "" {
+				errors = append(errors, ValidationError{
+					Field:   fmt.Sprintf("%s.auth.oauth2TokenEndpoint", fieldPrefix),
+					Message: "Auth oauth2TokenEndpoint is required when oauth2 auth type is set",
+				})
+			}
+			if auth.Oauth2ClientId == nil || *auth.Oauth2ClientId == "" {
+				errors = append(errors, ValidationError{
+					Field:   fmt.Sprintf("%s.auth.oauth2ClientId", fieldPrefix),
+					Message: "Auth oauth2ClientId is required when oauth2 auth type is set",
+				})
+			}
+			if auth.Oauth2ClientSecret == nil || *auth.Oauth2ClientSecret == "" {
+				errors = append(errors, ValidationError{
+					Field:   fmt.Sprintf("%s.auth.oauth2ClientSecret", fieldPrefix),
+					Message: "Auth oauth2ClientSecret is required when oauth2 auth type is set",
+				})
+			}
+			if auth.Oauth2ClientAuthMethod == nil || *auth.Oauth2ClientAuthMethod == "" {
+				errors = append(errors, ValidationError{
+					Field:   fmt.Sprintf("%s.auth.oauth2ClientAuthMethod", fieldPrefix),
+					Message: "Auth oauth2ClientAuthMethod is required when oauth2 auth type is set",
+				})
+			}
+			grantType := "client_credentials"
+			if auth.Oauth2GrantType != nil && *auth.Oauth2GrantType != "" {
+				grantType = string(*auth.Oauth2GrantType)
+			}
+			if grantType != "client_credentials" && grantType != "password" {
+				errors = append(errors, ValidationError{
+					Field:   fmt.Sprintf("%s.auth.oauth2GrantType", fieldPrefix),
+					Message: "Auth oauth2GrantType must be 'client_credentials' or 'password'",
+				})
+			}
+			// username/password apply only to the password grant. JSON Schema's
+			// static required array can't express "required only when
+			// oauth2GrantType is password", so it's enforced here, same as the
+			// other oauth2 fields above.
+			if grantType == "password" {
+				if auth.Oauth2Username == nil || *auth.Oauth2Username == "" {
+					errors = append(errors, ValidationError{
+						Field:   fmt.Sprintf("%s.auth.oauth2Username", fieldPrefix),
+						Message: "Auth oauth2Username is required when oauth2GrantType is password",
+					})
+				}
+				if auth.Oauth2Password == nil || *auth.Oauth2Password == "" {
+					errors = append(errors, ValidationError{
+						Field:   fmt.Sprintf("%s.auth.oauth2Password", fieldPrefix),
+						Message: "Auth oauth2Password is required when oauth2GrantType is password",
+					})
+				}
 			}
 		}
 	}
@@ -702,10 +762,10 @@ func (v *LLMValidator) validateLLMUpstreamAuth(fieldPrefix string, auth *api.LLM
 			Field:   fieldPrefix + ".type",
 			Message: "Auth type is required",
 		})
-	} else if auth.Type != api.LLMUpstreamAuthTypeApiKey {
+	} else if auth.Type != api.LLMUpstreamAuthTypeApiKey && auth.Type != api.LLMUpstreamAuthTypeOauth2 {
 		errors = append(errors, ValidationError{
 			Field:   fieldPrefix + ".type",
-			Message: "Auth type must be 'api-key'",
+			Message: "Auth type must be 'api-key' or 'oauth2'",
 		})
 	}
 	if auth.Type == api.LLMUpstreamAuthTypeApiKey {
@@ -720,6 +780,56 @@ func (v *LLMValidator) validateLLMUpstreamAuth(fieldPrefix string, auth *api.LLM
 				Field:   fieldPrefix + ".value",
 				Message: "Auth value is required when api-key auth type is set",
 			})
+		}
+	}
+	if auth.Type == api.LLMUpstreamAuthTypeOauth2 {
+		if auth.Oauth2TokenEndpoint == nil || *auth.Oauth2TokenEndpoint == "" {
+			errors = append(errors, ValidationError{
+				Field:   fieldPrefix + ".oauth2TokenEndpoint",
+				Message: "Auth oauth2TokenEndpoint is required when oauth2 auth type is set",
+			})
+		}
+		if auth.Oauth2ClientId == nil || *auth.Oauth2ClientId == "" {
+			errors = append(errors, ValidationError{
+				Field:   fieldPrefix + ".oauth2ClientId",
+				Message: "Auth oauth2ClientId is required when oauth2 auth type is set",
+			})
+		}
+		if auth.Oauth2ClientSecret == nil || *auth.Oauth2ClientSecret == "" {
+			errors = append(errors, ValidationError{
+				Field:   fieldPrefix + ".oauth2ClientSecret",
+				Message: "Auth oauth2ClientSecret is required when oauth2 auth type is set",
+			})
+		}
+		if auth.Oauth2ClientAuthMethod == nil || *auth.Oauth2ClientAuthMethod == "" {
+			errors = append(errors, ValidationError{
+				Field:   fieldPrefix + ".oauth2ClientAuthMethod",
+				Message: "Auth oauth2ClientAuthMethod is required when oauth2 auth type is set",
+			})
+		}
+		grantType := api.LLMUpstreamAuthOauth2GrantTypeClientCredentials
+		if auth.Oauth2GrantType != nil && *auth.Oauth2GrantType != "" {
+			grantType = *auth.Oauth2GrantType
+		}
+		if grantType != api.LLMUpstreamAuthOauth2GrantTypeClientCredentials && grantType != api.LLMUpstreamAuthOauth2GrantTypePassword {
+			errors = append(errors, ValidationError{
+				Field:   fieldPrefix + ".oauth2GrantType",
+				Message: "Auth oauth2GrantType must be 'client_credentials' or 'password'",
+			})
+		}
+		if grantType == api.LLMUpstreamAuthOauth2GrantTypePassword {
+			if auth.Oauth2Username == nil || *auth.Oauth2Username == "" {
+				errors = append(errors, ValidationError{
+					Field:   fieldPrefix + ".oauth2Username",
+					Message: "Auth oauth2Username is required when oauth2GrantType is password",
+				})
+			}
+			if auth.Oauth2Password == nil || *auth.Oauth2Password == "" {
+				errors = append(errors, ValidationError{
+					Field:   fieldPrefix + ".oauth2Password",
+					Message: "Auth oauth2Password is required when oauth2GrantType is password",
+				})
+			}
 		}
 	}
 	return errors

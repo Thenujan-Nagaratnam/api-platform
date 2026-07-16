@@ -173,3 +173,6 @@ portals/ai-workspace/docker-compose.yaml
 
 # Devportal
 portals/developer-portal/target/
+
+
+test/wso2apip-ai-gateway-1.1.0/

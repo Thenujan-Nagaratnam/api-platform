@@ -215,6 +215,71 @@ func TestGetUpstreamAuthApikeyPolicyParams_Extended(t *testing.T) {
 	})
 }
 
+func TestGetUpstreamAuthOAuth2PolicyParams(t *testing.T) {
+	t.Run("Valid parameters with scope", func(t *testing.T) {
+		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
+			GrantType:        "client_credentials",
+			TokenEndpoint:    "https://idp.example.com/oauth2/token",
+			ClientID:         "client-id",
+			ClientSecret:     "client-secret",
+			Scope:            "chat.completions",
+			ClientAuthMethod: "client_secret_basic",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "client_credentials", params["grantType"])
+		assert.Equal(t, "https://idp.example.com/oauth2/token", params["tokenEndpoint"])
+		assert.Equal(t, "client-id", params["clientId"])
+		assert.Equal(t, "client-secret", params["clientSecret"])
+		assert.Equal(t, "chat.completions", params["scope"])
+		assert.Equal(t, "client_secret_basic", params["clientAuthMethod"])
+	})
+
+	t.Run("Empty scope is omitted from params entirely", func(t *testing.T) {
+		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
+			GrantType:        "client_credentials",
+			TokenEndpoint:    "https://idp.example.com/oauth2/token",
+			ClientID:         "client-id",
+			ClientSecret:     "client-secret",
+			ClientAuthMethod: "client_secret_post",
+		})
+		assert.NoError(t, err)
+		_, hasScope := params["scope"]
+		assert.False(t, hasScope, "empty scope should not appear as a key, not just an empty value")
+		assert.Equal(t, "client_secret_post", params["clientAuthMethod"])
+	})
+
+	t.Run("Password grant forwards username and password", func(t *testing.T) {
+		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
+			GrantType:        "password",
+			TokenEndpoint:    "https://idp.example.com/oauth2/token",
+			ClientID:         "client-id",
+			ClientSecret:     "client-secret",
+			Username:         "resource-owner",
+			Password:         "hunter2",
+			ClientAuthMethod: "client_secret_basic",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "password", params["grantType"])
+		assert.Equal(t, "resource-owner", params["username"])
+		assert.Equal(t, "hunter2", params["password"])
+	})
+
+	t.Run("Empty username/password are omitted from params entirely", func(t *testing.T) {
+		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
+			GrantType:        "client_credentials",
+			TokenEndpoint:    "https://idp.example.com/oauth2/token",
+			ClientID:         "client-id",
+			ClientSecret:     "client-secret",
+			ClientAuthMethod: "client_secret_basic",
+		})
+		assert.NoError(t, err)
+		_, hasUsername := params["username"]
+		_, hasPassword := params["password"]
+		assert.False(t, hasUsername, "empty username should not appear as a key")
+		assert.False(t, hasPassword, "empty password should not appear as a key")
+	})
+}
+
 func TestGetHostAdditionPolicyParams(t *testing.T) {
 	t.Run("Valid host value", func(t *testing.T) {
 		params, err := GetHostAdditionPolicyParams("api.example.com")
@@ -1985,9 +2050,17 @@ func TestTransformProvider_WithUpstreamAuth(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: &upstreamURL,
 				Auth: &struct {
-					Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-					Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-					Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2Scope            *string                                                      `json:"oauth2Scope,omitempty" yaml:"oauth2Scope,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: &authHeader,
@@ -2018,6 +2091,367 @@ func TestTransformProvider_WithUpstreamAuth(t *testing.T) {
 		}
 		assert.True(t, found, "operation %s %s should include upstream auth policy", op.EffectiveMethod(), op.EffectivePath())
 	}
+}
+
+func TestTransformProvider_WithOAuth2UpstreamAuth(t *testing.T) {
+	store := storage.NewConfigStore()
+	db := newTestMockDB()
+	routerConfig := &config.RouterConfig{
+		ListenerPort: 8080,
+	}
+	transformer := NewLLMProviderTransformer(store, db, routerConfig, newTestPolicyVersionResolver())
+
+	template := &models.StoredLLMProviderTemplate{
+		UUID: "0000-template-1-0000-000000000000",
+		Configuration: api.LLMProviderTemplate{
+			Metadata: api.Metadata{Name: "openai"},
+			Spec:     api.LLMProviderTemplateData{},
+		},
+	}
+	db.SaveLLMProviderTemplate(template)
+	err := store.AddTemplate(template)
+	require.NoError(t, err)
+
+	upstreamURL := "https://api.openai.com"
+	tokenEndpoint := "https://idp.example.com/oauth2/token"
+	clientID := "gateway-client"
+	clientSecret := "s3cr3t"
+	clientAuthMethod := api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod("client_secret_basic")
+	provider := &api.LLMProviderConfiguration{
+		Metadata: api.Metadata{Name: "openai-provider-oauth2"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName: "OpenAI Provider (OAuth2)",
+			Version:     "1.0.0",
+			Template:    "openai",
+			Upstream: api.LLMProviderConfigData_Upstream{
+				Url: &upstreamURL,
+				Auth: &struct {
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2Scope            *string                                                      `json:"oauth2Scope,omitempty" yaml:"oauth2Scope,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
+				}{
+					Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+					Oauth2TokenEndpoint:    &tokenEndpoint,
+					Oauth2ClientId:         &clientID,
+					Oauth2ClientSecret:     &clientSecret,
+					Oauth2ClientAuthMethod: &clientAuthMethod,
+				},
+			},
+			AccessControl: api.LLMAccessControl{
+				Mode: api.AllowAll,
+			},
+		},
+	}
+
+	output := &api.RestAPI{}
+	result, err := transformer.Transform(provider, output)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+
+	require.NotEmpty(t, result.Spec.Operations)
+	for _, op := range result.Spec.Operations {
+		require.NotNil(t, op.Policies)
+		found := false
+		var foundParams *map[string]interface{}
+		for _, p := range *op.Policies {
+			if p.Name == constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME {
+				found = true
+				foundParams = p.Params
+				break
+			}
+		}
+		assert.True(t, found, "operation %s %s should include the oauth2 policy", op.EffectiveMethod(), op.EffectivePath())
+		require.NotNil(t, foundParams)
+		assert.Equal(t, "client_credentials", (*foundParams)["grantType"], "grantType should default to client_credentials and be forwarded explicitly")
+		assert.Equal(t, tokenEndpoint, (*foundParams)["tokenEndpoint"])
+		assert.Equal(t, clientID, (*foundParams)["clientId"])
+		assert.Equal(t, clientSecret, (*foundParams)["clientSecret"])
+		assert.Equal(t, "client_secret_basic", (*foundParams)["clientAuthMethod"])
+	}
+}
+
+func TestTransformProvider_WithOAuth2PasswordGrant(t *testing.T) {
+	store := storage.NewConfigStore()
+	db := newTestMockDB()
+	routerConfig := &config.RouterConfig{ListenerPort: 8080}
+	transformer := NewLLMProviderTransformer(store, db, routerConfig, newTestPolicyVersionResolver())
+
+	template := &models.StoredLLMProviderTemplate{
+		UUID: "0000-template-1-0000-000000000000",
+		Configuration: api.LLMProviderTemplate{
+			Metadata: api.Metadata{Name: "openai"},
+			Spec:     api.LLMProviderTemplateData{},
+		},
+	}
+	db.SaveLLMProviderTemplate(template)
+	err := store.AddTemplate(template)
+	require.NoError(t, err)
+
+	upstreamURL := "https://api.openai.com"
+	tokenEndpoint := "https://legacy-idp.example.com/oauth2/token"
+	clientID := "gateway-client"
+	clientSecret := "s3cr3t"
+	username := "resource-owner"
+	password := "hunter2"
+	clientAuthMethod := api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod("client_secret_basic")
+	grantType := api.LLMProviderConfigDataUpstreamAuthOauth2GrantType("password")
+	provider := &api.LLMProviderConfiguration{
+		Metadata: api.Metadata{Name: "openai-provider-oauth2-password"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName: "OpenAI Provider (OAuth2 password grant)",
+			Version:     "1.0.0",
+			Template:    "openai",
+			Upstream: api.LLMProviderConfigData_Upstream{
+				Url: &upstreamURL,
+				Auth: &struct {
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2Scope            *string                                                      `json:"oauth2Scope,omitempty" yaml:"oauth2Scope,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
+				}{
+					Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+					Oauth2GrantType:        &grantType,
+					Oauth2TokenEndpoint:    &tokenEndpoint,
+					Oauth2ClientId:         &clientID,
+					Oauth2ClientSecret:     &clientSecret,
+					Oauth2Username:         &username,
+					Oauth2Password:         &password,
+					Oauth2ClientAuthMethod: &clientAuthMethod,
+				},
+			},
+			AccessControl: api.LLMAccessControl{
+				Mode: api.AllowAll,
+			},
+		},
+	}
+
+	output := &api.RestAPI{}
+	result, err := transformer.Transform(provider, output)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+
+	require.NotEmpty(t, result.Spec.Operations)
+	for _, op := range result.Spec.Operations {
+		require.NotNil(t, op.Policies)
+		var foundParams *map[string]interface{}
+		for _, p := range *op.Policies {
+			if p.Name == constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME {
+				foundParams = p.Params
+				break
+			}
+		}
+		require.NotNil(t, foundParams)
+		assert.Equal(t, "password", (*foundParams)["grantType"])
+		assert.Equal(t, username, (*foundParams)["username"])
+		assert.Equal(t, password, (*foundParams)["password"])
+	}
+}
+
+func TestTransformProvider_WithOAuth2PasswordGrant_MissingUsername(t *testing.T) {
+	store := storage.NewConfigStore()
+	db := newTestMockDB()
+	routerConfig := &config.RouterConfig{ListenerPort: 8080}
+	transformer := NewLLMProviderTransformer(store, db, routerConfig, newTestPolicyVersionResolver())
+
+	template := &models.StoredLLMProviderTemplate{
+		UUID: "0000-template-1-0000-000000000000",
+		Configuration: api.LLMProviderTemplate{
+			Metadata: api.Metadata{Name: "openai"},
+			Spec:     api.LLMProviderTemplateData{},
+		},
+	}
+	db.SaveLLMProviderTemplate(template)
+	err := store.AddTemplate(template)
+	require.NoError(t, err)
+
+	upstreamURL := "https://api.openai.com"
+	tokenEndpoint := "https://legacy-idp.example.com/oauth2/token"
+	clientID := "gateway-client"
+	clientSecret := "s3cr3t"
+	password := "hunter2"
+	clientAuthMethod := api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod("client_secret_basic")
+	grantType := api.LLMProviderConfigDataUpstreamAuthOauth2GrantType("password")
+	provider := &api.LLMProviderConfiguration{
+		Metadata: api.Metadata{Name: "openai-provider-oauth2-password-invalid"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName: "OpenAI Provider (OAuth2 password grant, invalid)",
+			Version:     "1.0.0",
+			Template:    "openai",
+			Upstream: api.LLMProviderConfigData_Upstream{
+				Url: &upstreamURL,
+				Auth: &struct {
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2Scope            *string                                                      `json:"oauth2Scope,omitempty" yaml:"oauth2Scope,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
+				}{
+					Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+					Oauth2GrantType:     &grantType,
+					Oauth2TokenEndpoint: &tokenEndpoint,
+					Oauth2ClientId:      &clientID,
+					Oauth2ClientSecret:  &clientSecret,
+					Oauth2Password:      &password,
+					// Oauth2Username deliberately omitted
+					Oauth2ClientAuthMethod: &clientAuthMethod,
+				},
+			},
+			AccessControl: api.LLMAccessControl{Mode: api.AllowAll},
+		},
+	}
+
+	output := &api.RestAPI{}
+	result, err := transformer.Transform(provider, output)
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "oauth2Username")
+}
+
+func TestTransformProvider_WithOAuth2UpstreamAuth_MissingRequiredField(t *testing.T) {
+	store := storage.NewConfigStore()
+	db := newTestMockDB()
+	routerConfig := &config.RouterConfig{ListenerPort: 8080}
+	transformer := NewLLMProviderTransformer(store, db, routerConfig, newTestPolicyVersionResolver())
+
+	template := &models.StoredLLMProviderTemplate{
+		UUID: "0000-template-1-0000-000000000000",
+		Configuration: api.LLMProviderTemplate{
+			Metadata: api.Metadata{Name: "openai"},
+			Spec:     api.LLMProviderTemplateData{},
+		},
+	}
+	db.SaveLLMProviderTemplate(template)
+	err := store.AddTemplate(template)
+	require.NoError(t, err)
+
+	upstreamURL := "https://api.openai.com"
+	clientID := "gateway-client"
+	// clientAuthMethod deliberately omitted: it has no default (see
+	// policy-definition.yaml / the design decision behind it) - a silently
+	// wrong default would fail at request time against the token endpoint
+	// instead of at configuration time, so this must be a hard config error.
+	provider := &api.LLMProviderConfiguration{
+		Metadata: api.Metadata{Name: "openai-provider-oauth2-invalid"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName: "OpenAI Provider (OAuth2, invalid)",
+			Version:     "1.0.0",
+			Template:    "openai",
+			Upstream: api.LLMProviderConfigData_Upstream{
+				Url: &upstreamURL,
+				Auth: &struct {
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2Scope            *string                                                      `json:"oauth2Scope,omitempty" yaml:"oauth2Scope,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
+				}{
+					Type:           api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+					Oauth2ClientId: &clientID,
+				},
+			},
+			AccessControl: api.LLMAccessControl{Mode: api.AllowAll},
+		},
+	}
+
+	output := &api.RestAPI{}
+	result, err := transformer.Transform(provider, output)
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "oauth2TokenEndpoint")
+}
+
+func TestTransformProvider_WithOAuth2UpstreamAuth_UnsupportedGrantType(t *testing.T) {
+	store := storage.NewConfigStore()
+	db := newTestMockDB()
+	routerConfig := &config.RouterConfig{ListenerPort: 8080}
+	transformer := NewLLMProviderTransformer(store, db, routerConfig, newTestPolicyVersionResolver())
+
+	template := &models.StoredLLMProviderTemplate{
+		UUID: "0000-template-1-0000-000000000000",
+		Configuration: api.LLMProviderTemplate{
+			Metadata: api.Metadata{Name: "openai"},
+			Spec:     api.LLMProviderTemplateData{},
+		},
+	}
+	db.SaveLLMProviderTemplate(template)
+	err := store.AddTemplate(template)
+	require.NoError(t, err)
+
+	upstreamURL := "https://api.openai.com"
+	tokenEndpoint := "https://idp.example.com/oauth2/token"
+	clientID := "gateway-client"
+	clientSecret := "s3cr3t"
+	clientAuthMethod := api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod("client_secret_basic")
+	// grantType exists so a future grant can be added without a schema
+	// change - but until that grant is actually implemented by the oauth2
+	// policy, an unrecognized value must be rejected here, not silently
+	// treated as client_credentials.
+	unsupportedGrantType := api.LLMProviderConfigDataUpstreamAuthOauth2GrantType("authorization_code")
+	provider := &api.LLMProviderConfiguration{
+		Metadata: api.Metadata{Name: "openai-provider-oauth2-badgrant"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName: "OpenAI Provider (OAuth2, unsupported grant)",
+			Version:     "1.0.0",
+			Template:    "openai",
+			Upstream: api.LLMProviderConfigData_Upstream{
+				Url: &upstreamURL,
+				Auth: &struct {
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2Scope            *string                                                      `json:"oauth2Scope,omitempty" yaml:"oauth2Scope,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
+				}{
+					Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+					Oauth2TokenEndpoint:    &tokenEndpoint,
+					Oauth2ClientId:         &clientID,
+					Oauth2ClientSecret:     &clientSecret,
+					Oauth2ClientAuthMethod: &clientAuthMethod,
+					Oauth2GrantType:        &unsupportedGrantType,
+				},
+			},
+			AccessControl: api.LLMAccessControl{Mode: api.AllowAll},
+		},
+	}
+
+	output := &api.RestAPI{}
+	result, err := transformer.Transform(provider, output)
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "oauth2GrantType")
 }
 
 func TestTransformProxy_WithUpstreamAuth(t *testing.T) {
@@ -2110,6 +2544,102 @@ func TestTransformProxy_WithUpstreamAuth(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "operation %s %s should include upstream auth policy", op.EffectiveMethod(), op.EffectivePath())
+	}
+}
+
+func TestTransformProxy_WithOAuth2UpstreamAuth(t *testing.T) {
+	store := storage.NewConfigStore()
+	db := newTestMockDB()
+	routerConfig := &config.RouterConfig{ListenerPort: 8080}
+	transformer := NewLLMProviderTransformer(store, db, routerConfig, newTestPolicyVersionResolver())
+
+	template := &models.StoredLLMProviderTemplate{
+		UUID: "0000-template-1-0000-000000000000",
+		Configuration: api.LLMProviderTemplate{
+			Metadata: api.Metadata{Name: "openai"},
+			Spec:     api.LLMProviderTemplateData{},
+		},
+	}
+	db.SaveLLMProviderTemplate(template)
+	err := store.AddTemplate(template)
+	require.NoError(t, err)
+
+	upstreamURL := "https://api.openai.com"
+	provider := &api.LLMProviderConfiguration{
+		Metadata: api.Metadata{Name: "openai-provider-oauth2-proxy"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName: "OpenAI Provider",
+			Version:     "v1.0",
+			Template:    "openai",
+			Upstream: api.LLMProviderConfigData_Upstream{
+				Url: &upstreamURL,
+			},
+			AccessControl: api.LLMAccessControl{Mode: api.AllowAll},
+		},
+	}
+
+	providerOut := &api.RestAPI{}
+	providerAPI, err := transformer.Transform(provider, providerOut)
+	require.NoError(t, err)
+	require.NotNil(t, providerAPI)
+
+	storedProvider := &models.StoredConfig{
+		UUID:                "0000-prov-cfg-2-0000-000000000000",
+		Kind:                string(api.LLMProviderConfigurationKindLlmProvider),
+		Handle:              "openai-provider-oauth2-proxy",
+		DisplayName:         "OpenAI Provider",
+		Version:             "v1.0",
+		Configuration:       *providerAPI,
+		SourceConfiguration: *provider,
+		DesiredState:        models.StateDeployed,
+		Origin:              models.OriginGatewayAPI,
+	}
+	db.SaveConfig(storedProvider)
+	err = store.Add(storedProvider)
+	require.NoError(t, err)
+
+	tokenEndpoint := "https://idp.example.com/oauth2/token"
+	clientID := "proxy-client"
+	clientSecret := "proxy-secret"
+	clientAuthMethod := api.LLMUpstreamAuthOauth2ClientAuthMethod("client_secret_post")
+	proxy := &api.LLMProxyConfiguration{
+		Metadata: api.Metadata{Name: "openai-proxy-oauth2"},
+		Spec: api.LLMProxyConfigData{
+			DisplayName: "OpenAI Proxy (OAuth2)",
+			Version:     "v1.0",
+			Provider: api.LLMProxyProvider{
+				Id: "openai-provider-oauth2-proxy",
+				Auth: &api.LLMUpstreamAuth{
+					Type:                   api.LLMUpstreamAuthTypeOauth2,
+					Oauth2TokenEndpoint:    &tokenEndpoint,
+					Oauth2ClientId:         &clientID,
+					Oauth2ClientSecret:     &clientSecret,
+					Oauth2ClientAuthMethod: &clientAuthMethod,
+				},
+			},
+		},
+	}
+
+	output := &api.RestAPI{}
+	result, err := transformer.Transform(proxy, output)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.NotEmpty(t, result.Spec.Operations)
+	for _, op := range result.Spec.Operations {
+		require.NotNil(t, op.Policies)
+		found := false
+		var foundParams *map[string]interface{}
+		for _, p := range *op.Policies {
+			if p.Name == constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME {
+				found = true
+				foundParams = p.Params
+				break
+			}
+		}
+		assert.True(t, found, "operation %s %s should include the oauth2 policy", op.EffectiveMethod(), op.EffectivePath())
+		require.NotNil(t, foundParams)
+		assert.Equal(t, "client_secret_post", (*foundParams)["clientAuthMethod"])
 	}
 }
 

@@ -143,6 +143,16 @@ const (
 		"  headers:\n" +
 		"    - name: '%s'\n" +
 		"      value: '%s'\n"
+	// UPSTREAM_AUTH_OAUTH2_POLICY_NAME is the oauth2 policy attached when
+	// upstream.auth.type is oauth2. The policy is grant-type agnostic
+	// (grantType is a param, defaulting to client_credentials — the only
+	// grant currently implemented); this constant names the policy, not a
+	// specific grant. Unlike UPSTREAM_AUTH_APIKEY_POLICY_PARAMS, its params
+	// are built directly as a map (see GetUpstreamAuthOAuth2PolicyParams)
+	// rather than via an fmt.Sprintf'd YAML string template — with six
+	// fields, several optional, string-templating risks both empty-field
+	// YAML breakage and unescaped special characters in credential values.
+	UPSTREAM_AUTH_OAUTH2_POLICY_NAME = "oauth2"
 	PROXY_HOST__HEADER_POLICY_NAME   = "host-rewrite"
 	PROXY_HOST__HEADER_POLICY_PARAMS = "host: '%s'\n"
 
