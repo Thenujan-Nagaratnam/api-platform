@@ -661,6 +661,7 @@ func TestValidateLLMProvider_Valid(t *testing.T) {
 						Url: stringPtr("https://api.openai.com"),
 						Auth: &struct {
 							Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+							Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 							Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 							Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 							Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1398,6 +1399,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 		name string
 		auth *struct {
 			Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+			Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 			Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 			Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 			Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1416,6 +1418,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "missing auth type",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1438,6 +1441,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "invalid auth type",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1460,6 +1464,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "api-key without header",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1481,6 +1486,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "api-key with empty header",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1503,6 +1509,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "api-key without value",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1524,6 +1531,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "api-key with empty value",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1546,6 +1554,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "valid api-key auth",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1566,6 +1575,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "oauth2 without tokenEndpoint",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1576,9 +1586,9 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 				Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 				Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-				Oauth2ClientId:         stringPtr("client-id"),
-				Oauth2ClientSecret:     stringPtr("client-secret"),
+				Type:               api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				Oauth2ClientId:     stringPtr("client-id"),
+				Oauth2ClientSecret: stringPtr("client-secret"),
 			},
 			expectError: true,
 			errorField:  "spec.upstream.auth.oauth2TokenEndpoint",
@@ -1588,6 +1598,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "oauth2 without clientId",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1598,9 +1609,9 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 				Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 				Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-				Oauth2TokenEndpoint:    stringPtr("https://idp.example.com/oauth2/token"),
-				Oauth2ClientSecret:     stringPtr("client-secret"),
+				Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
 			},
 			expectError: true,
 			errorField:  "spec.upstream.auth.oauth2ClientId",
@@ -1610,6 +1621,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "oauth2 without clientSecret",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1620,9 +1632,9 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 				Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 				Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-				Oauth2TokenEndpoint:    stringPtr("https://idp.example.com/oauth2/token"),
-				Oauth2ClientId:         stringPtr("client-id"),
+				Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
 			},
 			expectError: true,
 			errorField:  "spec.upstream.auth.oauth2ClientSecret",
@@ -1632,6 +1644,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "valid oauth2 auth",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1642,10 +1655,10 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 				Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 				Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-				Oauth2TokenEndpoint:    stringPtr("https://idp.example.com/oauth2/token"),
-				Oauth2ClientId:         stringPtr("client-id"),
-				Oauth2ClientSecret:     stringPtr("client-secret"),
+				Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
 			},
 			expectError: false,
 		},
@@ -1653,6 +1666,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "oauth2 password grant without username",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1663,12 +1677,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 				Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 				Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-				Oauth2GrantType:        oauth2GrantTypePtr("password"),
-				Oauth2TokenEndpoint:    stringPtr("https://idp.example.com/oauth2/token"),
-				Oauth2ClientId:         stringPtr("client-id"),
-				Oauth2ClientSecret:     stringPtr("client-secret"),
-				Oauth2Password:         stringPtr("hunter2"),
+				Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				Oauth2GrantType:     oauth2GrantTypePtr("password"),
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
+				Oauth2Password:      stringPtr("hunter2"),
 			},
 			expectError: true,
 			errorField:  "spec.upstream.auth.oauth2Username",
@@ -1678,6 +1692,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "oauth2 password grant without password",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1688,12 +1703,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 				Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 				Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-				Oauth2GrantType:        oauth2GrantTypePtr("password"),
-				Oauth2TokenEndpoint:    stringPtr("https://idp.example.com/oauth2/token"),
-				Oauth2ClientId:         stringPtr("client-id"),
-				Oauth2ClientSecret:     stringPtr("client-secret"),
-				Oauth2Username:         stringPtr("resource-owner"),
+				Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				Oauth2GrantType:     oauth2GrantTypePtr("password"),
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
+				Oauth2Username:      stringPtr("resource-owner"),
 			},
 			expectError: true,
 			errorField:  "spec.upstream.auth.oauth2Password",
@@ -1703,6 +1718,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "valid oauth2 password grant",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1713,13 +1729,13 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 				Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 				Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-				Oauth2GrantType:        oauth2GrantTypePtr("password"),
-				Oauth2TokenEndpoint:    stringPtr("https://idp.example.com/oauth2/token"),
-				Oauth2ClientId:         stringPtr("client-id"),
-				Oauth2ClientSecret:     stringPtr("client-secret"),
-				Oauth2Username:         stringPtr("resource-owner"),
-				Oauth2Password:         stringPtr("hunter2"),
+				Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				Oauth2GrantType:     oauth2GrantTypePtr("password"),
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
+				Oauth2Username:      stringPtr("resource-owner"),
+				Oauth2Password:      stringPtr("hunter2"),
 			},
 			expectError: false,
 		},
@@ -1727,6 +1743,7 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			name: "oauth2 grant type unsupported value",
 			auth: &struct {
 				Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+				Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 				Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 				Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 				Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -1737,11 +1754,11 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 				Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 				Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-				Oauth2GrantType:        oauth2GrantTypePtr("authorization_code"),
-				Oauth2TokenEndpoint:    stringPtr("https://idp.example.com/oauth2/token"),
-				Oauth2ClientId:         stringPtr("client-id"),
-				Oauth2ClientSecret:     stringPtr("client-secret"),
+				Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				Oauth2GrantType:     oauth2GrantTypePtr("authorization_code"),
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
 			},
 			expectError: true,
 			errorField:  "spec.upstream.auth.oauth2GrantType",

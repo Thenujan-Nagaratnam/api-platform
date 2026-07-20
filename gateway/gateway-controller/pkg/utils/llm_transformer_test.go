@@ -272,6 +272,30 @@ func TestGetUpstreamAuthOAuth2PolicyParams(t *testing.T) {
 		assert.False(t, hasUsername, "empty username should not appear as a key")
 		assert.False(t, hasPassword, "empty password should not appear as a key")
 	})
+
+	t.Run("ClientAuthMethod is forwarded when set", func(t *testing.T) {
+		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
+			GrantType:        "client_credentials",
+			TokenEndpoint:    "https://idp.example.com/oauth2/token",
+			ClientID:         "client-id",
+			ClientSecret:     "client-secret",
+			ClientAuthMethod: "client_secret_post",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "client_secret_post", params["clientAuthMethod"])
+	})
+
+	t.Run("Empty ClientAuthMethod is omitted from params entirely", func(t *testing.T) {
+		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
+			GrantType:     "client_credentials",
+			TokenEndpoint: "https://idp.example.com/oauth2/token",
+			ClientID:      "client-id",
+			ClientSecret:  "client-secret",
+		})
+		assert.NoError(t, err)
+		_, hasClientAuthMethod := params["clientAuthMethod"]
+		assert.False(t, hasClientAuthMethod, "empty clientAuthMethod should not appear as a key - the oauth2 policy applies its own client_secret_basic default")
+	})
 }
 
 func TestGetHostAdditionPolicyParams(t *testing.T) {
@@ -2045,6 +2069,7 @@ func TestTransformProvider_WithUpstreamAuth(t *testing.T) {
 				Url: &upstreamURL,
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -2119,6 +2144,7 @@ func TestTransformProvider_WithOAuth2UpstreamAuth(t *testing.T) {
 				Url: &upstreamURL,
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -2129,10 +2155,10 @@ func TestTransformProvider_WithOAuth2UpstreamAuth(t *testing.T) {
 					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
-					Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-					Oauth2TokenEndpoint:    &tokenEndpoint,
-					Oauth2ClientId:         &clientID,
-					Oauth2ClientSecret:     &clientSecret,
+					Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+					Oauth2TokenEndpoint: &tokenEndpoint,
+					Oauth2ClientId:      &clientID,
+					Oauth2ClientSecret:  &clientSecret,
 				},
 			},
 			AccessControl: api.LLMAccessControl{
@@ -2164,6 +2190,7 @@ func TestTransformProvider_WithOAuth2UpstreamAuth(t *testing.T) {
 		assert.Equal(t, tokenEndpoint, (*foundParams)["tokenEndpoint"])
 		assert.Equal(t, clientID, (*foundParams)["clientId"])
 		assert.Equal(t, clientSecret, (*foundParams)["clientSecret"])
+		assert.Equal(t, "client_secret_basic", (*foundParams)["clientAuthMethod"], "clientAuthMethod should default to client_secret_basic and be forwarded explicitly")
 	}
 }
 
@@ -2201,6 +2228,7 @@ func TestTransformProvider_WithOAuth2PasswordGrant(t *testing.T) {
 				Url: &upstreamURL,
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -2211,13 +2239,13 @@ func TestTransformProvider_WithOAuth2PasswordGrant(t *testing.T) {
 					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
-					Type:                   api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
-					Oauth2GrantType:        &grantType,
-					Oauth2TokenEndpoint:    &tokenEndpoint,
-					Oauth2ClientId:         &clientID,
-					Oauth2ClientSecret:     &clientSecret,
-					Oauth2Username:         &username,
-					Oauth2Password:         &password,
+					Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+					Oauth2GrantType:     &grantType,
+					Oauth2TokenEndpoint: &tokenEndpoint,
+					Oauth2ClientId:      &clientID,
+					Oauth2ClientSecret:  &clientSecret,
+					Oauth2Username:      &username,
+					Oauth2Password:      &password,
 				},
 			},
 			AccessControl: api.LLMAccessControl{
@@ -2281,6 +2309,7 @@ func TestTransformProvider_WithOAuth2PasswordGrant_MissingUsername(t *testing.T)
 				Url: &upstreamURL,
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -2340,6 +2369,7 @@ func TestTransformProvider_WithOAuth2UpstreamAuth_MissingRequiredField(t *testin
 				Url: &upstreamURL,
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -2401,6 +2431,68 @@ func TestTransformProvider_WithOAuth2UpstreamAuth_UnsupportedGrantType(t *testin
 				Url: &upstreamURL,
 				Auth: &struct {
 					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
+				}{
+					Type:                api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+					Oauth2TokenEndpoint: &tokenEndpoint,
+					Oauth2ClientId:      &clientID,
+					Oauth2ClientSecret:  &clientSecret,
+					Oauth2GrantType:     &unsupportedGrantType,
+				},
+			},
+			AccessControl: api.LLMAccessControl{Mode: api.AllowAll},
+		},
+	}
+
+	output := &api.RestAPI{}
+	result, err := transformer.Transform(provider, output)
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "oauth2GrantType")
+}
+
+func TestTransformProvider_WithOAuth2UpstreamAuth_UnsupportedClientAuthMethod(t *testing.T) {
+	store := storage.NewConfigStore()
+	db := newTestMockDB()
+	routerConfig := &config.RouterConfig{ListenerPort: 8080}
+	transformer := NewLLMProviderTransformer(store, db, routerConfig, newTestPolicyVersionResolver())
+
+	template := &models.StoredLLMProviderTemplate{
+		UUID: "0000-template-1-0000-000000000000",
+		Configuration: api.LLMProviderTemplate{
+			Metadata: api.Metadata{Name: "openai"},
+			Spec:     api.LLMProviderTemplateData{},
+		},
+	}
+	db.SaveLLMProviderTemplate(template)
+	err := store.AddTemplate(template)
+	require.NoError(t, err)
+
+	upstreamURL := "https://api.openai.com"
+	tokenEndpoint := "https://idp.example.com/oauth2/token"
+	clientID := "gateway-client"
+	clientSecret := "s3cr3t"
+	unsupportedMethod := api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod("client_secret_jwt")
+	provider := &api.LLMProviderConfiguration{
+		Metadata: api.Metadata{Name: "openai-provider-oauth2-badauthmethod"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName: "OpenAI Provider (OAuth2, unsupported clientAuthMethod)",
+			Version:     "1.0.0",
+			Template:    "openai",
+			Upstream: api.LLMProviderConfigData_Upstream{
+				Url: &upstreamURL,
+				Auth: &struct {
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
 					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
 					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
 					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
@@ -2415,7 +2507,7 @@ func TestTransformProvider_WithOAuth2UpstreamAuth_UnsupportedGrantType(t *testin
 					Oauth2TokenEndpoint:    &tokenEndpoint,
 					Oauth2ClientId:         &clientID,
 					Oauth2ClientSecret:     &clientSecret,
-					Oauth2GrantType:        &unsupportedGrantType,
+					Oauth2ClientAuthMethod: &unsupportedMethod,
 				},
 			},
 			AccessControl: api.LLMAccessControl{Mode: api.AllowAll},
@@ -2426,7 +2518,7 @@ func TestTransformProvider_WithOAuth2UpstreamAuth_UnsupportedGrantType(t *testin
 	result, err := transformer.Transform(provider, output)
 	assert.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "oauth2GrantType")
+	assert.Contains(t, err.Error(), "oauth2ClientAuthMethod")
 }
 
 func TestTransformProxy_WithUpstreamAuth(t *testing.T) {
@@ -2584,10 +2676,10 @@ func TestTransformProxy_WithOAuth2UpstreamAuth(t *testing.T) {
 			Provider: api.LLMProxyProvider{
 				Id: "openai-provider-oauth2-proxy",
 				Auth: &api.LLMUpstreamAuth{
-					Type:                   api.LLMUpstreamAuthTypeOauth2,
-					Oauth2TokenEndpoint:    &tokenEndpoint,
-					Oauth2ClientId:         &clientID,
-					Oauth2ClientSecret:     &clientSecret,
+					Type:                api.LLMUpstreamAuthTypeOauth2,
+					Oauth2TokenEndpoint: &tokenEndpoint,
+					Oauth2ClientId:      &clientID,
+					Oauth2ClientSecret:  &clientSecret,
 				},
 			},
 		},

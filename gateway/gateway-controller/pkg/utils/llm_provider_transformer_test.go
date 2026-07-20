@@ -190,16 +190,17 @@ func TestTransform_FullProvider(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.openai.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("Authorization"),
@@ -484,16 +485,17 @@ func TestTransform_ApiKeyAuth(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("X-API-Key"),
@@ -551,16 +553,17 @@ func TestTransform_UnsupportedAuthType(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   "bearer", // Unsupported type
 					Header: stringPtr("Authorization"),
@@ -1683,16 +1686,17 @@ func TestTransform_AuthWithAllowAll(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("Authorization"),
@@ -2234,16 +2238,17 @@ func TestTransform_UpstreamAuth_Plus_APILevelPolicy_AllowAll(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("Authorization"),
@@ -2330,16 +2335,17 @@ func TestTransform_UpstreamAuth_Plus_APILevelPolicy_DenyAll(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("X-API-Key"),
@@ -3495,16 +3501,17 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_AllowAll(t *testing.T)
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("Authorization"),
@@ -3632,16 +3639,17 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_DenyAll(t *testing.T) 
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("X-API-Key"),
@@ -3976,16 +3984,17 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("Authorization"),
@@ -4213,16 +4222,17 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_DenyAll(
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.example.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("X-API-Key"),
@@ -5442,16 +5452,17 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.openai.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("Authorization"),
@@ -5758,16 +5769,17 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 			Upstream: api.LLMProviderConfigData_Upstream{
 				Url: stringPtr("https://api.openai.com"),
 				Auth: &struct {
-					Header              *string                                               `json:"header,omitempty" yaml:"header,omitempty"`
-					Oauth2ClientId      *string                                               `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
-					Oauth2ClientSecret  *string                                               `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
-					Oauth2GrantType     *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
-					Oauth2Params        *map[string]string                                    `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
-					Oauth2Password      *string                                               `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
-					Oauth2TokenEndpoint *string                                               `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
-					Oauth2Username      *string                                               `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
-					Type                api.LLMProviderConfigDataUpstreamAuthType             `json:"type" yaml:"type"`
-					Value               *string                                               `json:"value,omitempty" yaml:"value,omitempty"`
+					Header                 *string                                                      `json:"header,omitempty" yaml:"header,omitempty"`
+					Oauth2ClientAuthMethod *api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+					Oauth2ClientId         *string                                                      `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+					Oauth2ClientSecret     *string                                                      `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+					Oauth2GrantType        *api.LLMProviderConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+					Oauth2Params           *map[string]string                                           `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+					Oauth2Password         *string                                                      `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+					Oauth2TokenEndpoint    *string                                                      `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+					Oauth2Username         *string                                                      `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+					Type                   api.LLMProviderConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+					Value                  *string                                                      `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
 					Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 					Header: stringPtr("Authorization"),

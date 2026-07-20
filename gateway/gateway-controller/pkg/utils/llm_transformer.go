@@ -460,6 +460,16 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 				grantType != string(api.LLMProviderConfigDataUpstreamAuthOauth2GrantTypePassword) {
 				return nil, fmt.Errorf("upstream.auth.oauth2GrantType must be one of 'client_credentials', 'password'")
 			}
+			// clientAuthMethod defaults to client_secret_basic when omitted,
+			// forwarded explicitly for the same reason grantType is above.
+			clientAuthMethod := string(api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethodClientSecretBasic)
+			if upstream.Auth.Oauth2ClientAuthMethod != nil && *upstream.Auth.Oauth2ClientAuthMethod != "" {
+				clientAuthMethod = string(*upstream.Auth.Oauth2ClientAuthMethod)
+			}
+			if clientAuthMethod != string(api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethodClientSecretBasic) &&
+				clientAuthMethod != string(api.LLMProviderConfigDataUpstreamAuthOauth2ClientAuthMethodClientSecretPost) {
+				return nil, fmt.Errorf("upstream.auth.oauth2ClientAuthMethod must be one of 'client_secret_basic', 'client_secret_post'")
+			}
 			var username, password string
 			var extraParams map[string]string
 			if upstream.Auth.Oauth2Params != nil {
@@ -476,13 +486,14 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 				password = *upstream.Auth.Oauth2Password
 			}
 			params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
-				GrantType:     grantType,
-				TokenEndpoint: *upstream.Auth.Oauth2TokenEndpoint,
-				ClientID:      *upstream.Auth.Oauth2ClientId,
-				ClientSecret:  *upstream.Auth.Oauth2ClientSecret,
-				Username:      username,
-				Password:      password,
-				Params:        extraParams,
+				GrantType:        grantType,
+				TokenEndpoint:    *upstream.Auth.Oauth2TokenEndpoint,
+				ClientID:         *upstream.Auth.Oauth2ClientId,
+				ClientSecret:     *upstream.Auth.Oauth2ClientSecret,
+				ClientAuthMethod: clientAuthMethod,
+				Username:         username,
+				Password:         password,
+				Params:           extraParams,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
@@ -820,12 +831,13 @@ func GetUpstreamAuthApikeyPolicyParams(header, value string) (map[string]interfa
 // to the password grant) — positional args for seven mostly-string fields
 // invite mixed-up-order bugs.
 type OAuth2UpstreamAuthParams struct {
-	GrantType     string
-	TokenEndpoint string
-	ClientID      string
-	ClientSecret  string
-	Username      string
-	Password      string
+	GrantType        string
+	TokenEndpoint    string
+	ClientID         string
+	ClientSecret     string
+	ClientAuthMethod string
+	Username         string
+	Password         string
 
 	// Params comes from upstream.auth.oauth2Params - an optional, flat map
 	// of extra fields appended to the token request body, the same "custom
@@ -852,6 +864,9 @@ func GetUpstreamAuthOAuth2PolicyParams(p OAuth2UpstreamAuthParams) (map[string]i
 		"tokenEndpoint": p.TokenEndpoint,
 		"clientId":      p.ClientID,
 		"clientSecret":  p.ClientSecret,
+	}
+	if p.ClientAuthMethod != "" {
+		m["clientAuthMethod"] = p.ClientAuthMethod
 	}
 	if len(p.Params) > 0 {
 		m["params"] = p.Params
@@ -910,6 +925,16 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 			grantType != string(api.LLMUpstreamAuthOauth2GrantTypePassword) {
 			return nil, fmt.Errorf("%s.oauth2GrantType must be one of 'client_credentials', 'password'", field)
 		}
+		// See the sibling logic in transformProvider for why
+		// clientAuthMethod defaults here and is forwarded explicitly.
+		clientAuthMethod := string(api.LLMUpstreamAuthOauth2ClientAuthMethodClientSecretBasic)
+		if auth.Oauth2ClientAuthMethod != nil && *auth.Oauth2ClientAuthMethod != "" {
+			clientAuthMethod = string(*auth.Oauth2ClientAuthMethod)
+		}
+		if clientAuthMethod != string(api.LLMUpstreamAuthOauth2ClientAuthMethodClientSecretBasic) &&
+			clientAuthMethod != string(api.LLMUpstreamAuthOauth2ClientAuthMethodClientSecretPost) {
+			return nil, fmt.Errorf("%s.oauth2ClientAuthMethod must be one of 'client_secret_basic', 'client_secret_post'", field)
+		}
 		var username, password string
 		var extraParams map[string]string
 		if auth.Oauth2Params != nil {
@@ -926,13 +951,14 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 			password = *auth.Oauth2Password
 		}
 		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
-			GrantType:     grantType,
-			TokenEndpoint: *auth.Oauth2TokenEndpoint,
-			ClientID:      *auth.Oauth2ClientId,
-			ClientSecret:  *auth.Oauth2ClientSecret,
-			Username:      username,
-			Password:      password,
-			Params:        extraParams,
+			GrantType:        grantType,
+			TokenEndpoint:    *auth.Oauth2TokenEndpoint,
+			ClientID:         *auth.Oauth2ClientId,
+			ClientSecret:     *auth.Oauth2ClientSecret,
+			ClientAuthMethod: clientAuthMethod,
+			Username:         username,
+			Password:         password,
+			Params:           extraParams,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
