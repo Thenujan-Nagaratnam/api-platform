@@ -460,9 +460,10 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 				grantType != string(api.LLMProviderConfigDataUpstreamAuthOauth2GrantTypePassword) {
 				return nil, fmt.Errorf("upstream.auth.oauth2GrantType must be one of 'client_credentials', 'password'")
 			}
-			var scope, username, password string
-			if upstream.Auth.Oauth2Scope != nil {
-				scope = *upstream.Auth.Oauth2Scope
+			var username, password string
+			var extraParams map[string]string
+			if upstream.Auth.Oauth2Params != nil {
+				extraParams = *upstream.Auth.Oauth2Params
 			}
 			if grantType == string(api.LLMProviderConfigDataUpstreamAuthOauth2GrantTypePassword) {
 				if upstream.Auth.Oauth2Username == nil || *upstream.Auth.Oauth2Username == "" {
@@ -481,7 +482,7 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 				ClientSecret:  *upstream.Auth.Oauth2ClientSecret,
 				Username:      username,
 				Password:      password,
-				Scope:         scope,
+				Params:        extraParams,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
@@ -825,7 +826,13 @@ type OAuth2UpstreamAuthParams struct {
 	ClientSecret  string
 	Username      string
 	Password      string
-	Scope         string
+
+	// Params comes from upstream.auth.oauth2Params - an optional, flat map
+	// of extra fields appended to the token request body, the same "custom
+	// parameters" convention WSO2 API Manager's own endpoint security config
+	// uses. There is no first-class "scope" field: if the identity provider
+	// needs one, it goes in here, e.g. {"scope": "chat.completions embeddings"}.
+	Params map[string]string
 }
 
 // GetUpstreamAuthOAuth2PolicyParams renders the policy params for the oauth2
@@ -833,8 +840,8 @@ type OAuth2UpstreamAuthParams struct {
 // string template like GetUpstreamAuthApikeyPolicyParams — with several
 // optional fields, string-templating risks both empty-field YAML breakage
 // and unescaped special characters in credential values. Optional fields
-// (scope, and username/password when the grant isn't password) are omitted
-// from the params entirely rather than sent as empty strings, matching the
+// (params, and username/password when the grant isn't password) are omitted
+// from the params entirely rather than sent as empty/nil, matching the
 // oauth2 policy's own optional-field handling. grantType is always
 // forwarded explicitly rather than relying on the policy's own schema
 // default, so the value that was actually validated here is exactly what
@@ -846,8 +853,8 @@ func GetUpstreamAuthOAuth2PolicyParams(p OAuth2UpstreamAuthParams) (map[string]i
 		"clientId":      p.ClientID,
 		"clientSecret":  p.ClientSecret,
 	}
-	if p.Scope != "" {
-		m["scope"] = p.Scope
+	if len(p.Params) > 0 {
+		m["params"] = p.Params
 	}
 	if p.Username != "" {
 		m["username"] = p.Username
@@ -903,9 +910,10 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 			grantType != string(api.LLMUpstreamAuthOauth2GrantTypePassword) {
 			return nil, fmt.Errorf("%s.oauth2GrantType must be one of 'client_credentials', 'password'", field)
 		}
-		var scope, username, password string
-		if auth.Oauth2Scope != nil {
-			scope = *auth.Oauth2Scope
+		var username, password string
+		var extraParams map[string]string
+		if auth.Oauth2Params != nil {
+			extraParams = *auth.Oauth2Params
 		}
 		if grantType == string(api.LLMUpstreamAuthOauth2GrantTypePassword) {
 			if auth.Oauth2Username == nil || *auth.Oauth2Username == "" {
@@ -924,7 +932,7 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 			ClientSecret:  *auth.Oauth2ClientSecret,
 			Username:      username,
 			Password:      password,
-			Scope:         scope,
+			Params:        extraParams,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to build upstream auth params: %w", err)

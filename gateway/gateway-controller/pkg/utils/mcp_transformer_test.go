@@ -236,14 +236,14 @@ func TestMCPTransformer_Transform_WithPoliciesAndUpstreamAuth(t *testing.T) {
 }
 
 func TestNewMCPTransformer(t *testing.T) {
-	tr := NewMCPTransformer(nil)
+	tr := NewMCPTransformer()
 	if tr == nil {
 		t.Fatal("Expected non-nil MCPTransformer")
 	}
 }
 
 func TestMCPTransformer_Transform_InvalidInput(t *testing.T) {
-	tr := NewMCPTransformer(nil)
+	tr := NewMCPTransformer()
 	var out api.RestAPI
 
 	// Test with nil input

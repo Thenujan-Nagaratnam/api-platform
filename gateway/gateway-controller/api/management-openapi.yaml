@@ -4389,9 +4389,18 @@ components:
             oauth2Password:
               type: string
               description: Resource owner password, paired with oauth2Username. Required when oauth2GrantType is password; unused otherwise.
-            oauth2Scope:
-              type: string
-              description: Optional space-separated list of scopes requested from the token endpoint. Applies when type is oauth2.
+            oauth2Params:
+              type: object
+              additionalProperties:
+                type: string
+              description: >
+                Optional extra parameters appended to the token request body, as
+                a flat map of string key/value pairs. Applies when type is
+                oauth2 and oauth2GrantType is client_credentials (the default) -
+                the password grant's request body is fixed and does not forward
+                this field. There is no first-class "scope" field: if the
+                identity provider needs one, add it here, e.g. {"scope":
+                "chat.completions embeddings"}.
 
     LLMUpstreamAuth:
       type: object
@@ -4435,9 +4444,18 @@ components:
         oauth2Password:
           type: string
           description: Resource owner password, paired with oauth2Username. Required when oauth2GrantType is password; unused otherwise.
-        oauth2Scope:
-          type: string
-          description: Optional space-separated list of scopes requested from the token endpoint. Applies when type is oauth2.
+        oauth2Params:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Optional extra parameters appended to the token request body, as a
+            flat map of string key/value pairs. Applies when type is oauth2
+            and oauth2GrantType is client_credentials (the default) - the
+            password grant's request body is fixed and does not forward this
+            field. There is no first-class "scope" field: if the identity
+            provider needs one, add it here, e.g. {"scope": "chat.completions
+            embeddings"}.
 
     LLMProxyProvider:
       type: object

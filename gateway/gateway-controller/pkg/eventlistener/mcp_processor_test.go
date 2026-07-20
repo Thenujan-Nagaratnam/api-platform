@@ -67,7 +67,7 @@ func testMCPStoredConfig(uuid, handle, displayName, version string, desiredState
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
-	_ = utils.HydrateStoredMCPConfig(cfg, nil)
+	_ = utils.HydrateStoredMCPConfig(cfg)
 	return cfg
 }
 
