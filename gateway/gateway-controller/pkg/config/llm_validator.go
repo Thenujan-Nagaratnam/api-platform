@@ -418,8 +418,6 @@ func (v *LLMValidator) validatePolicyListExclusivity(globalPolicies *[]api.Polic
 	return nil
 }
 
-// validateUpstreamWithAuth validates an UpstreamWithAuth configuration. The upstream may specify
-// either a direct `url` or a `ref` to one of the provided upstream definitions (exactly one).
 // upstreamAuthFields normalizes the two structurally-identical generated
 // upstream-auth shapes - LlmProvider's upstream.auth (an anonymous inline
 // struct in generated.go, since its OpenAPI schema is inlined rather than
@@ -531,6 +529,8 @@ func (v *LLMValidator) validateUpstreamAuthFields(fieldPrefix string, f upstream
 	return errors
 }
 
+// validateUpstreamWithAuth validates an UpstreamWithAuth configuration. The upstream may specify
+// either a direct `url` or a `ref` to one of the provided upstream definitions (exactly one).
 func (v *LLMValidator) validateUpstreamWithAuth(fieldPrefix string,
 	upstream *api.LLMProviderConfigData_Upstream, definitions *[]api.UpstreamDefinition) []ValidationError {
 	var errors []ValidationError
@@ -793,6 +793,10 @@ func (v *LLMValidator) validateLLMProxyTransformer(fieldPrefix string, transform
 	return errors
 }
 
+// validateLLMUpstreamAuth validates an LlmProxy's provider/additionalProviders
+// auth (LLMUpstreamAuth) - the proxy-side counterpart to
+// validateUpstreamWithAuth's LlmProvider upstream.auth handling. auth must be
+// non-nil; both call sites already guard on that before calling in.
 func (v *LLMValidator) validateLLMUpstreamAuth(fieldPrefix string, auth *api.LLMUpstreamAuth) []ValidationError {
 	fields := upstreamAuthFields{
 		authType:            string(auth.Type),
