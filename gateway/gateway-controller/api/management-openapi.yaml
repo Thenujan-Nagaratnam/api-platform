@@ -4411,6 +4411,24 @@ components:
                 this field. There is no first-class "scope" field: if the
                 identity provider needs one, add it here, e.g. {"scope":
                 "chat.completions embeddings"}.
+            oauth2TokenRequestTimeout:
+              type: string
+              description: >
+                Maximum time to wait for a single token-endpoint HTTP call, as
+                a Go duration string (e.g. "10s", "2500ms"). Applies to both
+                grants. Defaults to "10s" when omitted.
+              default: "10s"
+            oauth2DefaultTokenTTL:
+              type: string
+              description: >
+                Fallback token lifetime, as a Go duration string (e.g. "1h",
+                "30m"), used only when the token endpoint's response omits
+                expires_in entirely - without it, an omitted expires_in would
+                silently disable caching, forcing a fresh token fetch on every
+                request. Has no effect when the identity provider does return
+                expires_in. Applies to both grants. Defaults to "1h" when
+                omitted.
+              default: "1h"
 
     LLMUpstreamAuth:
       type: object
@@ -4476,6 +4494,24 @@ components:
             field. There is no first-class "scope" field: if the identity
             provider needs one, add it here, e.g. {"scope": "chat.completions
             embeddings"}.
+        oauth2TokenRequestTimeout:
+          type: string
+          description: >
+            Maximum time to wait for a single token-endpoint HTTP call, as a
+            Go duration string (e.g. "10s", "2500ms"). Applies to both
+            grants. Defaults to "10s" when omitted.
+          default: "10s"
+        oauth2DefaultTokenTTL:
+          type: string
+          description: >
+            Fallback token lifetime, as a Go duration string (e.g. "1h",
+            "30m"), used only when the token endpoint's response omits
+            expires_in entirely - without it, an omitted expires_in would
+            silently disable caching, forcing a fresh token fetch on every
+            request. Has no effect when the identity provider does return
+            expires_in. Applies to both grants. Defaults to "1h" when
+            omitted.
+          default: "1h"
 
     LLMProxyProvider:
       type: object

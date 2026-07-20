@@ -79,6 +79,34 @@ accepted-but-unused for `client_credentials`.
 There is deliberately no first-class `scope` field — it's just one entry
 among `params`.
 
+### Resilience (`tokenRequestTimeout`, `defaultTokenTTL`)
+
+Two operational tunables, added after cross-checking against Kong's
+equivalent plugin (see below) surfaced both as real, confirmed gaps rather
+than theoretical ones:
+
+- **`tokenRequestTimeout`** (default `10s`) bounds a single token-endpoint
+  HTTP call. Without it, `golang.org/x/oauth2` falls back to
+  `http.DefaultClient`, which has `Timeout: 0` — an unresponsive IdP would
+  block a token fetch indefinitely. Injected via
+  `context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: ...})`,
+  which both `clientcredentials.Config.TokenSource` and
+  `xoauth2.Config.PasswordCredentialsToken` forward down to
+  `internal.RetrieveToken` identically — one fix covers both grants.
+- **`defaultTokenTTL`** (default `1h`) is applied only when the token
+  endpoint's response omits `expires_in` entirely. `golang.org/x/oauth2`
+  leaves `Token.Expiry` as the zero value in that case, and `Token.Valid()`
+  always treats a zero-value `Expiry` as already-expired — without this
+  fallback, *neither* cache tier would ever consider such a token cacheable,
+  silently forcing a fresh fetch on every single request. Applied by
+  mutating the token in place (not a copy) in `token_cache.go`'s `Token()`,
+  so the inner `xoauth2.ReuseTokenSource`'s own reuse-until-expiry behavior
+  picks up the fix too, not just this policy's own cache tiers.
+
+Both apply identically to both grants; both are simple string params
+(`params`'s own permissive fallback-on-parse-failure style, not enum
+type-validated).
+
 ### API Specification
 
 ```yaml
@@ -93,6 +121,8 @@ UpstreamAuth:
     oauth2Username: string   # required only when oauth2GrantType: password
     oauth2Password: string   # required only when oauth2GrantType: password
     oauth2Params: { additionalProperties: string }   # optional, client_credentials only, e.g. { scope: "read write" }
+    oauth2TokenRequestTimeout: string   # Go duration, default "10s", both grants
+    oauth2DefaultTokenTTL: string       # Go duration, default "1h", both grants - fallback when expires_in is omitted
 ```
 
 No new endpoint — extends the existing `LlmProvider`/`LlmProxy` create/update
@@ -195,16 +225,37 @@ against a mock IdP/backend) for:
 - `params` custom token-request fields for `client_credentials`, including
   a value referencing a stored secret
 - Redis-backed two-tier caching with `failureMode: open`/`closed`
+- `tokenRequestTimeout` — verified against a real IdP configured to delay
+  3s while the policy's timeout was 500ms: request failed with `502` in
+  ~526ms, well before the 3s delay would have completed
+- `defaultTokenTTL` — verified against a real IdP configured to genuinely
+  omit `expires_in` (confirmed via a direct, gateway-bypassing request to
+  the mock): 3 chat-completion requests through the gateway produced
+  exactly 1 token-endpoint call, proving caching still worked
 
-Shipped as `oauth2` policy `v0.7.0` in both `gateway-controllers/policies/oauth2`
+Shipped as `oauth2` policy `v0.8.0` in both `gateway-controllers/policies/oauth2`
 and the in-repo mirror `gateway/dev-policies/oauth2` (kept byte-identical —
 see the dual-repo gotcha this caused mid-implementation, captured in team
 memory as it isn't otherwise enforced by tooling).
 
 `TESTING.md` and the companion Postman collection
-(`gateway/dev-policies/oauth2/postman/oauth2.postman_collection.json`) both
-cover the `client_secret_post` flow (E.11) alongside the pre-existing happy
-path, caching, expiry, and failure-mode flows.
+(`gateway/dev-policies/oauth2/e2e/postman/oauth2.postman_collection.json`)
+both cover `client_secret_post` (E.11), `tokenRequestTimeout` (E.12), and
+`defaultTokenTTL` (E.13), alongside the pre-existing happy path, caching,
+expiry, and failure-mode flows. The mock IdP (`mocks/mock-oauth2-idp`) gained
+two params to support this: `delayMs` (artificially delay the response) and
+`omitExpiresIn=true` (drop `expires_in` from the response entirely). All of
+`TESTING.md`, the mocks, and the Postman collection now live under a single
+`e2e/` subdirectory, with `e2e/run-e2e.sh` as a one-command runner that
+starts both mocks and runs the full collection via newman against an
+already-running gateway stack.
+
+**Note:** `gateway/dev-policies/` is gitignored repo-wide
+(`.gitignore:165: dev-policies/`) — none of the dev-policies-side work above
+(the mirrored policy code, `TESTING.md`, the Postman collection, the mock
+changes) is tracked in git or visible in a diff/PR. It's used by the local
+Docker build/test workflow but isn't shared via `git clone`. Worth revisiting
+if the intent is for other developers to get this test tooling for free.
 
 ### Caching mechanism — verified against standard practice
 
@@ -231,10 +282,65 @@ from memory:
   a stricter design could add a distributed lock (e.g. Redis `SETNX`-based)
   to close this, not implemented here.
 
+### Cross-check against Kong's Upstream OAuth plugin
+
+Compared against Kong's [Upstream OAuth
+plugin](https://developer.konghq.com/plugins/upstream-oauth/) (fetched and
+read directly, not from memory) — the closest existing product doing the
+same job.
+
+**Adopted from the comparison (implemented, see Status above):**
+- `tokenRequestTimeout` — confirmed gap (we had no timeout at all); Kong
+  defaults to `10000ms`, we matched that default.
+- `defaultTokenTTL` — confirmed gap (we silently disabled caching entirely
+  when `expires_in` was missing); Kong's `cache.default_ttl` defaults to
+  `3600s`, we matched that default.
+
+**Deliberately not adopted:**
+- Kong's fully-templated error response
+  (`idp_error_response_status_code`/`message`/`content_type`/`body_template`,
+  configurable per plugin instance) — conflicts with this repo's own
+  `error-handling.md`/`authentication_authorization.md` conventions, which
+  mandate a fixed, org-wide-consistent generic auth-failure body specifically
+  to prevent information-leakage variance across policies. Kept the
+  hardcoded 502 + fixed message.
+
+**Noted, not yet acted on:**
+- Kong's `purge_token_on_upstream_status_codes` (default `[401]`) evicts the
+  cached token when the *upstream* (not the IdP) rejects it, so the next
+  request gets a fresh one instead of retrying a revoked token until it
+  naturally expires. We can't do this today — the policy only implements
+  `RequestHeaderMode: Process`, `ResponseHeaderMode: Skip`, so it never sees
+  the upstream's response. Would need a response-phase hook - a real
+  architectural change, not a small tweak. Highest-value remaining gap.
+- Kong exposes `token_headers` (extra headers on the token request) in
+  addition to `token_post_args` (our `params`, body only) — no way today to
+  inject a custom header some IdPs might require.
+- Kong types `scopes`/`audience` as explicit arrays (default `scopes:
+  ["openid"]`) rather than folding them into a generic map; better
+  per-field UX/validation for the common case, at the cost of needing a
+  schema change for anything not explicitly typed. Our generic `params` map
+  is more flexible but has zero validation. Worth reconsidering if `scope`
+  usage turns out to dominate.
+- Kong exposes IdP-reaching proxy/SSL settings (`http_proxy`, `ssl_verify`,
+  etc.) — more niche, matters mainly in locked-down enterprise egress
+  setups.
+- Kong's `password` grant gets the same scopes/headers/params support as
+  `client_credentials` (their own Lua token-request logic, not delegating to
+  a limited library) — our `params`-only-for-`client_credentials`
+  restriction is a real, self-imposed capability gap versus Kong, not one
+  Kong itself has to make.
+
 ## Open Follow-ups
 
 - `private_key_jwt` / mTLS client authentication — bigger feature, not
   scoped here.
+- Token purging on upstream rejection (Kong's
+  `purge_token_on_upstream_status_codes` equivalent) — requires a
+  response-phase hook this policy doesn't have today. Highest-value item
+  from the Kong cross-check above.
+- `headers` alongside `params` (extra headers on the token request, not just
+  body fields).
 - No named customer or competitive reference is attached to the original
   motivation for this feature — worth attaching one before treating this as
   a validated priority for further investment (e.g. `authorization_code`

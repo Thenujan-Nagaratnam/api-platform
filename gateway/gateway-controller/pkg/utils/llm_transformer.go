@@ -475,6 +475,13 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 			if upstream.Auth.Oauth2Params != nil {
 				extraParams = *upstream.Auth.Oauth2Params
 			}
+			var tokenRequestTimeout, defaultTokenTTL string
+			if upstream.Auth.Oauth2TokenRequestTimeout != nil {
+				tokenRequestTimeout = *upstream.Auth.Oauth2TokenRequestTimeout
+			}
+			if upstream.Auth.Oauth2DefaultTokenTTL != nil {
+				defaultTokenTTL = *upstream.Auth.Oauth2DefaultTokenTTL
+			}
 			if grantType == string(api.LLMProviderConfigDataUpstreamAuthOauth2GrantTypePassword) {
 				if upstream.Auth.Oauth2Username == nil || *upstream.Auth.Oauth2Username == "" {
 					return nil, fmt.Errorf("upstream.auth.oauth2Username is required when oauth2GrantType is password")
@@ -486,14 +493,16 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 				password = *upstream.Auth.Oauth2Password
 			}
 			params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
-				GrantType:        grantType,
-				TokenEndpoint:    *upstream.Auth.Oauth2TokenEndpoint,
-				ClientID:         *upstream.Auth.Oauth2ClientId,
-				ClientSecret:     *upstream.Auth.Oauth2ClientSecret,
-				ClientAuthMethod: clientAuthMethod,
-				Username:         username,
-				Password:         password,
-				Params:           extraParams,
+				GrantType:           grantType,
+				TokenEndpoint:       *upstream.Auth.Oauth2TokenEndpoint,
+				ClientID:            *upstream.Auth.Oauth2ClientId,
+				ClientSecret:        *upstream.Auth.Oauth2ClientSecret,
+				ClientAuthMethod:    clientAuthMethod,
+				Username:            username,
+				Password:            password,
+				Params:              extraParams,
+				TokenRequestTimeout: tokenRequestTimeout,
+				DefaultTokenTTL:     defaultTokenTTL,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
@@ -845,6 +854,13 @@ type OAuth2UpstreamAuthParams struct {
 	// uses. There is no first-class "scope" field: if the identity provider
 	// needs one, it goes in here, e.g. {"scope": "chat.completions embeddings"}.
 	Params map[string]string
+
+	// TokenRequestTimeout and DefaultTokenTTL are optional Go-duration
+	// strings (e.g. "10s", "1h") forwarded as-is to the policy, which
+	// applies its own default and permissive fallback-on-parse-failure
+	// behavior - no validation needed here.
+	TokenRequestTimeout string
+	DefaultTokenTTL     string
 }
 
 // GetUpstreamAuthOAuth2PolicyParams renders the policy params for the oauth2
@@ -876,6 +892,12 @@ func GetUpstreamAuthOAuth2PolicyParams(p OAuth2UpstreamAuthParams) (map[string]i
 	}
 	if p.Password != "" {
 		m["password"] = p.Password
+	}
+	if p.TokenRequestTimeout != "" {
+		m["tokenRequestTimeout"] = p.TokenRequestTimeout
+	}
+	if p.DefaultTokenTTL != "" {
+		m["defaultTokenTTL"] = p.DefaultTokenTTL
 	}
 	return m, nil
 }
@@ -940,6 +962,13 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 		if auth.Oauth2Params != nil {
 			extraParams = *auth.Oauth2Params
 		}
+		var tokenRequestTimeout, defaultTokenTTL string
+		if auth.Oauth2TokenRequestTimeout != nil {
+			tokenRequestTimeout = *auth.Oauth2TokenRequestTimeout
+		}
+		if auth.Oauth2DefaultTokenTTL != nil {
+			defaultTokenTTL = *auth.Oauth2DefaultTokenTTL
+		}
 		if grantType == string(api.LLMUpstreamAuthOauth2GrantTypePassword) {
 			if auth.Oauth2Username == nil || *auth.Oauth2Username == "" {
 				return nil, fmt.Errorf("%s.oauth2Username is required when oauth2GrantType is password", field)
@@ -951,14 +980,16 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 			password = *auth.Oauth2Password
 		}
 		params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
-			GrantType:        grantType,
-			TokenEndpoint:    *auth.Oauth2TokenEndpoint,
-			ClientID:         *auth.Oauth2ClientId,
-			ClientSecret:     *auth.Oauth2ClientSecret,
-			ClientAuthMethod: clientAuthMethod,
-			Username:         username,
-			Password:         password,
-			Params:           extraParams,
+			GrantType:           grantType,
+			TokenEndpoint:       *auth.Oauth2TokenEndpoint,
+			ClientID:            *auth.Oauth2ClientId,
+			ClientSecret:        *auth.Oauth2ClientSecret,
+			ClientAuthMethod:    clientAuthMethod,
+			Username:            username,
+			Password:            password,
+			Params:              extraParams,
+			TokenRequestTimeout: tokenRequestTimeout,
+			DefaultTokenTTL:     defaultTokenTTL,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
