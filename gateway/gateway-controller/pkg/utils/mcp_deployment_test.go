@@ -248,7 +248,7 @@ func TestMCPDeploymentService_GetMCPProxyByHandle(t *testing.T) {
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
-	require.NoError(t, HydrateStoredMCPConfig(cfg))
+	require.NoError(t, HydrateStoredMCPConfig(cfg, nil))
 	require.NoError(t, db.SaveConfig(cfg))
 
 	found, err := service.GetMCPProxyByHandle("test-mcp")
@@ -666,7 +666,7 @@ func TestMCPDeploymentService_UndeployMCPProxy_WithDBAndEventHubPublishesUpdate(
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
-	require.NoError(t, HydrateStoredMCPConfig(cfg))
+	require.NoError(t, HydrateStoredMCPConfig(cfg, nil))
 	require.NoError(t, db.SaveConfig(cfg))
 	require.NoError(t, store.Add(cfg))
 

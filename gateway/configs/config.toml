@@ -63,6 +63,17 @@ pricing_file = "/etc/policy-engine/llm-pricing/model_prices.json"
 host = "redis"
 port = 6379
 
+[policy_configurations.azure_managed_identity_v1]
+# Points the azure-managed-identity policy at the local mock IMDS server
+# (gateway/dev-policies/azure-managed-identity/mocks/mock-azure-imds) instead
+# of the real 169.254.169.254 - only ever meaningful for local/CI testing,
+# since real IMDS is unreachable from anywhere but actual Azure compute.
+imds_endpoint = "http://host.docker.internal:9701/metadata/identity/oauth2/token"
+
+[policy_configurations.azure_managed_identity_v1.redis]
+host = "redis"
+port = 6379
+
 [immutable_gateway]
 enabled = false
 artifacts_dir = "/etc/api-platform-gateway/immutable_gateway/artifacts"
