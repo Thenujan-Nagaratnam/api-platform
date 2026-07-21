@@ -4431,7 +4431,7 @@ components:
                 expires_in. Applies to both grants. Defaults to "1h" when
                 omitted.
               default: "1h"
-            oauth2PurgeOnUpstreamStatusCodes:
+            oauth2TokenPurgeStatusCodes:
               type: array
               items:
                 type: integer
@@ -4537,7 +4537,7 @@ components:
             expires_in. Applies to both grants. Defaults to "1h" when
             omitted.
           default: "1h"
-        oauth2PurgeOnUpstreamStatusCodes:
+        oauth2TokenPurgeStatusCodes:
           type: array
           items:
             type: integer

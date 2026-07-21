@@ -19,11 +19,14 @@ points only — see the PRD for prose/rationale.
 ## Architecture
 
 ```
-Register LlmProvider (upstream.auth.type: oauth2)
-  → gateway-controller validates params, attaches oauth2 policy
+Register LlmProvider or LlmProxy (auth.type: oauth2)
+  → gateway-controller validates params, attaches upstream-oauth2-authentication policy
   → xDS (existing PolicyChainConfig channel, nothing new)
   → gateway-runtime: local cache? → Redis cache? → fetch from IdP
   → inject `Authorization: Bearer <token>`, forward upstream
+  → upstream responds → status in tokenPurgeStatusCodes (default [401])?
+      → yes: purge cached token (both tiers), response still passes through
+      → no: pass response through unchanged
 ```
 
 - No new endpoint, no new xDS channel, no new tables.
@@ -118,7 +121,7 @@ Register LlmProvider (upstream.auth.type: oauth2)
 ## Response-phase token purging (shipped)
 
 - `OnResponseHeaders` purges both cache tiers when the upstream responds
-  with a status in `purgeTokenOnUpstreamStatusCodes` (default `[401]`,
+  with a status in `tokenPurgeStatusCodes` (default `[401]`,
   mirrors Kong's `purge_token_on_upstream_status_codes`; `403` excluded by
   default — usually insufficient scope, not a bad token).
 - Response-header processing (`ResponseHeaderMode: Process`) only turns on
@@ -136,7 +139,7 @@ Register LlmProvider (upstream.auth.type: oauth2)
   second real token-endpoint call happens post-purge, not by inspection.
   Fixed: `Purge()` now rebuilds the inner token source via
   `buildTokenSource` under the same mutex guarding the two-tier cache.
-- Exposed on the typed schema as `oauth2PurgeOnUpstreamStatusCodes` (both
+- Exposed on the typed schema as `oauth2TokenPurgeStatusCodes` (both
   `UpstreamAuth` and `LLMUpstreamAuth`) — nil (field omitted) vs. an
   explicit empty list both carry meaning end to end (Go struct field →
   transformer → policy param), the latter being how a publisher disables
@@ -155,7 +158,7 @@ Register LlmProvider (upstream.auth.type: oauth2)
   cache isolation across differently-credentialed providers on one API,
   cache sharing across identically-configured providers on different APIs.
 - `go test -race` clean after the data-race fix.
-- One-command runner: `gateway/dev-policies/oauth2-upstream-authentication/e2e/run-e2e.sh`.
+- One-command runner: `gateway/dev-policies/upstream-oauth2-authentication/e2e/run-e2e.sh`.
 - **Note:** `gateway/dev-policies/` is gitignored repo-wide — none of this
   test tooling is in git/visible in a PR diff.
 
@@ -170,9 +173,9 @@ Register LlmProvider (upstream.auth.type: oauth2)
 
 ## Shipped
 
-- `oauth2-upstream-authentication` policy, `v0.8.0`.
-- Lives in `gateway-controllers/policies/oauth2-upstream-authentication`, mirrored byte-identical
-  into `gateway/dev-policies/oauth2-upstream-authentication` (dual-repo — must stay in sync
+- `upstream-oauth2-authentication` policy, `v0.8.0`.
+- Lives in `gateway-controllers/policies/upstream-oauth2-authentication`, mirrored byte-identical
+  into `gateway/dev-policies/upstream-oauth2-authentication` (dual-repo — must stay in sync
   manually, no tooling enforces it).
 
 ## Open follow-ups (priority order)

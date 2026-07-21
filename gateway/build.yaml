@@ -94,7 +94,7 @@ policies:
     gomodule: github.com/wso2/gateway-controllers/policies/word-count-guardrail@v1
   - name: aws-authentication
     gomodule: github.com/wso2/gateway-controllers/policies/aws-authentication@v0
-  - name: oauth2-upstream-authentication
-    filePath: ./dev-policies/oauth2-upstream-authentication
+  - name: upstream-oauth2-authentication
+    filePath: ./dev-policies/upstream-oauth2-authentication
   - name: azure-managed-identity
     filePath: ./dev-policies/azure-managed-identity

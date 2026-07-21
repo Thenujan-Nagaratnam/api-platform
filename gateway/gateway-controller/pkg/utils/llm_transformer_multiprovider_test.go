@@ -246,7 +246,7 @@ func TestLLMProviderTransformer_TransformProxy_AdditionalProviderTransformerIsCo
 // is the transformer-side half of the regression coverage for the
 // cross-provider Redis token cache collision bug (see
 // gateway/spec/prds/oauth2-upstream-auth.md and
-// oauth2ConfigDiscriminator in gateway/dev-policies/oauth2-upstream-authentication/token_cache.go).
+// oauth2ConfigDiscriminator in gateway/dev-policies/upstream-oauth2-authentication/token_cache.go).
 //
 // The runtime fix (keying the oauth2 policy's cache by its own config
 // instead of by API identity) is verified in isolation by

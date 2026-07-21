@@ -152,7 +152,7 @@ const (
 	// rather than via an fmt.Sprintf'd YAML string template — with six
 	// fields, several optional, string-templating risks both empty-field
 	// YAML breakage and unescaped special characters in credential values.
-	UPSTREAM_AUTH_OAUTH2_POLICY_NAME = "oauth2-upstream-authentication"
+	UPSTREAM_AUTH_OAUTH2_POLICY_NAME = "upstream-oauth2-authentication"
 	PROXY_HOST__HEADER_POLICY_NAME   = "host-rewrite"
 	PROXY_HOST__HEADER_POLICY_PARAMS = "host: '%s'\n"
 

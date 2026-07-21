@@ -138,9 +138,9 @@ policies:
     - name: aws-authentication
       version: v0.9.0
       gomodule: github.com/wso2/gateway-controllers/policies/aws-authentication@v0
-    - name: oauth2-upstream-authentication
+    - name: upstream-oauth2-authentication
       version: v0.8.0
-      filePath: ./dev-policies/oauth2-upstream-authentication
+      filePath: ./dev-policies/upstream-oauth2-authentication
     - name: azure-managed-identity
       version: v0.1.0
       filePath: ./dev-policies/azure-managed-identity

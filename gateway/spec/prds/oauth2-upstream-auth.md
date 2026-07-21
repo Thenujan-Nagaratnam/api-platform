@@ -1,4 +1,4 @@
-# OAuth2 Upstream Authentication for LLM Providers/Proxies
+# Upstream OAuth2 Authentication for LLM Providers/Proxies
 
 ## What is the problem we are trying to solve? And why should it be solved now?
 
@@ -30,22 +30,41 @@ that caller is unaffected by upstream auth mechanics.
 ### Architecture
 
 ```
-Registers LlmProvider (upstream.auth.type: oauth2)
+Registers LlmProvider (upstream.auth.type: oauth2) or
+LlmProxy (provider.auth.type: oauth2 / additionalProviders[].auth.type: oauth2)
         │
         ▼
-gateway-controller validates params, attaches oauth2 policy
+gateway-controller validates params, attaches the
+upstream-oauth2-authentication policy
         │  (existing PolicyChainConfig xDS — no new channel)
         ▼
 gateway-runtime: local cache? → Redis cache? → fetch from IdP
         │ (hit at any tier)
         ▼
 inject Authorization: Bearer <token>, forward upstream
+        │
+        ▼
+upstream responds
+        │
+        ▼
+status in tokenPurgeStatusCodes? ──── no ──→ pass the response through unchanged
+        │ yes (default: 401 only)
+        ▼
+purge the cached token (both tiers) —
+next request fetches a fresh one;
+this response still passes through unchanged
 ```
 
 The gateway acts as a confidential OAuth2 client: it exchanges its own
 configured credentials for an access token at a configured token endpoint,
 caches it, and injects it as `Authorization: Bearer <token>` before
-forwarding each request. Two grants are supported:
+forwarding each request. If the upstream then rejects that token (its
+response status is in `tokenPurgeStatusCodes`, default `[401]`), the
+`upstream-oauth2-authentication` policy purges the cached token from both
+cache tiers so the *next* request fetches a fresh one — it does not retry
+the request that triggered the purge, and this is opt-out (set
+`tokenPurgeStatusCodes: []` to disable it entirely). Two grants are
+supported:
 
 - **`client_credentials`** (RFC 6749 §4.4) — the default, standard
   machine-to-machine grant. Delegates entirely to
@@ -173,7 +192,7 @@ auth:
         expires_in. Applies to both grants. Defaults to "1h" when
         omitted.
       default: "1h"
-    oauth2PurgeOnUpstreamStatusCodes:
+    oauth2TokenPurgeStatusCodes:
       type: array
       items:
         type: integer
@@ -331,7 +350,7 @@ IdP bills per token request or rate-limits aggressively.
   still `ResponseBodyMode: Skip` — the status code alone is enough, so this
   stays safe for streamed upstream responses) and purges the cached token
   from both cache tiers when the upstream responds with a status in
-  `purgeTokenOnUpstreamStatusCodes` (default `[401]`, mirroring Kong's
+  `tokenPurgeStatusCodes` (default `[401]`, mirroring Kong's
   `purge_token_on_upstream_status_codes`; `403` is deliberately excluded by
   default since it usually means insufficient scope for an otherwise-valid
   token). Response-header processing itself only turns on when this list is
@@ -416,19 +435,19 @@ against a mock IdP/backend) for:
   API (the cache-key fix described in Surprises above), and cache *sharing*
   across independently-registered APIs with byte-identical oauth2 config
   (proven live: two APIs received the exact same bearer token string)
-- `purgeTokenOnUpstreamStatusCodes` (response-phase token purging) —
+- `tokenPurgeStatusCodes` (response-phase token purging) —
   verified with Go-level integration tests (prime cache → purge → assert a
   second real token-endpoint call happens), including the inner-token-source
   rebuild fix described in Limitations above. Not yet re-run through the
   live Docker/E2E harness the bullets above went through.
 
-Shipped as the `oauth2-upstream-authentication` policy `v0.8.0` in both `gateway-controllers/policies/oauth2-upstream-authentication`
-and the in-repo mirror `gateway/dev-policies/oauth2-upstream-authentication` (kept byte-identical —
+Shipped as the `upstream-oauth2-authentication` policy `v0.8.0` in both `gateway-controllers/policies/upstream-oauth2-authentication`
+and the in-repo mirror `gateway/dev-policies/upstream-oauth2-authentication` (kept byte-identical —
 see the dual-repo gotcha this caused mid-implementation, captured in team
 memory as it isn't otherwise enforced by tooling).
 
 `TESTING.md` and the companion Postman collection
-(`gateway/dev-policies/oauth2-upstream-authentication/e2e/postman/oauth2.postman_collection.json`)
+(`gateway/dev-policies/upstream-oauth2-authentication/e2e/postman/oauth2.postman_collection.json`)
 cover the happy path, caching, expiry/refresh, all three failure modes,
 `client_secret_post`, `tokenRequestTimeout`, `defaultTokenTTL`, and the two
 cache-isolation/sharing scenarios above. All of `TESTING.md`, the mocks, and

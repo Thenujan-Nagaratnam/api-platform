@@ -440,15 +440,15 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 			upstreamAuthPolicy = &mh
 		case api.LLMProviderConfigDataUpstreamAuthTypeOauth2:
 			fields := oauth2UpstreamAuthFields{
-				tokenEndpoint:              upstream.Auth.Oauth2TokenEndpoint,
-				clientID:                   upstream.Auth.Oauth2ClientId,
-				clientSecret:               upstream.Auth.Oauth2ClientSecret,
-				username:                   upstream.Auth.Oauth2Username,
-				password:                   upstream.Auth.Oauth2Password,
-				params:                     upstream.Auth.Oauth2Params,
-				tokenRequestTimeout:        upstream.Auth.Oauth2TokenRequestTimeout,
-				defaultTokenTTL:            upstream.Auth.Oauth2DefaultTokenTTL,
-				purgeOnUpstreamStatusCodes: upstream.Auth.Oauth2PurgeOnUpstreamStatusCodes,
+				tokenEndpoint:         upstream.Auth.Oauth2TokenEndpoint,
+				clientID:              upstream.Auth.Oauth2ClientId,
+				clientSecret:          upstream.Auth.Oauth2ClientSecret,
+				username:              upstream.Auth.Oauth2Username,
+				password:              upstream.Auth.Oauth2Password,
+				params:                upstream.Auth.Oauth2Params,
+				tokenRequestTimeout:   upstream.Auth.Oauth2TokenRequestTimeout,
+				defaultTokenTTL:       upstream.Auth.Oauth2DefaultTokenTTL,
+				tokenPurgeStatusCodes: upstream.Auth.Oauth2TokenPurgeStatusCodes,
 			}
 			if upstream.Auth.Oauth2GrantType != nil {
 				grantType := string(*upstream.Auth.Oauth2GrantType)
@@ -810,13 +810,13 @@ type OAuth2UpstreamAuthParams struct {
 	TokenRequestTimeout string
 	DefaultTokenTTL     string
 
-	// PurgeOnUpstreamStatusCodes comes from upstream.auth.oauth2PurgeOnUpstreamStatusCodes.
+	// TokenPurgeStatusCodes comes from upstream.auth.oauth2TokenPurgeStatusCodes.
 	// nil means the field was omitted - forwarded as-is (including nil) to
 	// GetUpstreamAuthOAuth2PolicyParams, which must NOT substitute a default
 	// for a non-nil-but-empty slice: that's the user's explicit way to
 	// disable the policy's own response-phase purging, distinct from
 	// omitting the field entirely.
-	PurgeOnUpstreamStatusCodes *[]int
+	TokenPurgeStatusCodes *[]int
 }
 
 // GetUpstreamAuthOAuth2PolicyParams renders the policy params for the oauth2
@@ -860,8 +860,8 @@ func GetUpstreamAuthOAuth2PolicyParams(p OAuth2UpstreamAuthParams) (map[string]i
 	// how a publisher explicitly disables the policy's own response-phase
 	// purging, distinct from not setting this field at all and getting the
 	// policy's own default ([401]).
-	if p.PurgeOnUpstreamStatusCodes != nil {
-		m["purgeTokenOnUpstreamStatusCodes"] = *p.PurgeOnUpstreamStatusCodes
+	if p.TokenPurgeStatusCodes != nil {
+		m["tokenPurgeStatusCodes"] = *p.TokenPurgeStatusCodes
 	}
 	return m, nil
 }
@@ -887,10 +887,10 @@ type oauth2UpstreamAuthFields struct {
 	tokenRequestTimeout *string
 	defaultTokenTTL     *string
 
-	// purgeOnUpstreamStatusCodes mirrors OAuth2UpstreamAuthParams.PurgeOnUpstreamStatusCodes -
+	// tokenPurgeStatusCodes mirrors OAuth2UpstreamAuthParams.TokenPurgeStatusCodes -
 	// nil vs. non-nil-empty both carry meaning, so this stays a pointer all
 	// the way through rather than collapsing to a plain slice.
-	purgeOnUpstreamStatusCodes *[]int
+	tokenPurgeStatusCodes *[]int
 }
 
 // buildOAuth2UpstreamAuthPolicy validates the oauth2 fields shared by both
@@ -955,17 +955,17 @@ func (t *LLMProviderTransformer) buildOAuth2UpstreamAuthPolicy(f oauth2UpstreamA
 	}
 
 	params, err := GetUpstreamAuthOAuth2PolicyParams(OAuth2UpstreamAuthParams{
-		GrantType:                  grantType,
-		TokenEndpoint:              *f.tokenEndpoint,
-		ClientID:                   *f.clientID,
-		ClientSecret:               *f.clientSecret,
-		ClientAuthMethod:           clientAuthMethod,
-		Username:                   username,
-		Password:                   password,
-		Params:                     extraParams,
-		TokenRequestTimeout:        tokenRequestTimeout,
-		DefaultTokenTTL:            defaultTokenTTL,
-		PurgeOnUpstreamStatusCodes: f.purgeOnUpstreamStatusCodes,
+		GrantType:             grantType,
+		TokenEndpoint:         *f.tokenEndpoint,
+		ClientID:              *f.clientID,
+		ClientSecret:          *f.clientSecret,
+		ClientAuthMethod:      clientAuthMethod,
+		Username:              username,
+		Password:              password,
+		Params:                extraParams,
+		TokenRequestTimeout:   tokenRequestTimeout,
+		DefaultTokenTTL:       defaultTokenTTL,
+		TokenPurgeStatusCodes: f.tokenPurgeStatusCodes,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
@@ -1008,15 +1008,15 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 		}, nil
 	case api.LLMUpstreamAuthTypeOauth2:
 		fields := oauth2UpstreamAuthFields{
-			tokenEndpoint:              auth.Oauth2TokenEndpoint,
-			clientID:                   auth.Oauth2ClientId,
-			clientSecret:               auth.Oauth2ClientSecret,
-			username:                   auth.Oauth2Username,
-			password:                   auth.Oauth2Password,
-			params:                     auth.Oauth2Params,
-			tokenRequestTimeout:        auth.Oauth2TokenRequestTimeout,
-			defaultTokenTTL:            auth.Oauth2DefaultTokenTTL,
-			purgeOnUpstreamStatusCodes: auth.Oauth2PurgeOnUpstreamStatusCodes,
+			tokenEndpoint:         auth.Oauth2TokenEndpoint,
+			clientID:              auth.Oauth2ClientId,
+			clientSecret:          auth.Oauth2ClientSecret,
+			username:              auth.Oauth2Username,
+			password:              auth.Oauth2Password,
+			params:                auth.Oauth2Params,
+			tokenRequestTimeout:   auth.Oauth2TokenRequestTimeout,
+			defaultTokenTTL:       auth.Oauth2DefaultTokenTTL,
+			tokenPurgeStatusCodes: auth.Oauth2TokenPurgeStatusCodes,
 		}
 		if auth.Oauth2GrantType != nil {
 			grantType := string(*auth.Oauth2GrantType)
