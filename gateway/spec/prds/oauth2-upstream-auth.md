@@ -84,20 +84,95 @@ as an auth failure (`closed`).
 
 ### API Specification
 
+`components.schemas.UpstreamAuth.properties.auth` in
+`gateway-controller/api/management-openapi.yaml` (mirrored field-for-field
+in the standalone `LLMUpstreamAuth` schema used by an `LlmProxy`'s
+provider/`additionalProviders` auth):
+
 ```yaml
-UpstreamAuth:
-  auth:
-    type: { enum: [api-key, oauth2] }
-    oauth2GrantType: { enum: [client_credentials, password], default: client_credentials }
-    oauth2TokenEndpoint: string
-    oauth2ClientId: string
-    oauth2ClientSecret: string
-    oauth2ClientAuthMethod: { enum: [client_secret_basic, client_secret_post], default: client_secret_basic }
-    oauth2Username: string   # required only when oauth2GrantType: password
-    oauth2Password: string   # required only when oauth2GrantType: password
-    oauth2Params: { additionalProperties: string }   # optional, client_credentials only, e.g. { scope: "read write" }
-    oauth2TokenRequestTimeout: string   # Go duration, default "10s", both grants
-    oauth2DefaultTokenTTL: string       # Go duration, default "1h", both grants - fallback when expires_in is omitted
+auth:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [ api-key, oauth2 ]
+    header:
+      type: string
+      description: HTTP header to set on outbound requests. Applies when type is api-key.
+    value:
+      type: string
+      description: Credential value. Applies when type is api-key.
+    oauth2GrantType:
+      type: string
+      description: >
+        OAuth2 grant type. "client_credentials" (RFC 6749 4.4) is the
+        standard machine-to-machine grant and should be preferred.
+        "password" (RFC 6749 4.3, Resource Owner Password
+        Credentials) is supported for legacy identity providers only
+        - it requires the gateway to handle the resource owner's raw
+        username/password directly, which current OAuth2 security
+        guidance discourages for new integrations. Defaults to
+        client_credentials when type is oauth2 and this field is
+        omitted.
+      enum: [ client_credentials, password ]
+      default: client_credentials
+    oauth2TokenEndpoint:
+      type: string
+      description: OAuth2 token endpoint URL. Required when type is oauth2.
+    oauth2ClientId:
+      type: string
+      description: OAuth2 client ID. Required when type is oauth2.
+    oauth2ClientSecret:
+      type: string
+      description: OAuth2 client secret. Required when type is oauth2.
+    oauth2ClientAuthMethod:
+      type: string
+      description: >
+        How oauth2ClientId/oauth2ClientSecret are presented to the
+        token endpoint. "client_secret_basic" (HTTP Basic auth,
+        RFC 6749's preferred convention) or "client_secret_post"
+        (client_id/client_secret as form fields). Applies to both
+        grants. Defaults to client_secret_basic when omitted.
+      enum: [client_secret_basic, client_secret_post]
+      default: client_secret_basic
+    oauth2Username:
+      type: string
+      description: Resource owner username. Required when oauth2GrantType is password; unused otherwise.
+    oauth2Password:
+      type: string
+      description: Resource owner password, paired with oauth2Username. Required when oauth2GrantType is password; unused otherwise.
+    oauth2Params:
+      type: object
+      additionalProperties:
+        type: string
+      description: >
+        Optional extra parameters appended to the token request body, as
+        a flat map of string key/value pairs. Applies when type is
+        oauth2 and oauth2GrantType is client_credentials (the default) -
+        the password grant's request body is fixed and does not forward
+        this field. There is no first-class "scope" field: if the
+        identity provider needs one, add it here, e.g. {"scope":
+        "chat.completions embeddings"}.
+    oauth2TokenRequestTimeout:
+      type: string
+      description: >
+        Maximum time to wait for a single token-endpoint HTTP call, as
+        a Go duration string (e.g. "10s", "2500ms"). Applies to both
+        grants. Defaults to "10s" when omitted.
+      default: "10s"
+    oauth2DefaultTokenTTL:
+      type: string
+      description: >
+        Fallback token lifetime, as a Go duration string (e.g. "1h",
+        "30m"), used only when the token endpoint's response omits
+        expires_in entirely - without it, an omitted expires_in would
+        silently disable caching, forcing a fresh token fetch on every
+        request. Has no effect when the identity provider does return
+        expires_in. Applies to both grants. Defaults to "1h" when
+        omitted.
+      default: "1h"
 ```
 
 No new endpoint — this extends the existing `LlmProvider`/`LlmProxy`
@@ -316,13 +391,13 @@ against a mock IdP/backend) for:
   across independently-registered APIs with byte-identical oauth2 config
   (proven live: two APIs received the exact same bearer token string)
 
-Shipped as `oauth2` policy `v0.8.0` in both `gateway-controllers/policies/oauth2`
-and the in-repo mirror `gateway/dev-policies/oauth2` (kept byte-identical —
+Shipped as the `oauth2-upstream-authentication` policy `v0.8.0` in both `gateway-controllers/policies/oauth2-upstream-authentication`
+and the in-repo mirror `gateway/dev-policies/oauth2-upstream-authentication` (kept byte-identical —
 see the dual-repo gotcha this caused mid-implementation, captured in team
 memory as it isn't otherwise enforced by tooling).
 
 `TESTING.md` and the companion Postman collection
-(`gateway/dev-policies/oauth2/e2e/postman/oauth2.postman_collection.json`)
+(`gateway/dev-policies/oauth2-upstream-authentication/e2e/postman/oauth2.postman_collection.json`)
 cover the happy path, caching, expiry/refresh, all three failure modes,
 `client_secret_post`, `tokenRequestTimeout`, `defaultTokenTTL`, and the two
 cache-isolation/sharing scenarios above. All of `TESTING.md`, the mocks, and
