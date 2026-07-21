@@ -260,40 +260,27 @@ func (v *MCPValidator) validateUpstream(fieldPrefix string, upstream *api.MCPPro
 		}
 	}
 
-	// Validate auth if present
+	// Validate auth if present. Shared with LlmProvider/LlmProxy - see
+	// validateUpstreamAuthFields in llm_validator.go - since MCPProxyConfigData's
+	// upstream.auth is generated from the same OpenAPI UpstreamAuth schema and
+	// supports the same api-key/oauth2 shapes.
 	if upstream.Auth != nil {
 		auth := upstream.Auth
-		// Validate 'type'
-		if auth.Type == "" {
-			errors = append(errors, ValidationError{
-				Field:   fmt.Sprintf("%s.auth.type", fieldPrefix),
-				Message: "Auth type is required",
-			})
+		fields := upstreamAuthFields{
+			authType:            string(auth.Type),
+			header:              auth.Header,
+			value:               auth.Value,
+			oauth2TokenEndpoint: auth.Oauth2TokenEndpoint,
+			oauth2ClientId:      auth.Oauth2ClientId,
+			oauth2ClientSecret:  auth.Oauth2ClientSecret,
+			oauth2Username:      auth.Oauth2Username,
+			oauth2Password:      auth.Oauth2Password,
 		}
-
-		if auth.Header == nil || *auth.Header == "" {
-			errors = append(errors, ValidationError{
-				Field:   fmt.Sprintf("%s.auth.header", fieldPrefix),
-				Message: "Auth header is required",
-			})
+		if auth.Oauth2GrantType != nil {
+			grantType := string(*auth.Oauth2GrantType)
+			fields.oauth2GrantType = &grantType
 		}
-		if auth.Value == nil || *auth.Value == "" {
-			errors = append(errors, ValidationError{
-				Field:   fmt.Sprintf("%s.auth.value", fieldPrefix),
-				Message: "Auth value is required",
-			})
-		}
-
-		if auth.Type == api.MCPProxyConfigDataUpstreamAuthType("bearer") {
-			// For Bearer token, value should start with "Bearer or "bearer "
-			if auth.Value != nil &&
-				!strings.HasPrefix(*auth.Value, "Bearer ") && !strings.HasPrefix(*auth.Value, "bearer ") {
-				errors = append(errors, ValidationError{
-					Field:   fmt.Sprintf("%s.auth.value", fieldPrefix),
-					Message: "Bearer token value must start with 'Bearer ' or 'bearer '",
-				})
-			}
-		}
+		errors = append(errors, validateUpstreamAuthFields(fmt.Sprintf("%s.auth", fieldPrefix), fields)...)
 	}
 
 	return errors

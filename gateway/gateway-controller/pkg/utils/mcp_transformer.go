@@ -194,15 +194,56 @@ func (t *MCPTransformer) Transform(input any, output *api.RestAPI) (*api.RestAPI
 	// Set upstream auth if present
 	upstream := mcpConfig.Spec.Upstream
 	if upstream.Auth != nil {
-		params, err := GetParamsOfPolicy(constants.SET_HEADERS_POLICY_PARAMS, *upstream.Auth.Header, *upstream.Auth.Value)
-		if err != nil {
-			return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
+		switch upstream.Auth.Type {
+		case api.MCPProxyConfigDataUpstreamAuthTypeApiKey:
+			params, err := GetParamsOfPolicy(constants.SET_HEADERS_POLICY_PARAMS, *upstream.Auth.Header, *upstream.Auth.Value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
+			}
+			pol := api.Policy{
+				Name:   constants.SET_HEADERS_POLICY_NAME,
+				Params: &params,
+			}
+			policies = append(policies, pol)
+		case api.MCPProxyConfigDataUpstreamAuthTypeOauth2:
+			fields := oauth2UpstreamAuthFields{
+				tokenEndpoint:         upstream.Auth.Oauth2TokenEndpoint,
+				clientID:              upstream.Auth.Oauth2ClientId,
+				clientSecret:          upstream.Auth.Oauth2ClientSecret,
+				username:              upstream.Auth.Oauth2Username,
+				password:              upstream.Auth.Oauth2Password,
+				params:                upstream.Auth.Oauth2Params,
+				tokenRequestTimeout:   upstream.Auth.Oauth2TokenRequestTimeout,
+				defaultTokenTTL:       upstream.Auth.Oauth2DefaultTokenTTL,
+				tokenPurgeStatusCodes: upstream.Auth.Oauth2TokenPurgeStatusCodes,
+			}
+			if upstream.Auth.Oauth2GrantType != nil {
+				grantType := string(*upstream.Auth.Oauth2GrantType)
+				fields.grantType = &grantType
+			}
+			if upstream.Auth.Oauth2ClientAuthMethod != nil {
+				clientAuthMethod := string(*upstream.Auth.Oauth2ClientAuthMethod)
+				fields.clientAuthMethod = &clientAuthMethod
+			}
+			// Version deliberately left unset here, matching this
+			// transformer's existing api-key/set-headers attachment above -
+			// an empty version resolves to the policy's latest available
+			// version downstream (see PolicyValidator's ResolvePolicyVersion).
+			// Unlike LLMProviderTransformer, MCPTransformer has no
+			// policyVersionResolver wired through its constructor to resolve
+			// an explicit version here.
+			params, err := buildOAuth2UpstreamAuthParams(fields, "upstream.auth")
+			if err != nil {
+				return nil, err
+			}
+			pol := api.Policy{
+				Name:   constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME,
+				Params: &params,
+			}
+			policies = append(policies, pol)
+		default:
+			return nil, fmt.Errorf("unsupported upstream auth type: %s", upstream.Auth.Type)
 		}
-		pol := api.Policy{
-			Name:   constants.SET_HEADERS_POLICY_NAME,
-			Params: &params,
-		}
-		policies = append(policies, pol)
 	}
 
 	apiData.Policies = &policies

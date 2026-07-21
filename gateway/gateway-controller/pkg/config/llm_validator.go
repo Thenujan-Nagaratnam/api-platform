@@ -437,10 +437,12 @@ type upstreamAuthFields struct {
 }
 
 // validateUpstreamAuthFields applies the auth validation rules shared by
-// both upstream.auth (LlmProvider, via validateUpstreamWithAuth) and
-// LLMUpstreamAuth (LlmProxy, via validateLLMUpstreamAuth). fieldPrefix must
-// already include the trailing ".auth" segment.
-func (v *LLMValidator) validateUpstreamAuthFields(fieldPrefix string, f upstreamAuthFields) []ValidationError {
+// upstream.auth (LlmProvider, via validateUpstreamWithAuth), LLMUpstreamAuth
+// (LlmProxy, via validateLLMUpstreamAuth), and MCPProxyConfigData's upstream
+// auth (via MCPValidator.validateUpstream) - a package-level function
+// (not a method) since none of these callers share a validator receiver.
+// fieldPrefix must already include the trailing ".auth" segment.
+func validateUpstreamAuthFields(fieldPrefix string, f upstreamAuthFields) []ValidationError {
 	var errors []ValidationError
 
 	if f.authType == "" {
@@ -602,7 +604,7 @@ func (v *LLMValidator) validateUpstreamWithAuth(fieldPrefix string,
 			grantType := string(*auth.Oauth2GrantType)
 			fields.oauth2GrantType = &grantType
 		}
-		errors = append(errors, v.validateUpstreamAuthFields(fieldPrefix+".auth", fields)...)
+		errors = append(errors, validateUpstreamAuthFields(fieldPrefix+".auth", fields)...)
 	}
 
 	return errors
@@ -812,7 +814,7 @@ func (v *LLMValidator) validateLLMUpstreamAuth(fieldPrefix string, auth *api.LLM
 		grantType := string(*auth.Oauth2GrantType)
 		fields.oauth2GrantType = &grantType
 	}
-	return v.validateUpstreamAuthFields(fieldPrefix, fields)
+	return validateUpstreamAuthFields(fieldPrefix, fields)
 }
 
 // validateAccessControl validates access control configuration

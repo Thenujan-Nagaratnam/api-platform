@@ -893,12 +893,14 @@ type oauth2UpstreamAuthFields struct {
 	tokenPurgeStatusCodes *[]int
 }
 
-// buildOAuth2UpstreamAuthPolicy validates the oauth2 fields shared by both
-// upstream.auth (LlmProvider, via transformProvider) and LLMUpstreamAuth
-// (LlmProxy, via proxyUpstreamAuthPolicy) and builds the resulting oauth2
-// policy. field prefixes any validation error message (e.g. "upstream.auth"
-// or "additionalProviders[anthropic-provider].auth").
-func (t *LLMProviderTransformer) buildOAuth2UpstreamAuthPolicy(f oauth2UpstreamAuthFields, field string) (*api.Policy, error) {
+// buildOAuth2UpstreamAuthParams validates the oauth2 fields shared by
+// upstream.auth (LlmProvider, via transformProvider), LLMUpstreamAuth
+// (LlmProxy, via proxyUpstreamAuthPolicy), and MCPProxyConfigData's upstream
+// auth (via mcp_transformer.go), and builds the resulting policy params. A
+// package-level function (not a method) since MCPTransformer doesn't share a
+// receiver with LLMProviderTransformer. field prefixes any validation error
+// message (e.g. "upstream.auth" or "additionalProviders[anthropic-provider].auth").
+func buildOAuth2UpstreamAuthParams(f oauth2UpstreamAuthFields, field string) (map[string]interface{}, error) {
 	if f.tokenEndpoint == nil || *f.tokenEndpoint == "" {
 		return nil, fmt.Errorf("%s.oauth2TokenEndpoint is required", field)
 	}
@@ -969,6 +971,18 @@ func (t *LLMProviderTransformer) buildOAuth2UpstreamAuthPolicy(f oauth2UpstreamA
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream auth params: %w", err)
+	}
+	return params, nil
+}
+
+// buildOAuth2UpstreamAuthPolicy wraps buildOAuth2UpstreamAuthParams with this
+// transformer's own policy-version resolution, used by both upstream.auth
+// (LlmProvider, via transformProvider) and LLMUpstreamAuth (LlmProxy, via
+// proxyUpstreamAuthPolicy).
+func (t *LLMProviderTransformer) buildOAuth2UpstreamAuthPolicy(f oauth2UpstreamAuthFields, field string) (*api.Policy, error) {
+	params, err := buildOAuth2UpstreamAuthParams(f, field)
+	if err != nil {
+		return nil, err
 	}
 	policyVersion, err := t.resolvePolicyVersion(constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME)
 	if err != nil {

@@ -166,7 +166,7 @@ func TestMCPTransformer_Transform_WithPoliciesAndUpstreamAuth(t *testing.T) {
 	url := "http://backend:8080"
 	authHeader := "Authorization"
 	authValue := "Bearer token-xyz"
-	authType := api.MCPProxyConfigDataUpstreamAuthType("bearer")
+	authType := api.MCPProxyConfigDataUpstreamAuthTypeApiKey
 
 	upstream := api.MCPProxyConfigData_Upstream{
 		Url: &url,

@@ -556,23 +556,18 @@ func TestMCPValidator_ValidateUpstreamAuth(t *testing.T) {
 			wantError: false,
 		},
 		{
-			name: "Valid bearer auth",
+			// "bearer" is not a supported auth type - only 'api-key' and
+			// 'oauth2' are declared in the UpstreamAuth OpenAPI schema. A
+			// bearer token is just an api-key auth with header "Authorization"
+			// and value "Bearer <token>" (see "Valid API key auth" above).
+			name: "Unsupported auth type is rejected",
 			auth: &authConfig{
 				Type:   api.MCPProxyConfigDataUpstreamAuthType("bearer"),
 				Header: stringPtr("Authorization"),
 				Value:  stringPtr("Bearer token123"),
 			},
-			wantError: false,
-		},
-		{
-			name: "Bearer auth without Bearer prefix",
-			auth: &authConfig{
-				Type:   api.MCPProxyConfigDataUpstreamAuthType("bearer"),
-				Header: stringPtr("Authorization"),
-				Value:  stringPtr("token123"),
-			},
 			wantError: true,
-			errField:  "spec.upstream.auth.value",
+			errField:  "spec.upstream.auth.type",
 		},
 		{
 			name: "Missing auth type",
