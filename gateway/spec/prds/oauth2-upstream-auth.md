@@ -173,6 +173,21 @@ auth:
         expires_in. Applies to both grants. Defaults to "1h" when
         omitted.
       default: "1h"
+    oauth2PurgeOnUpstreamStatusCodes:
+      type: array
+      items:
+        type: integer
+        minimum: 100
+        maximum: 599
+      description: >
+        Upstream response status codes that purge the cached token from
+        both cache tiers, so the next request fetches a fresh one instead
+        of reusing the same rejected token. Does not retry the request
+        that triggered the purge. Defaults to [401]; 403 is deliberately
+        excluded by default (usually insufficient scope, not a bad token).
+        Set to an empty list to disable response-phase processing
+        entirely.
+      default: [401]
 ```
 
 No new endpoint — this extends the existing `LlmProvider`/`LlmProxy`
@@ -311,16 +326,27 @@ IdP bills per token request or rate-limits aggressively.
   calls, not one. Accepted as a tradeoff for this workload (token requests
   are idempotent and side-effect-free); closing it would require a
   distributed lock (e.g. Redis `SETNX`-based), not implemented here.
-- **No response-phase visibility.** The policy only implements the
-  request-header processing phase (`RequestHeaderMode: Process`,
-  `ResponseHeaderMode: Skip`) — it cannot see the upstream's response. If the
-  upstream backend rejects an already-cached token (e.g. it was revoked
-  out-of-band), the stale token keeps being served from cache until it
-  naturally expires per its own TTL, with no gateway-side recovery in the
-  meantime. Kong's equivalent plugin handles this via
-  `purge_token_on_upstream_status_codes`; matching that here would require
-  adding response-phase processing — a real architectural change to this
-  policy, not a small tweak.
+- ~~No response-phase visibility.~~ **Resolved.** The policy now
+  additionally implements `OnResponseHeaders` (`ResponseHeaderMode: Process`,
+  still `ResponseBodyMode: Skip` — the status code alone is enough, so this
+  stays safe for streamed upstream responses) and purges the cached token
+  from both cache tiers when the upstream responds with a status in
+  `purgeTokenOnUpstreamStatusCodes` (default `[401]`, mirroring Kong's
+  `purge_token_on_upstream_status_codes`; `403` is deliberately excluded by
+  default since it usually means insufficient scope for an otherwise-valid
+  token). Response-header processing itself only turns on when this list is
+  non-empty, so configurations that don't need it pay no extra per-request
+  cost. This does not retry the request that triggered the purge — only the
+  *next* request is guaranteed a fresh token. Implementing this surfaced a
+  second bug: the per-grant `xoauth2.TokenSource` built in `buildTokenSource`
+  (a `clientcredentials.Config.TokenSource`/`ReuseTokenSource` wrapper) keeps
+  its own internal cached token independent of this policy's two-tier cache,
+  so purging only the two tiers wasn't enough to force a real refetch before
+  that inner token's own natural expiry — confirmed by an end-to-end test
+  that primes the cache, purges it, and asserts a second real token-endpoint
+  call happens. Fixed by having `Purge()` rebuild the inner token source via
+  `buildTokenSource` under the same mutex that guards the two-tier cache,
+  rather than only clearing local/Redis.
 - **Backward compatibility.** This extends the existing typed
   `upstream.auth` field (previously `api-key` only) with a second value
   rather than introducing a new field or endpoint — existing `api-key`
@@ -390,6 +416,11 @@ against a mock IdP/backend) for:
   API (the cache-key fix described in Surprises above), and cache *sharing*
   across independently-registered APIs with byte-identical oauth2 config
   (proven live: two APIs received the exact same bearer token string)
+- `purgeTokenOnUpstreamStatusCodes` (response-phase token purging) —
+  verified with Go-level integration tests (prime cache → purge → assert a
+  second real token-endpoint call happens), including the inner-token-source
+  rebuild fix described in Limitations above. Not yet re-run through the
+  live Docker/E2E harness the bullets above went through.
 
 Shipped as the `oauth2-upstream-authentication` policy `v0.8.0` in both `gateway-controllers/policies/oauth2-upstream-authentication`
 and the in-repo mirror `gateway/dev-policies/oauth2-upstream-authentication` (kept byte-identical —
@@ -419,12 +450,7 @@ this test tooling for free.
 
 - `private_key_jwt` / mTLS client authentication — bigger feature, not
   scoped here.
-- Token purging on upstream rejection (Kong's
-  `purge_token_on_upstream_status_codes` equivalent) — requires a
-  response-phase hook this policy doesn't have today. Highest-value item
-  from the Kong cross-check, and independently confirmed live: the policy
-  cannot notice or react to an upstream 401 on an already-cached token today
-  (see Limitations above).
+- ~~Token purging on upstream rejection~~ **Shipped** — see Limitations above.
 - No cross-replica distributed lock for token fetches (see Limitations
   above) — accepted tradeoff for now, revisit if IdP request volume from
   simultaneous cache misses becomes a real cost concern.

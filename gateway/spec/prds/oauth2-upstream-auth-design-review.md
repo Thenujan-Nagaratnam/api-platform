@@ -86,6 +86,11 @@ Register LlmProvider (upstream.auth.type: oauth2)
 - **8 stale/inaccurate doc claims** across `v0.3`–`v0.8` docs (found via
   review, verified against actual source, fixed or annotated as historical
   limitation — not silently rewritten).
+- **Purge not actually forcing a refetch (found while implementing response-phase purging).**
+  Clearing the two-tier cache alone left `buildTokenSource`'s own inner
+  `ReuseTokenSource` still serving its own cached token until its natural
+  expiry. Caught by an end-to-end test, not review. Fixed by rebuilding the
+  inner token source on `Purge()`.
 
 ## Failure modes
 
@@ -101,14 +106,44 @@ Register LlmProvider (upstream.auth.type: oauth2)
 - **No cross-replica stampede protection.** N replicas racing an expiry ⇒ N
   IdP calls, not 1. Verified directly. Would need distributed lock
   (Redis `SETNX`) — not implemented.
-- **No response-phase visibility.** Policy is request-header-only. Can't
-  detect/evict a token the upstream rejects (e.g. revoked out-of-band) —
-  stale token keeps being served until its own TTL expires. Kong has
-  `purge_token_on_upstream_status_codes`; we don't. **Highest-value
-  follow-up.**
-- **`params` is `client_credentials`-only** — password grant's library
-  helper has no equivalent extension hook.
+- ~~No response-phase visibility~~ **Resolved** — see Response-phase token
+  purging below.
+- **`params` is `client_credentials`-only, except `scope`** — `scope`
+  specifically is mapped to `Config.Scopes` for the password grant too (the
+  one extension point `PasswordCredentialsToken` actually has); every other
+  `params` key (`audience`, `resource`, `tenant`, ...) still has no effect
+  on that grant.
 - Both accepted as lower-value than shipping the core feature.
+
+## Response-phase token purging (shipped)
+
+- `OnResponseHeaders` purges both cache tiers when the upstream responds
+  with a status in `purgeTokenOnUpstreamStatusCodes` (default `[401]`,
+  mirrors Kong's `purge_token_on_upstream_status_codes`; `403` excluded by
+  default — usually insufficient scope, not a bad token).
+- Response-header processing (`ResponseHeaderMode: Process`) only turns on
+  when the list is non-empty; body is always `Skip` — status code alone is
+  enough, so this stays safe for streamed upstream responses.
+- Does **not** retry the request that triggered the purge — only the next
+  request is guaranteed a fresh token.
+- **Real bug caught while implementing this, not just a design nuance:**
+  purging local + Redis alone wasn't enough. `buildTokenSource`'s per-grant
+  `xoauth2.TokenSource` (a `clientcredentials.Config.TokenSource`/
+  `ReuseTokenSource` wrapper) keeps its *own* internal cached token,
+  independent of this policy's two-tier cache — so the next `Token()` call
+  after a purge would still return the same rejected token until that inner
+  cache's own natural expiry. Caught by an end-to-end test asserting a
+  second real token-endpoint call happens post-purge, not by inspection.
+  Fixed: `Purge()` now rebuilds the inner token source via
+  `buildTokenSource` under the same mutex guarding the two-tier cache.
+- Exposed on the typed schema as `oauth2PurgeOnUpstreamStatusCodes` (both
+  `UpstreamAuth` and `LLMUpstreamAuth`) — nil (field omitted) vs. an
+  explicit empty list both carry meaning end to end (Go struct field →
+  transformer → policy param), the latter being how a publisher disables
+  response-phase processing entirely rather than getting the `[401]`
+  default.
+- Verified with Go-level tests only so far (not re-run through the live
+  Docker/E2E harness the rest of this feature went through).
 
 ## Testing / verification status
 
@@ -130,8 +165,8 @@ Register LlmProvider (upstream.auth.type: oauth2)
   (flexibility over validation).
 - Credentials excluded vs. included in cache key → included (hashed); proven
   live that excluding them is an actual vulnerability, not just a nuance.
-- No stampede lock, no response-phase eviction → accepted for now, both
-  logged as top follow-ups.
+- No stampede lock → accepted for now, logged as the remaining top
+  follow-up (response-phase eviction shipped — see above).
 
 ## Shipped
 
@@ -142,7 +177,7 @@ Register LlmProvider (upstream.auth.type: oauth2)
 
 ## Open follow-ups (priority order)
 
-1. Token purging on upstream rejection (response-phase hook needed).
+1. ~~Token purging on upstream rejection~~ **Shipped.**
 2. Cross-replica stampede lock.
 3. `private_key_jwt` / mTLS client auth.
 4. `headers` support alongside `params`.
