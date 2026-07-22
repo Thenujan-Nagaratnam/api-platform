@@ -1,0 +1,4617 @@
+{
+	"info": {
+		"name": "AI Gateway - oauth2 policy",
+		"_postman_id": "b6f2a6b0-0a1a-4e2e-9c2e-oauth2policy",
+		"description": "End-to-end test collection for the oauth2 dev policy - grant-type agnostic (client_credentials and password both implemented), with a Redis-backed token cache shared across gateway-runtime replicas.\n\nCompanion to gateway/dev-policies/upstream-oauth2-authentication/TESTING.md - read that doc for the full narrative; this collection is the same flows as importable requests.\n\nPrerequisites before running any folder here:\n1. Start both mocks (see TESTING.md Part A):\n   cd gateway/dev-policies/upstream-oauth2-authentication/mocks/mock-oauth2-idp && GOWORK=off go run .\n   cd gateway/dev-policies/upstream-oauth2-authentication/mocks/mock-ai-backend && GOWORK=off go run .\n2. Build the gateway with the policy included (Part B): cd gateway && make build\n3. Bring up gateway-controller + gateway-runtime (Part C) via gateway/docker-compose.yaml. Add --profile redis (and list the redis service) if you want folder 04's Redis verification to have something to check:\n   docker compose --profile redis up -d gateway-controller gateway-runtime sample-backend redis\n\nIMPORTANT: requests to {{gatewayBaseUrl}} use a self-signed certificate (this mirrors curl's -k flag in TESTING.md). In Postman, disable 'SSL certificate verification' under Settings > General, or these requests will fail with a TLS error unrelated to the policy itself.\n\nRun folders in order: 00 (health) -> 01 (register the AI APIs) -> 02/03 (test flows) -> 04 (Redis token cache verification, optional) -> 05 (cleanup).",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "controllerBaseUrl",
+			"value": "localhost:9090",
+			"description": "gateway-controller REST management API (LlmProvider CRUD), base path /api/management/v1",
+			"type": "string"
+		},
+		{
+			"key": "controllerAdminUrl",
+			"value": "localhost:9094",
+			"description": "gateway-controller admin/health API (port 9094 when using gateway/docker-compose.yaml)",
+			"type": "string"
+		},
+		{
+			"key": "gatewayBaseUrl",
+			"value": "localhost:8443",
+			"description": "gateway-runtime (Envoy) data-plane traffic - self-signed cert, see collection description",
+			"type": "string"
+		},
+		{
+			"key": "idpBaseUrl",
+			"value": "localhost:9601",
+			"description": "mock-oauth2-idp (run natively on host via go run)",
+			"type": "string"
+		},
+		{
+			"key": "backendBaseUrl",
+			"value": "localhost:9602",
+			"description": "mock-ai-backend (run natively on host via go run)",
+			"type": "string"
+		},
+		{
+			"key": "adminAuthHeader",
+			"value": "Basic YWRtaW46YWRtaW4=",
+			"description": "admin:admin, matches gateway/it/test-config.toml",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "00 - Health Checks",
+			"description": "Confirm both mocks and the gateway stack are up before registering anything.",
+			"item": [
+				{
+					"name": "mock-oauth2-idp healthz",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/healthz",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"healthz"
+							],
+							"protocol": "http"
+						},
+						"description": "Expect 200 'ok'."
+					},
+					"response": []
+				},
+				{
+					"name": "mock-ai-backend healthz",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBaseUrl}}/healthz",
+							"host": [
+								"{{backendBaseUrl}}"
+							],
+							"path": [
+								"healthz"
+							],
+							"protocol": "http"
+						},
+						"description": "Expect 200 'ok'."
+					},
+					"response": []
+				},
+				{
+					"name": "gateway-controller admin health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+							"host": [
+								"{{controllerAdminUrl}}"
+							],
+							"path": [
+								"api",
+								"admin",
+								"v1",
+								"health"
+							],
+							"protocol": "http"
+						},
+						"description": "gateway-controller's own admin/health endpoint."
+					},
+					"response": []
+				},
+				{
+					"name": "gateway-runtime reachable (Envoy)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [],
+							"protocol": "https"
+						},
+						"description": "Any response (even 404/401) proves Envoy is up and terminating TLS. Requires SSL verification disabled in Postman settings - see collection description."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "01 - Register AI APIs (LLM Providers)",
+			"description": "Registers all six LlmProviders used by the test flows below, each using the typed upstream.auth.type: oauth2 field (no generic policies list needed).",
+			"item": [
+				{
+					"name": "Register: oauth2-test-basic",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "Happy-path provider for E.1 and E.2 (caching).",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-basic\nspec:\n  displayName: OAuth2 Test\n  version: v1.0\n  template: openai\n  context: /oauth2-test-basic/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-basic-clone",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "Byte-identical oauth2 config to oauth2-test-basic (same clientId/tokenEndpoint/clientSecret/clientAuthMethod) but a completely separate API. Used by E.14 to prove the two share one cached token, matching Kong's Upstream OAuth plugin convention documented in oauth2-upstream-auth.md.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-basic-clone\nspec:\n  displayName: OAuth2 Test (basic-clone - identical oauth2 config, different API)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-basic-clone/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-shortttl",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "2-second token TTL, for E.3 (expiry & refresh).",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-shortttl\nspec:\n  displayName: OAuth2 Test (short TTL, for refresh testing)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-shortttl/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token?ttl=2\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-badsecret",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "For E.4 - expect 502, IdP returns invalid_client.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-badsecret\nspec:\n  displayName: OAuth2 Test (wrong client secret)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-badsecret/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: totally-wrong-secret\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-unreachable",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "Port 9999 has nothing listening - for E.5, expect 502 from a genuine connection failure.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-unreachable\nspec:\n  displayName: OAuth2 Test (token endpoint unreachable)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-unreachable/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9999/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-malformed",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "For E.6 - mock returns 200 OK with no access_token, expect 502.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-malformed\nspec:\n  displayName: OAuth2 Test (malformed IdP response)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-malformed/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: malformed-client\n      oauth2ClientSecret: whatever\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-password",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "For E.9 - Resource Owner Password Credentials grant (RFC 6749 4.3), for legacy IdP bridging only. Mock IdP accepts username=resource-owner/password=hunter2.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-password\nspec:\n  displayName: OAuth2 Test (password grant)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-password/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2GrantType: password\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2Username: resource-owner\n      oauth2Password: hunter2\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-password-wrong",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "For E.9's failure case - mock IdP rejects with invalid_grant, policy should turn that into a generic 502.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-password-wrong\nspec:\n  displayName: OAuth2 Test (password grant, wrong password)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-password-wrong/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2GrantType: password\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2Username: resource-owner\n      oauth2Password: totally-wrong-password\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-clientauthpost",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "clientAuthMethod: client_secret_post - client_id/client_secret sent as form fields instead of HTTP Basic auth. Used by E.11.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-clientauthpost\nspec:\n  displayName: OAuth2 Test (client_secret_post)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-clientauthpost/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2ClientAuthMethod: client_secret_post\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-timeout",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "tokenRequestTimeout: 500ms against a token endpoint configured (via ?delayMs=3000) to simulate a 3s-slow IdP. Used by E.12.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-timeout\nspec:\n  displayName: OAuth2 Test (tokenRequestTimeout)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-timeout/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: \"http://host.docker.internal:9601/oauth2/token?delayMs=3000\"\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2TokenRequestTimeout: \"500ms\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-defaultttl",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "defaultTokenTTL: 20s, with oauth2Params.omitExpiresIn=true telling the mock to never send expires_in. Used by E.13.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-defaultttl\nspec:\n  displayName: OAuth2 Test (defaultTokenTTL)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-defaultttl/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2DefaultTokenTTL: \"20s\"\n      oauth2Params:\n        omitExpiresIn: \"true\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-purge",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "For OAuth2 Test (purge on upstream 401, default).",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-purge\nspec:\n  displayName: OAuth2 Test (purge on upstream 401, default)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-purge/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2TokenPurgeStatusCodes: [401]\n      oauth2Params:\n        testId: purge-401-default\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-purge-disabled",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "For OAuth2 Test (purge explicitly disabled).",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-purge-disabled\nspec:\n  displayName: OAuth2 Test (purge explicitly disabled)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-purge-disabled/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2TokenPurgeStatusCodes: []\n      oauth2Params:\n        testId: purge-disabled\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-password-scope",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "For OAuth2 Test (password grant, custom scope).",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-password-scope\nspec:\n  displayName: OAuth2 Test (password grant, custom scope)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-password-scope/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2GrantType: password\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2Username: resource-owner\n      oauth2Password: hunter2\n      oauth2Params:\n        scope: \"read write\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-proxy-backend",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "Plain backend LlmProvider with no oauth2 auth of its own - the LlmProxy registered below (oauth2-test-proxy) brings its own independent oauth2 config via provider.auth, to prove the oauth2 policy attaches correctly through the LlmProxy transform path (LLMUpstreamAuth), not just LlmProvider's upstream.auth.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-proxy-backend\nspec:\n  displayName: OAuth2 Test Proxy Backend\n  version: v1.0\n  template: openai\n  context: /oauth2-test-proxy-backend/latest\n  upstream:\n    url: http://host.docker.internal:9602\n  accessControl:\n    mode: allow_all\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-proxy-backend-ownauth",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-proxy-backend-ownauth\nspec:\n  displayName: OAuth2 Test Proxy Backend (own upstream auth)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-proxy-backend-ownauth/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2Params:\n        scope: provider-own-auth\n  accessControl:\n    mode: allow_all\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"description": "An LlmProvider with its OWN upstream.auth (oauth2, scope=provider-own-auth) - used to test the LlmProxy loopback hop 2 (provider's own auth) independently of, and in combination with, a proxy's provider.auth, for E.19/E.20."
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-proxy-backend-ownauth2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-proxy-backend-ownauth2\nspec:\n  displayName: OAuth2 Test Proxy Backend (own upstream auth, for both-hops test)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-proxy-backend-ownauth2/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2Params:\n        scope: provider-own-auth-2\n  accessControl:\n    mode: allow_all\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"description": "A SEPARATE LlmProvider (own upstream.auth, scope=provider-own-auth-2) dedicated to E.20's bothauth proxy - must NOT be the same fixture E.19 uses (oauth2-test-proxy-backend-ownauth), since E.19 already warms that exact cache entry and E.20 needs to observe a genuinely fresh fetch on the provider's own hop."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "01b - Register AI Proxies (LLM Proxies)",
+			"description": "Registered after 01 (LLM Providers) - oauth2-test-proxy references oauth2-test-proxy-backend by id, and the controller resolves that reference at proxy-registration time, so the backend provider must already be persisted first.",
+			"item": [
+				{
+					"name": "Register: oauth2-test-proxy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-proxies"
+							],
+							"protocol": "http"
+						},
+						"description": "LlmProxy with oauth2 auth on provider.auth (LLMUpstreamAuth) - proves the oauth2 policy attaches and works through the LlmProxy path, not just LlmProvider.upstream.auth.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: oauth2-test-proxy\nspec:\n  displayName: OAuth2 Test Proxy\n  version: v1.0\n  context: /oauth2-test-proxy/latest\n  provider:\n    id: oauth2-test-proxy-backend\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2Params:\n        testId: llmproxy-e2e\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-proxy-hop2only",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-proxies"
+							],
+							"protocol": "http"
+						},
+						"description": "LlmProxy with NO provider.auth of its own, referencing oauth2-test-proxy-backend-ownauth (which has its own upstream.auth oauth2) - proves the provider's own auth still fires correctly when reached via the proxy's loopback hop, not just when the provider is called directly.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: oauth2-test-proxy-hop2only\nspec:\n  displayName: OAuth2 Test Proxy (hop2-only - provider's own upstream auth)\n  version: v1.0\n  context: /oauth2-test-proxy-hop2only/latest\n  provider:\n    id: oauth2-test-proxy-backend-ownauth\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Register: oauth2-test-proxy-bothauth",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-proxies"
+							],
+							"protocol": "http"
+						},
+						"description": "LlmProxy with its OWN provider.auth (scope=proxy-hop-auth), referencing oauth2-test-proxy-backend-ownauth which ALSO has its own upstream.auth (scope=provider-own-auth) - both hops must independently fetch/cache a token (2 IdP calls), and the provider's own token (not the proxy's) must be what actually reaches the real backend, since the provider's hop runs last and overwrites the Authorization header.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: oauth2-test-proxy-bothauth\nspec:\n  displayName: OAuth2 Test Proxy (both hops authenticate independently)\n  version: v1.0\n  context: /oauth2-test-proxy-bothauth/latest\n  provider:\n    id: oauth2-test-proxy-backend-ownauth2\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2Params:\n        scope: proxy-hop-auth\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "01c - Register MCP Servers (Mcp)",
+			"description": "Mcp resources use their own REST path (/mcp-proxies, not /llm-providers or /llm-proxies) - registered in their own folder for the same reason 01b is split from 01.",
+			"item": [
+				{
+					"name": "Register: mcp-test-oauth2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/mcp-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"mcp-proxies"
+							],
+							"protocol": "http"
+						},
+						"description": "An Mcp resource whose upstream.auth is oauth2 - proves the upstream-oauth2-authentication policy attaches and works through the MCP attachment path (MCPProxyConfigData's upstream.auth), not just LlmProvider/LlmProxy.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: mcp-test-oauth2\nspec:\n  displayName: MCP Test OAuth2\n  version: v1.0\n  context: /mcp-test-oauth2\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n      oauth2Params:\n        testId: mcp-oauth2-e2e\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "02 - Mock Debug Endpoints",
+			"description": "Inspect and reset mock state. Run 'Reset IdP stats' before each flow in folder 03 so request counts aren't polluted by earlier flows.",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history. Run this before each numbered flow below."
+					},
+					"response": []
+				},
+				{
+					"name": "Get IdP stats",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "tokenRequestCount + full history (clientId, authStyle, outcome, token) of every /oauth2/token call the mock has received since the last reset."
+					},
+					"response": []
+				},
+				{
+					"name": "Get backend last-request",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": "Full headers/body of the most recent request mock-ai-backend received - independent confirmation of what Authorization header actually arrived."
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-ai-backend's last-request record and any pending forced status."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "03 - Test Flows (E.1-E.9b)",
+			"item": [
+				{
+					"name": "E.1 - Happy path",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"const json = pm.response.json();",
+									"pm.test('content shows an injected bearer token', function () {",
+									"    pm.expect(json.choices[0].message.content).to.match(/received Authorization: \"Bearer mock-token-/);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-basic/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-basic",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "Expect 200 and choices[0].message.content to read: received Authorization: \"Bearer mock-token-...\". Then check '02 - Get IdP stats': last history entry should have authStyle=basic, outcome=issued.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "E.2 - Token caching",
+					"description": "1. Run '02 - Reset IdP stats'.\n2. Run 'Send chat request' FIVE times in a row - either click Send five times, or select it and use Runner with iterations=5.\n3. Run 'Verify exactly one IdP call happened'.",
+					"item": [
+						{
+							"name": "Send chat request (run x5)",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "https://{{gatewayBaseUrl}}/oauth2-test-basic/latest/chat/completions",
+									"host": [
+										"{{gatewayBaseUrl}}"
+									],
+									"path": [
+										"oauth2-test-basic",
+										"latest",
+										"chat",
+										"completions"
+									],
+									"protocol": "https"
+								},
+								"description": "Run this 5 times before moving to the next request in this folder.",
+								"body": {
+									"mode": "raw",
+									"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Verify exactly one IdP call happened",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"const json = pm.response.json();",
+											"pm.test('IdP was called at most once', function () { pm.expect(json.tokenRequestCount).to.be.at.most(1); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "http://{{idpBaseUrl}}/debug/stats",
+									"host": [
+										"{{idpBaseUrl}}"
+									],
+									"path": [
+										"debug",
+										"stats"
+									],
+									"protocol": "http"
+								},
+								"description": "After sending 5 chat requests above, exactly 1 token request should be in the IdP's history."
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "E.3 - Token expiry & refresh",
+					"description": "Uses oauth2-test-shortttl (2-second token TTL).\n1. Run '02 - Reset IdP stats'.\n2. Run 'A - Send request (note token)'.\n3. WAIT at least 3 seconds.\n4. Run 'B - Send request after waiting'.\n5. Run 'Verify two IdP calls happened'.",
+					"item": [
+						{
+							"name": "Reset IdP stats",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "http://{{idpBaseUrl}}/debug/reset",
+									"host": [
+										"{{idpBaseUrl}}"
+									],
+									"path": [
+										"debug",
+										"reset"
+									],
+									"protocol": "http"
+								},
+								"description": "Clears mock-oauth2-idp's request history. Run this before each numbered flow below."
+							},
+							"response": []
+						},
+						{
+							"name": "A - Send request (note token)",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "https://{{gatewayBaseUrl}}/oauth2-test-shortttl/latest/chat/completions",
+									"host": [
+										"{{gatewayBaseUrl}}"
+									],
+									"path": [
+										"oauth2-test-shortttl",
+										"latest",
+										"chat",
+										"completions"
+									],
+									"protocol": "https"
+								},
+								"description": "Note the mock-token-N value in the response content.",
+								"body": {
+									"mode": "raw",
+									"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "B - Send request after waiting 3s (expect different token)",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "https://{{gatewayBaseUrl}}/oauth2-test-shortttl/latest/chat/completions",
+									"host": [
+										"{{gatewayBaseUrl}}"
+									],
+									"path": [
+										"oauth2-test-shortttl",
+										"latest",
+										"chat",
+										"completions"
+									],
+									"protocol": "https"
+								},
+								"description": "Wait at least 3 seconds after running request A before sending this one.",
+								"body": {
+									"mode": "raw",
+									"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Verify two IdP calls happened",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"const json = pm.response.json();",
+											"pm.test('IdP was called exactly twice (issue + refresh)', function () { pm.expect(json.tokenRequestCount).to.eql(2); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "http://{{idpBaseUrl}}/debug/stats",
+									"host": [
+										"{{idpBaseUrl}}"
+									],
+									"path": [
+										"debug",
+										"stats"
+									],
+									"protocol": "http"
+								},
+								"description": "Expect tokenRequestCount == 2: one initial issue, one refresh."
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "E.4 - Invalid client credentials (expect 502)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 502', function () { pm.response.to.have.status(502); });",
+									"const json = pm.response.json();",
+									"pm.test('generic error body, no leaked detail', function () {",
+									"    pm.expect(json.error).to.eql('Bad Gateway');",
+									"    pm.expect(json.message).to.eql('failed to authenticate request to upstream service');",
+									"    pm.expect(pm.response.text()).to.not.include('invalid_client');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-badsecret/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-badsecret",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "The IdP rejects the wrong client secret with invalid_client; the policy must fail closed with a generic 502.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "E.5 - Token endpoint unreachable (expect 502)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 502', function () { pm.response.to.have.status(502); });",
+									"const json = pm.response.json();",
+									"pm.test('generic error body', function () {",
+									"    pm.expect(json.error).to.eql('Bad Gateway');",
+									"    pm.expect(json.message).to.eql('failed to authenticate request to upstream service');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-unreachable/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-unreachable",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "oauth2TokenEndpoint points at port 9999, nothing listening - a genuine connection failure.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "E.6 - Malformed IdP response (expect 502)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 502', function () { pm.response.to.have.status(502); });",
+									"const json = pm.response.json();",
+									"pm.test('generic error body', function () {",
+									"    pm.expect(json.error).to.eql('Bad Gateway');",
+									"    pm.expect(json.message).to.eql('failed to authenticate request to upstream service');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-malformed/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-malformed",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "clientId=malformed-client gets a 200 OK from the IdP with no access_token.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "E.7 - Confirm header via backend's own record",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('backend recorded a Bearer Authorization header', function () {",
+									"    pm.expect(json.headers.Authorization[0]).to.match(/^Bearer mock-token-/);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": "Run right after any successful flow above (e.g. E.1)."
+					},
+					"response": []
+				},
+				{
+					"name": "E.8 - Unsupported grantType (expect rejection at registration)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('rejected with a client error, not created', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([400, 422]);",
+									"});",
+									"pm.test('error message mentions oauth2GrantType', function () {",
+									"    pm.expect(pm.response.text()).to.include('oauth2GrantType');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "grantType exists for forward-compatibility but only client_credentials is implemented - an unrecognized value must be rejected when the provider is registered, not silently ignored.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: oauth2-test-badgrant\nspec:\n  displayName: OAuth2 Test (unsupported grant type)\n  version: v1.0\n  template: openai\n  context: /oauth2-test-badgrant/latest\n  upstream:\n    url: http://host.docker.internal:9602\n    auth:\n      type: oauth2\n      oauth2GrantType: authorization_code\n      oauth2TokenEndpoint: http://host.docker.internal:9601/oauth2/token\n      oauth2ClientId: test-client\n      oauth2ClientSecret: test-secret\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "E.9a - Password grant happy path",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"const json = pm.response.json();",
+									"pm.test('content shows an injected bearer token', function () {",
+									"    pm.expect(json.choices[0].message.content).to.match(/received Authorization: \"Bearer mock-token-/);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-password/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-password",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "Security note: password grant (RFC 6749 4.3) is for legacy IdP bridging only - prefer client_credentials. Expect 200 and an injected bearer token, same shape as E.1/E.2.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "E.9b - Password grant, wrong resource-owner password (expect 502)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 502', function () { pm.response.to.have.status(502); });",
+									"const json = pm.response.json();",
+									"pm.test('generic error body, no leaked detail', function () {",
+									"    pm.expect(json.error).to.eql('Bad Gateway');",
+									"    pm.expect(json.message).to.eql('failed to authenticate request to upstream service');",
+									"    pm.expect(pm.response.text()).to.not.include('invalid_grant');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-password-wrong/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-password-wrong",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "Mock IdP rejects the wrong password with invalid_grant; the policy must fail closed with the same generic 502 shape as E.4, never leaking invalid_grant to the caller.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "03 - Test Flows (E.11-E.13)",
+			"item": [
+				{
+					"name": "E.11 - client_secret_post client authentication",
+					"description": "1. Run 'Reset IdP stats'.\n2. Run 'Send chat request'.\n3. Run 'Verify authStyle is post'.",
+					"item": [
+						{
+							"name": "Reset IdP stats",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "http://{{idpBaseUrl}}/debug/reset",
+									"host": [
+										"{{idpBaseUrl}}"
+									],
+									"path": [
+										"debug",
+										"reset"
+									],
+									"protocol": "http"
+								},
+								"description": "Clears mock-oauth2-idp's request history before this flow."
+							},
+							"response": []
+						},
+						{
+							"name": "Send chat request",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "https://{{gatewayBaseUrl}}/oauth2-test-clientauthpost/latest/chat/completions",
+									"host": [
+										"{{gatewayBaseUrl}}"
+									],
+									"path": [
+										"oauth2-test-clientauthpost",
+										"latest",
+										"chat",
+										"completions"
+									],
+									"protocol": "https"
+								},
+								"body": {
+									"mode": "raw",
+									"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Verify authStyle is post",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"const json = pm.response.json();",
+											"const last = json.history[json.history.length - 1];",
+											"pm.test('client credentials were sent as client_secret_post (form fields, not Basic auth)', function () {",
+											"    pm.expect(last.authStyle).to.eql('post');",
+											"});",
+											"pm.test('token was issued', function () { pm.expect(last.outcome).to.eql('issued'); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "http://{{idpBaseUrl}}/debug/stats",
+									"host": [
+										"{{idpBaseUrl}}"
+									],
+									"path": [
+										"debug",
+										"stats"
+									],
+									"protocol": "http"
+								},
+								"description": "authStyle on the last history entry should read 'post' (not 'basic'), proving clientAuthMethod: client_secret_post actually changed wire behavior."
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "E.12 - tokenRequestTimeout bounds a hung IdP",
+					"description": "1. Run 'Send chat request' - expect 502 well under 3s (the IdP simulates a 3s delay via ?delayMs=3000 on its token endpoint, but tokenRequestTimeout is 500ms).",
+					"item": [
+						{
+							"name": "Send chat request",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('status is 502 (timeout aborted the request)', function () { pm.response.to.have.status(502); });",
+											"pm.test('response time is well under the IdP\\'s 3s delay', function () { pm.expect(pm.response.responseTime).to.be.below(2000); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "https://{{gatewayBaseUrl}}/oauth2-test-timeout/latest/chat/completions",
+									"host": [
+										"{{gatewayBaseUrl}}"
+									],
+									"path": [
+										"oauth2-test-timeout",
+										"latest",
+										"chat",
+										"completions"
+									],
+									"protocol": "https"
+								},
+								"body": {
+									"mode": "raw",
+									"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "E.13 - defaultTokenTTL fallback when expires_in is omitted",
+					"description": "1. Run 'Reset IdP stats'.\n2. Run 'Send chat request' three times (or use Runner with iterations=3).\n3. Run 'Verify exactly one IdP call happened' - proves caching still worked even though the IdP never sent expires_in.",
+					"item": [
+						{
+							"name": "Reset IdP stats",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "http://{{idpBaseUrl}}/debug/reset",
+									"host": [
+										"{{idpBaseUrl}}"
+									],
+									"path": [
+										"debug",
+										"reset"
+									],
+									"protocol": "http"
+								},
+								"description": "Clears mock-oauth2-idp's request history before this flow."
+							},
+							"response": []
+						},
+						{
+							"name": "Send chat request (run x3)",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "https://{{gatewayBaseUrl}}/oauth2-test-defaultttl/latest/chat/completions",
+									"host": [
+										"{{gatewayBaseUrl}}"
+									],
+									"path": [
+										"oauth2-test-defaultttl",
+										"latest",
+										"chat",
+										"completions"
+									],
+									"protocol": "https"
+								},
+								"description": "Run this 3 times before moving to the next request in this folder.",
+								"body": {
+									"mode": "raw",
+									"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Verify exactly one IdP call happened",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"const json = pm.response.json();",
+											"pm.test('IdP was called at most once despite omitting expires_in', function () { pm.expect(json.tokenRequestCount).to.be.at.most(1); });"
+										]
+									}
+								}
+							],
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "http://{{idpBaseUrl}}/debug/stats",
+									"host": [
+										"{{idpBaseUrl}}"
+									],
+									"path": [
+										"debug",
+										"stats"
+									],
+									"protocol": "http"
+								},
+								"description": "After sending 3 chat requests above, exactly 1 token request should be in the IdP's history - proving defaultTokenTTL kept caching working."
+							},
+							"response": []
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "E.14 - Shared cache across two APIs with identical oauth2 config",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history. Run this before each numbered flow below."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request to oauth2-test-basic",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"const json = pm.response.json();",
+									"const match = json.choices[0].message.content.match(/Bearer (\\S+)\"/);",
+									"pm.test('response contains a bearer token', function () { pm.expect(match).to.not.be.null; });",
+									"pm.collectionVariables.set('sharedCacheTokenFromBasic', match ? match[1] : null);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-basic/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-basic",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request to oauth2-test-basic-clone",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"const json = pm.response.json();",
+									"const match = json.choices[0].message.content.match(/Bearer (\\S+)\"/);",
+									"pm.test('response contains a bearer token', function () { pm.expect(match).to.not.be.null; });",
+									"const tokenFromBasic = pm.collectionVariables.get('sharedCacheTokenFromBasic');",
+									"pm.test('oauth2-test-basic-clone received the EXACT SAME token as oauth2-test-basic - proving one cached token is shared across both APIs, not one per API', function () {",
+									"    pm.expect(match[1]).to.eql(tokenFromBasic);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-basic-clone/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-basic-clone",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify only one IdP call was made across both APIs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('IdP was called at most once across two APIs with identical oauth2 config', function () {",
+									"    pm.expect(json.tokenRequestCount).to.be.at.most(1);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "oauth2-test-basic and oauth2-test-basic-clone are two separate APIs with byte-identical oauth2 config - the cache key is a pure function of that config (see oauth2ConfigDiscriminator), so both requests above should share one cached token instead of each minting their own, mirroring Kong's Upstream OAuth plugin."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "04 - Redis Token Cache Verification",
+			"description": "Requires the stack to have been started with the redis profile:\n  docker compose --profile redis up -d gateway-controller gateway-runtime sample-backend redis\n\nPostman has no native Redis client, so this folder's real request just populates the cache (same call as E.1) - run the redis-cli commands below yourself afterward, from a terminal, to see the cached token directly:\n\n  # List cached-token keys (upstream-oauth2:token:v1:<apiId>:<routeName>:<grantType>)\n  docker exec gateway-redis-1 redis-cli KEYS 'upstream-oauth2:token:v1:*'\n\n  # Fetch the cached token JSON for a key from the list above\n  docker exec gateway-redis-1 redis-cli GET '<key>'\n  # -> {\"access_token\":\"...\",\"token_type\":\"Bearer\",\"expiry\":\"...\"}\n\n  # Confirm the TTL is positive and tracks the token's real remaining lifetime\n  docker exec gateway-redis-1 redis-cli TTL '<key>'\n\nTo see the fail-open fallback (Redis down doesn't break auth):\n  docker compose stop redis\n  # re-run 'Populate cache' below - still 200 OK, just no longer cached anywhere\n  docker compose start redis",
+			"item": [
+				{
+					"name": "Populate cache (send chat request)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-basic/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-basic",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "Same request as E.1 - run this first so there's a fresh token to find in Redis. Requires 'Register: oauth2-test-basic' (folder 01) to have been run already.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "05 - Cleanup",
+			"description": "Deletes all test LlmProviders. Run once you're done, or skip and just docker compose down -v.",
+			"item": [
+				{
+					"name": "Delete: oauth2-test-proxy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/oauth2-test-proxy",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-proxies",
+								"oauth2-test-proxy"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-proxy-hop2only",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/oauth2-test-proxy-hop2only",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-proxies",
+								"oauth2-test-proxy-hop2only"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-proxy-bothauth",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/oauth2-test-proxy-bothauth",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-proxies",
+								"oauth2-test-proxy-bothauth"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-basic",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-basic",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-basic"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-basic-clone",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-basic-clone",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-basic-clone"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-shortttl",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-shortttl",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-shortttl"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-badsecret",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-badsecret",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-badsecret"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-unreachable",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-unreachable",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-unreachable"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-malformed",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-malformed",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-malformed"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-badgrant",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-badgrant",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-badgrant"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-password",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-password",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-password"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-password-wrong",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-password-wrong",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-password-wrong"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-clientauthpost",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-clientauthpost",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-clientauthpost"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Delete: oauth2-test-timeout",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-timeout",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-timeout"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-defaultttl",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-defaultttl",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-defaultttl"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-purge",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-purge",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-purge"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-purge-disabled",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-purge-disabled",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-purge-disabled"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-password-scope",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-password-scope",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-password-scope"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-proxy-backend",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-proxy-backend",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-proxy-backend"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-proxy-backend-ownauth",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-proxy-backend-ownauth",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-proxy-backend-ownauth"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-proxy-backend-ownauth2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/oauth2-test-proxy-backend-ownauth2",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"oauth2-test-proxy-backend-ownauth2"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: mcp-test-oauth2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46YWRtaW4="
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/mcp-proxies/mcp-test-oauth2",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"mcp-proxies",
+								"mcp-test-oauth2"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "E.15 - Password grant custom scope reaches the token endpoint",
+			"description": "1. Run 'Reset IdP stats'.\n2. Run 'Send chat request'.\n3. Run 'Verify scope reached the token endpoint' - proves oauth2Params.scope is honored for the password grant (mapped to xoauth2.Config.Scopes), not just client_credentials.",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history before this flow."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-password-scope/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-password-scope",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "oauth2-test-password-scope has oauth2Params: {scope: \"read write\"} - expect 200 and a real token request carrying that scope.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify scope reached the token endpoint",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('exactly one token request recorded', function () { pm.expect(json.tokenRequestCount).to.eql(1); });",
+									"pm.test('scope is read write', function () { pm.expect(json.history[0].scope).to.eql('read write'); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "The password grant's single token request should carry scope=read write - this only works because buildTokenSource maps oauth2Params.scope to xoauth2.Config.Scopes for this grant."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "E.16 - Purge cached token on upstream 401 (default tokenPurgeStatusCodes)",
+			"description": "1. Run 'Reset IdP stats' and 'Reset backend'.\n2. Run 'Send chat request (prime cache)' - expect 200.\n3. Run 'Verify exactly one IdP call happened'.\n4. Run 'Force backend to return 401'.\n5. Run 'Send chat request (expect upstream 401 to pass through)' - expect 401; this is also when the policy's OnResponseHeaders purges the cached token.\n6. Run 'Send chat request (expect fresh token after purge)' - expect 200.\n7. Run 'Verify a second IdP call happened after the purge' - proves the purge actually forced a real refetch, not just that the 401 passed through.",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history before this flow."
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-ai-backend's last-request record and any pending forced status."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request (prime cache)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-purge/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-purge",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "Primes the local+Redis cache with a real token for oauth2-test-purge.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify exactly one IdP call happened",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('exactly one token request so far', function () { pm.expect(json.tokenRequestCount).to.eql(1); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "Confirms the priming request above actually fetched (and cached) a token."
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend to return 401",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('force-status ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBaseUrl}}/debug/force-status?code=401",
+							"host": [
+								"{{backendBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"query": [
+								{
+									"key": "code",
+									"value": "401"
+								}
+							],
+							"protocol": "http"
+						},
+						"description": "Makes the NEXT request only to mock-ai-backend return 401 instead of 200 - simulates the upstream rejecting an already-cached bearer token, to test tokenPurgeStatusCodes."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request (expect upstream 401 to pass through)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 401 (forced by mock-ai-backend)', function () { pm.response.to.have.status(401); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-purge/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-purge",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "mock-ai-backend rejects this one request with a forced 401 - the oauth2 policy does not retry it, so the caller sees the 401 pass through unchanged. This is also the request whose OnResponseHeaders call purges the cached token, since 401 is in tokenPurgeStatusCodes.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request (expect fresh token after purge)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-purge/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-purge",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "mock-ai-backend is back to normal (the forced status was consumed by the previous request). The gateway's cache was purged by the previous response's 401, so this request must fetch a genuinely fresh token rather than reusing the one purged above.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify a second IdP call happened after the purge",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('a second, fresh token request happened after the purge', function () { pm.expect(json.tokenRequestCount).to.eql(2); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "If this were still 1, the purge did not actually force a refetch - the whole point of tokenPurgeStatusCodes."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "E.17 - Purge disabled (tokenPurgeStatusCodes: []) leaves the cache alone",
+			"description": "Same flow as E.16 but against oauth2-test-purge-disabled, which explicitly sets oauth2TokenPurgeStatusCodes: [] - proves a publisher can opt out of response-phase purging entirely, and that OnResponseHeaders does not run at all when the list is empty (Mode() skips response-header processing in that case).",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history before this flow."
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-ai-backend's last-request record and any pending forced status."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request (prime cache)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-purge-disabled/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-purge-disabled",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "Primes the cache for oauth2-test-purge-disabled.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify exactly one IdP call happened",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('exactly one token request so far', function () { pm.expect(json.tokenRequestCount).to.eql(1); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "Confirms the priming request fetched and cached a token."
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend to return 401",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('force-status ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBaseUrl}}/debug/force-status?code=401",
+							"host": [
+								"{{backendBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"query": [
+								{
+									"key": "code",
+									"value": "401"
+								}
+							],
+							"protocol": "http"
+						},
+						"description": "Makes the NEXT request only to mock-ai-backend return 401 instead of 200 - simulates the upstream rejecting an already-cached bearer token, to test tokenPurgeStatusCodes."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request (expect upstream 401 to pass through)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 401 (forced by mock-ai-backend)', function () { pm.response.to.have.status(401); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-purge-disabled/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-purge-disabled",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "mock-ai-backend rejects this one request with a forced 401. Unlike E.16, this provider has purging disabled, so this must NOT purge the cached token.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request (expect the SAME cached token, no refetch)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-purge-disabled/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-purge-disabled",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "mock-ai-backend is back to normal. Because purging is disabled, the gateway must still be serving the token cached at the very start of this flow.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify the IdP was NOT called again",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('still exactly one token request - the 401 did not trigger a purge', function () { pm.expect(json.tokenRequestCount).to.eql(1); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "If this were 2, disabling tokenPurgeStatusCodes (set to []) failed to actually disable it."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "E.18 - LlmProxy with oauth2 upstream auth (provider.auth)",
+			"description": "1. Run 'Reset IdP stats'.\n2. Run 'Send chat request to the proxy'.\n3. Run 'Verify the IdP was called' - proves the oauth2 policy attaches and actually executes when configured via an LlmProxy's provider.auth (LLMUpstreamAuth), not just via LlmProvider's upstream.auth - this is a real end-to-end / xDS-level check, not just the Go transformer unit tests.",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history before this flow."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request to the proxy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"const json = pm.response.json();",
+									"pm.test('content shows an injected bearer token', function () {",
+									"    pm.expect(json.choices[0].message.content).to.match(/received Authorization: \"Bearer mock-token-/);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-proxy/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-proxy",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "oauth2-test-proxy is an LlmProxy (not an LlmProvider) whose provider.auth brings its own oauth2 config - expect 200 and an injected bearer token, same shape as E.1.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify the IdP was called",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('exactly one token request recorded', function () { pm.expect(json.tokenRequestCount).to.eql(1); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "Confirms the request through the LlmProxy actually triggered a real token fetch - i.e. the oauth2 policy really executed, not just that the request happened to return 200 for some unrelated reason."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "E.19 - LlmProvider's own upstream.auth fires via LlmProxy loopback (hop2-only)",
+			"description": "An LlmProxy's upstream target is a loopback call back into the gateway, at the referenced LlmProvider's own registered route (not directly at the provider's real backend) - see llm_transformer.go's transformProxy. This flow proves that when the proxy itself has no provider.auth, the REFERENCED PROVIDER's own upstream.auth still fires correctly on that loopback hop, rather than silently being skipped because the request arrived via a proxy instead of directly.",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history before this flow."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request to oauth2-test-proxy-hop2only",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"const json = pm.response.json();",
+									"pm.test('content shows an injected bearer token', function () {",
+									"    pm.expect(json.choices[0].message.content).to.match(/received Authorization: \"Bearer mock-token-/);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-proxy-hop2only/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-proxy-hop2only",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "oauth2-test-proxy-hop2only has NO provider.auth of its own - the token must come from oauth2-test-proxy-backend-ownauth's own upstream.auth, fired on the proxy's loopback hop into the provider's own route.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify the provider's own auth fired exactly once",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('exactly one token request recorded', function () { pm.expect(json.tokenRequestCount).to.eql(1); });",
+									"pm.test('the token request came from the provider\\'s own upstream.auth (scope=provider-own-auth)', function () {",
+									"    pm.expect(json.history[0].scope).to.eql('provider-own-auth');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "Confirms the request went through the LlmProxy's loopback into oauth2-test-proxy-backend-ownauth's OWN route, and that provider's own upstream.auth policy - not any proxy-level auth (there is none here) - actually executed."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "E.20 - LlmProxy provider.auth + LlmProvider's own upstream.auth (both hops, precedence)",
+			"description": "Covers the combination where BOTH the proxy (provider.auth) and the referenced provider (upstream.auth) have their own independent oauth2 config. Proves: (1) both fire and cache independently (2 distinct IdP calls, since the configs differ), and (2) the provider's own hop wins at the real backend, since HeadersToSet on the second (provider) hop overwrites whatever the first (proxy) hop set.",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history before this flow."
+					},
+					"response": []
+				},
+				{
+					"name": "Send chat request to oauth2-test-proxy-bothauth",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"const json = pm.response.json();",
+									"const match = json.choices[0].message.content.match(/received Authorization: \"Bearer (mock-token-[^\"]+)\"/);",
+									"pm.test('content shows an injected bearer token', function () { pm.expect(match).to.not.be.null; });",
+									"if (match) { pm.collectionVariables.set('bothAuthBackendToken', match[1]); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-proxy-bothauth/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-proxy-bothauth",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "oauth2-test-proxy-bothauth sets its OWN provider.auth (scope=proxy-hop-auth) AND references oauth2-test-proxy-backend-ownauth2, which has its own upstream.auth (scope=provider-own-auth-2). Both hops should independently authenticate; whichever token actually reaches the real backend is captured here for the next step to check.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify both hops authenticated independently and the provider's own token won",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('exactly two token requests recorded (proxy hop + provider hop)', function () { pm.expect(json.tokenRequestCount).to.eql(2); });",
+									"",
+									"const proxyEntry = json.history.find(function (h) { return h.scope === 'proxy-hop-auth'; });",
+									"const providerEntry = json.history.find(function (h) { return h.scope === 'provider-own-auth-2'; });",
+									"pm.test('the proxy hop (provider.auth) fetched its own token', function () { pm.expect(proxyEntry).to.not.be.undefined; });",
+									"pm.test('the provider hop (upstream.auth) fetched its own token', function () { pm.expect(providerEntry).to.not.be.undefined; });",
+									"",
+									"const backendToken = pm.collectionVariables.get('bothAuthBackendToken');",
+									"pm.test('the real backend received the PROVIDER\\'s own token, not the proxy\\'s', function () {",
+									"    pm.expect(backendToken).to.eql(providerEntry.token);",
+									"    pm.expect(backendToken).to.not.eql(proxyEntry.token);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "Confirms the precedence: since the provider's own loopback hop runs AFTER the proxy's hop and sets (not adds) the Authorization header, the provider's own token is what ultimately reaches the real upstream - the proxy's injected token is fetched and then overwritten in-flight, never seen by the real backend."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "E.21 - Mcp server with oauth2 upstream auth (MCPProxyConfigData.upstream.auth)",
+			"description": "Proves the upstream-oauth2-authentication policy also works when attached via an Mcp resource's upstream.auth, not just LlmProvider.upstream.auth (E.1) or LlmProxy.provider.auth (E.18) - MCPProxyConfigData's upstream.auth was previously api-key/bearer-only; this covers the oauth2 support added to MCPValidator.validateUpstream and MCPTransformer.Transform.",
+			"item": [
+				{
+					"name": "Reset IdP stats",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/reset",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": "Clears mock-oauth2-idp's request history before this flow."
+					},
+					"response": []
+				},
+				{
+					"name": "Send MCP request",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"const json = pm.response.json();",
+									"pm.test('content shows an injected bearer token', function () {",
+									"    pm.expect(json.choices[0].message.content).to.match(/received Authorization: \"Bearer mock-token-/);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mcp-test-oauth2/mcp",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mcp-test-oauth2",
+								"mcp"
+							],
+							"protocol": "https"
+						},
+						"description": "mcp-test-oauth2 is an Mcp resource whose upstream.auth is oauth2 - mock-ai-backend is a generic catch-all that echoes the Authorization header regardless of path/body shape, so this reuses the same assertion pattern as E.1 (LlmProvider) and E.18 (LlmProxy) to prove the SAME upstream-oauth2-authentication policy also attaches and executes via the MCP path (MCPProxyConfigData.upstream.auth).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"ping\"}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify the IdP was called",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"pm.test('exactly one token request recorded', function () { pm.expect(json.tokenRequestCount).to.eql(1); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{idpBaseUrl}}/debug/stats",
+							"host": [
+								"{{idpBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"stats"
+							],
+							"protocol": "http"
+						},
+						"description": "Confirms the request through the Mcp resource actually triggered a real token fetch - i.e. the oauth2 policy really executed, not just that the request happened to return 200 for some unrelated reason."
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

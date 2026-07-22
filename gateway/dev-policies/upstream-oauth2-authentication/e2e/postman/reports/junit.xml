@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="AI Gateway - oauth2 policy" tests="26" time="3.039">
+  <testsuite name="04 - Redis Token Cache Verification / Populate cache (send chat request)" id="36522d14-cbcc-44c4-9568-354cb1043269" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.033">
+    <testcase name="status is 200" time="0.033" classname="04RedisTokenCacheVerificationPopulateCacheSendChatRequest"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-proxy" id="cb381395-25e9-478c-be32-967b56a2c7c2" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.003">
+    <testcase name="deleted (200 or 204 or 404)" time="0.003" classname="05CleanupDeleteOauth2TestProxy"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-proxy-hop2only" id="88c0190f-8d17-496a-a234-e1104cad04d5" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.003">
+    <testcase name="deleted (200 or 204 or 404)" time="0.003" classname="05CleanupDeleteOauth2TestProxyHop2Only"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-proxy-bothauth" id="e158baea-2e87-4412-839c-6c6da7af0a98" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.003">
+    <testcase name="deleted (200 or 204 or 404)" time="0.003" classname="05CleanupDeleteOauth2TestProxyBothauth"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-basic" id="89471159-ed57-4f5a-822f-1463d4ca3ab5" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.087">
+    <testcase name="deleted (200 or 204 or 404)" time="0.087" classname="05CleanupDeleteOauth2TestBasic"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-basic-clone" id="4ea7d53e-40a4-4a14-8bce-be81dca34bb1" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.091">
+    <testcase name="deleted (200 or 204 or 404)" time="0.091" classname="05CleanupDeleteOauth2TestBasicClone"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-shortttl" id="59e94437-8480-479e-b360-06b374094d0e" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.003">
+    <testcase name="deleted (200 or 204 or 404)" time="0.003" classname="05CleanupDeleteOauth2TestShortttl"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-badsecret" id="1e215aed-544c-4676-9965-db0bfbed87be" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.175">
+    <testcase name="deleted (200 or 204 or 404)" time="0.175" classname="05CleanupDeleteOauth2TestBadsecret"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-unreachable" id="a2cdce04-22b0-4041-83ee-d41ca4de07be" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.003">
+    <testcase name="deleted (200 or 204 or 404)" time="0.003" classname="05CleanupDeleteOauth2TestUnreachable"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-malformed" id="bb0bbc2d-e6f2-463b-8e78-5c926859c5f8" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.075">
+    <testcase name="deleted (200 or 204 or 404)" time="0.075" classname="05CleanupDeleteOauth2TestMalformed"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-badgrant" id="4587dcf9-8fb1-42c6-8296-77859f6f4197" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.187">
+    <testcase name="deleted (200 or 204 or 404)" time="0.187" classname="05CleanupDeleteOauth2TestBadgrant"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-password" id="9a218a1e-d96f-4bf9-af76-da36709bd407" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.390">
+    <testcase name="deleted (200 or 204 or 404)" time="0.390" classname="05CleanupDeleteOauth2TestPassword"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-password-wrong" id="e61d9fbd-07bc-4ce4-9d70-b8be0965a75f" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.286">
+    <testcase name="deleted (200 or 204 or 404)" time="0.286" classname="05CleanupDeleteOauth2TestPasswordWrong"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-clientauthpost" id="b7fefe98-c936-4be7-8dd1-9676940f687a" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.091">
+    <testcase name="deleted (200 or 204 or 404)" time="0.091" classname="05CleanupDeleteOauth2TestClientauthpost"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-timeout" id="54db5a48-aa50-4b58-9d64-944178f3a218" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.091">
+    <testcase name="deleted (200 or 204 or 404)" time="0.091" classname="05CleanupDeleteOauth2TestTimeout"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-defaultttl" id="da4765db-5f57-44fe-9165-80147ed41493" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.188">
+    <testcase name="deleted (200 or 204 or 404)" time="0.188" classname="05CleanupDeleteOauth2TestDefaultttl"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-purge" id="1a03ab05-5100-40a8-b39f-7bbbbfb69f4c" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.091">
+    <testcase name="deleted (200 or 204 or 404)" time="0.091" classname="05CleanupDeleteOauth2TestPurge"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-purge-disabled" id="4903a73a-31a9-4d45-86e5-ee7f3bfbc52e" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.287">
+    <testcase name="deleted (200 or 204 or 404)" time="0.287" classname="05CleanupDeleteOauth2TestPurgeDisabled"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-password-scope" id="b5d9d3c8-48e2-471e-9863-8c4f9edeaa7c" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.093">
+    <testcase name="deleted (200 or 204 or 404)" time="0.093" classname="05CleanupDeleteOauth2TestPasswordScope"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-proxy-backend" id="08635ef9-87d9-4073-b053-c37881e0ebcb" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.387">
+    <testcase name="deleted (200 or 204 or 404)" time="0.387" classname="05CleanupDeleteOauth2TestProxyBackend"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-proxy-backend-ownauth" id="5b5f6309-a346-42a1-8314-7e6fb09b898b" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.083">
+    <testcase name="deleted (200 or 204 or 404)" time="0.083" classname="05CleanupDeleteOauth2TestProxyBackendOwnauth"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: oauth2-test-proxy-backend-ownauth2" id="d1cd2182-9cc9-41e2-b224-43a2476d0242" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.090">
+    <testcase name="deleted (200 or 204 or 404)" time="0.090" classname="05CleanupDeleteOauth2TestProxyBackendOwnauth2"/>
+  </testsuite>
+  <testsuite name="05 - Cleanup / Delete: mcp-test-oauth2" id="08cdec46-e5bf-469c-9789-fe459e5e170d" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.290">
+    <testcase name="deleted (200 or 204 or 404)" time="0.290" classname="05CleanupDeleteMcpTestOauth2"/>
+  </testsuite>
+  <testsuite name="E.21 - Mcp server with oauth2 upstream auth (MCPProxyConfigData.upstream.auth) / Reset IdP stats" id="9f6d3e5c-6fcd-459b-b237-47a6016f83a4" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.002">
+    <testcase name="reset ok (204)" time="0.002" classname="E21McpServerWithOauth2UpstreamAuthMcpProxyConfigDataUpstreamAuthResetIdPStats"/>
+  </testsuite>
+  <testsuite name="E.21 - Mcp server with oauth2 upstream auth (MCPProxyConfigData.upstream.auth) / Send MCP request" id="e7e29c9e-2edc-44d0-a58f-58d4f7a6e896" timestamp="2026-07-22T04:01:43.514Z" tests="2" failures="0" errors="0" time="0.006">
+    <testcase name="status is 200" time="0.006" classname="E21McpServerWithOauth2UpstreamAuthMcpProxyConfigDataUpstreamAuthSendMcpRequest"/>
+    <testcase name="content shows an injected bearer token" time="0.006" classname="E21McpServerWithOauth2UpstreamAuthMcpProxyConfigDataUpstreamAuthSendMcpRequest"/>
+  </testsuite>
+  <testsuite name="E.21 - Mcp server with oauth2 upstream auth (MCPProxyConfigData.upstream.auth) / Verify the IdP was called" id="63503d2d-9d8b-4dc8-83e9-eb65fc82cf71" timestamp="2026-07-22T04:01:43.514Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="exactly one token request recorded" time="0.001" classname="E21McpServerWithOauth2UpstreamAuthMcpProxyConfigDataUpstreamAuthVerifyTheIdPWasCalled"/>
+  </testsuite>
+</testsuites>

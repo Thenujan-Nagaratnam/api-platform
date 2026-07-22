@@ -1,0 +1,709 @@
+{
+  "info": {
+    "name": "AI Gateway - azure-managed-identity policy",
+    "_postman_id": "c7a3b9e1-2f4d-4a8b-9e1a-azuremanagedid",
+    "description": "End-to-end test collection for the azure-managed-identity dev policy - User-Assigned Managed Identity auth via Azure IMDS, with the same Redis-backed token cache design as the oauth2 policy.\n\nCompanion to gateway/dev-policies/azure-managed-identity/TESTING.md - read that doc for the full narrative; this collection is the same flows as importable requests.\n\nUnlike oauth2, this policy is attached via the generic policies list (not the typed upstream.auth field) - matching how aws-authentication is attached today.\n\nPrerequisites before running any folder here:\n1. Start mock-azure-imds (see TESTING.md Part A):\n   cd gateway/dev-policies/azure-managed-identity/mocks/mock-azure-imds && GOWORK=off go run .\n2. Start mock-ai-backend (shared with the oauth2 policy's harness, unchanged):\n   cd gateway/dev-policies/upstream-oauth2-authentication/mocks/mock-ai-backend && GOWORK=off go run .\n3. Build the gateway with the policy included (Part B): cd gateway && make build\n4. Bring up the stack (Part C), with --profile redis if you want folder 04's Redis verification to have something to check:\n   docker compose --profile redis up -d gateway-controller gateway-runtime sample-backend redis\n\nIMPORTANT: requests to {{gatewayBaseUrl}} use a self-signed certificate. In Postman, disable 'SSL certificate verification' under Settings > General, or these requests will fail with a TLS error unrelated to the policy itself.\n\nRun folders in order: 00 (health) -> 01 (register) -> 02/03 (test flows) -> 04 (Redis cache verification, optional) -> 05 (cleanup).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090",
+      "type": "string",
+      "description": "gateway-controller REST management API, base path /api/management/v1"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094",
+      "type": "string",
+      "description": "gateway-controller admin/health API (port 9094 when using gateway/docker-compose.yaml)"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443",
+      "type": "string",
+      "description": "gateway-runtime (Envoy) data-plane traffic - self-signed cert, see collection description"
+    },
+    {
+      "key": "imdsMockBaseUrl",
+      "value": "localhost:9701",
+      "type": "string",
+      "description": "mock-azure-imds (run natively on host via go run)"
+    },
+    {
+      "key": "backendBaseUrl",
+      "value": "localhost:9602",
+      "type": "string",
+      "description": "mock-ai-backend, shared with the oauth2 policy's own test harness"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4=",
+      "type": "string",
+      "description": "admin:admin"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "description": "Confirm mock-azure-imds, mock-ai-backend, gateway-controller, and gateway-runtime are all up before running anything else.",
+      "item": [
+        {
+          "name": "mock-azure-imds healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{imdsMockBaseUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{imdsMockBaseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "mock-ai-backend healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gateway-controller admin health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "protocol": "http",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gateway-runtime reachable (Envoy)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                ""
+              ]
+            },
+            "description": "A 404 here is fine - it just means no route is registered yet."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Register AI APIs (LLM Providers)",
+      "description": "Registers each LlmProvider used by the test flows below. Attached via the generic policies list, not upstream.auth - see TESTING.md Part D.",
+      "item": [
+        {
+          "name": "Register: azure-umi-test",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "description": "Happy-path provider for E.1 and E.2 (caching).",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: azure-umi-test\nspec:\n  displayName: Azure UMI Test\n  version: v1.0\n  template: openai\n  context: /azure-umi-test/latest\n  upstream:\n    url: http://host.docker.internal:9602\n  policies:\n    - name: azure-managed-identity\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            clientId: 11111111-1111-1111-1111-111111111111\n            resource: https://cognitiveservices.azure.com/\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: azure-umi-test-broken",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "description": "Simulated IMDS/platform outage for E.3.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: azure-umi-test-broken\nspec:\n  displayName: Azure UMI Test (simulated platform outage)\n  version: v1.0\n  template: openai\n  context: /azure-umi-test-broken/latest\n  upstream:\n    url: http://host.docker.internal:9602\n  policies:\n    - name: azure-managed-identity\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            clientId: broken-client\n            resource: https://cognitiveservices.azure.com/\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: azure-umi-test-malformed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "description": "Malformed IMDS response (200 OK, missing access_token).",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: azure-umi-test-malformed\nspec:\n  displayName: Azure UMI Test (malformed IMDS response)\n  version: v1.0\n  template: openai\n  context: /azure-umi-test-malformed/latest\n  upstream:\n    url: http://host.docker.internal:9602\n  policies:\n    - name: azure-managed-identity\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            clientId: malformed-client\n            resource: https://cognitiveservices.azure.com/\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Mock Debug Endpoints",
+      "description": "Inspect/reset mock-azure-imds's request history between test flows.",
+      "item": [
+        {
+          "name": "Reset IMDS stats",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{imdsMockBaseUrl}}/debug/reset",
+              "protocol": "http",
+              "host": [
+                "{{imdsMockBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get IMDS stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{imdsMockBaseUrl}}/debug/stats",
+              "protocol": "http",
+              "host": [
+                "{{imdsMockBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "stats"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - Test Flows",
+      "description": "Run '02 - Reset IMDS stats' before each flow so request counts aren't polluted by earlier ones.",
+      "item": [
+        {
+          "name": "E.1 - Happy path",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('content shows an injected bearer token', function () {",
+                  "    pm.expect(json.choices[0].message.content).to.match(/received Authorization: \"Bearer mock-imds-token-/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/azure-umi-test/latest/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "azure-umi-test",
+                "latest",
+                "chat",
+                "completions"
+              ]
+            },
+            "description": "Expect 200 and choices[0].message.content to read: received Authorization: \"Bearer mock-imds-token-...\". Then check '02 - Get IMDS stats': last history entry should have outcome=issued.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "E.2 - Token caching",
+          "item": [
+            {
+              "name": "Send chat request (run x5)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "https://{{gatewayBaseUrl}}/azure-umi-test/latest/chat/completions",
+                  "protocol": "https",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "azure-umi-test",
+                    "latest",
+                    "chat",
+                    "completions"
+                  ]
+                },
+                "description": "Run this 5 times, then check 'Verify exactly one IMDS call happened' below.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Verify exactly one IMDS call happened",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const json = pm.response.json();",
+                      "pm.test('tokenRequestCount is 1', function () { pm.expect(json.tokenRequestCount).to.eql(1); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "http://{{imdsMockBaseUrl}}/debug/stats",
+                  "protocol": "http",
+                  "host": [
+                    "{{imdsMockBaseUrl}}"
+                  ],
+                  "path": [
+                    "debug",
+                    "stats"
+                  ]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "E.3 - Simulated platform outage (expect 502)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 502', function () { pm.response.to.have.status(502); });",
+                  "const json = pm.response.json();",
+                  "pm.test('generic error body', function () { pm.expect(json.message).to.eql('failed to authenticate request to upstream service'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/azure-umi-test-broken/latest/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "azure-umi-test-broken",
+                "latest",
+                "chat",
+                "completions"
+              ]
+            },
+            "description": "Expect 502 with the generic Bad Gateway body - the underlying 500 from mock-azure-imds must not leak through.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "E.4 - Malformed IMDS response (expect 502)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 502', function () { pm.response.to.have.status(502); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/azure-umi-test-malformed/latest/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "azure-umi-test-malformed",
+                "latest",
+                "chat",
+                "completions"
+              ]
+            },
+            "description": "mock-azure-imds returns 200 OK with no access_token - the policy must not crash or forward an empty Authorization header.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - Redis Token Cache Verification",
+      "description": "Requires the stack to have been started with the redis profile:\n  docker compose --profile redis up -d gateway-controller gateway-runtime sample-backend redis\n\nPostman has no native Redis client, so this folder's real request just populates the cache (same call as E.1) - run the redis-cli commands below yourself afterward, from a terminal:\n\n  docker exec gateway-redis-1 redis-cli KEYS 'azure-managed-identity:token:v1:*'\n  docker exec gateway-redis-1 redis-cli GET '<key>'\n  docker exec gateway-redis-1 redis-cli TTL '<key>'\n\nTo see the fail-open fallback (Redis down doesn't break auth):\n  docker compose stop redis\n  # re-run 'Populate cache' below - still 200 OK, just no longer cached anywhere\n  docker compose start redis",
+      "item": [
+        {
+          "name": "Populate cache (send chat request)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/azure-umi-test/latest/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "azure-umi-test",
+                "latest",
+                "chat",
+                "completions"
+              ]
+            },
+            "description": "Same request as E.1 - run this first so there's a fresh token to find in Redis. Requires 'Register: azure-umi-test' (folder 01) to have been run already.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 - Cleanup",
+      "description": "Deletes all test LlmProviders. Run once you're done, or skip and just docker compose down -v.",
+      "item": [
+        {
+          "name": "Delete: azure-umi-test",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/azure-umi-test",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "azure-umi-test"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: azure-umi-test-broken",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/azure-umi-test-broken",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "azure-umi-test-broken"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: azure-umi-test-malformed",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/azure-umi-test-malformed",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "azure-umi-test-malformed"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
