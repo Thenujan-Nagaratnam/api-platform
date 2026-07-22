@@ -535,9 +535,15 @@ func TestMCPValidator_ValidateUpstreamAuth(t *testing.T) {
 
 	// Define auth struct type locally to match the anonymous struct in api package
 	type authConfig struct {
-		Type   api.MCPProxyConfigDataUpstreamAuthType
-		Header *string
-		Value  *string
+		Type                api.MCPProxyConfigDataUpstreamAuthType
+		Header              *string
+		Value               *string
+		Oauth2TokenEndpoint *string
+		Oauth2ClientId      *string
+		Oauth2ClientSecret  *string
+		Oauth2GrantType     *api.MCPProxyConfigDataUpstreamAuthOauth2GrantType
+		Oauth2Username      *string
+		Oauth2Password      *string
 	}
 
 	tests := []struct {
@@ -599,6 +605,71 @@ func TestMCPValidator_ValidateUpstreamAuth(t *testing.T) {
 			wantError: true,
 			errField:  "spec.upstream.auth.value",
 		},
+		{
+			name: "Valid oauth2 auth (client_credentials, default grant)",
+			auth: &authConfig{
+				Type:                api.MCPProxyConfigDataUpstreamAuthTypeOauth2,
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
+			},
+			wantError: false,
+		},
+		{
+			name: "Missing oauth2TokenEndpoint",
+			auth: &authConfig{
+				Type:               api.MCPProxyConfigDataUpstreamAuthTypeOauth2,
+				Oauth2ClientId:     stringPtr("client-id"),
+				Oauth2ClientSecret: stringPtr("client-secret"),
+			},
+			wantError: true,
+			errField:  "spec.upstream.auth.oauth2TokenEndpoint",
+		},
+		{
+			name: "Missing oauth2ClientId",
+			auth: &authConfig{
+				Type:                api.MCPProxyConfigDataUpstreamAuthTypeOauth2,
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
+			},
+			wantError: true,
+			errField:  "spec.upstream.auth.oauth2ClientId",
+		},
+		{
+			name: "Missing oauth2ClientSecret",
+			auth: &authConfig{
+				Type:                api.MCPProxyConfigDataUpstreamAuthTypeOauth2,
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+			},
+			wantError: true,
+			errField:  "spec.upstream.auth.oauth2ClientSecret",
+		},
+		{
+			name: "oauth2 password grant requires username/password",
+			auth: &authConfig{
+				Type:                api.MCPProxyConfigDataUpstreamAuthTypeOauth2,
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
+				Oauth2GrantType:     mcpOauth2GrantTypePtr(api.MCPProxyConfigDataUpstreamAuthOauth2GrantTypePassword),
+			},
+			wantError: true,
+			errField:  "spec.upstream.auth.oauth2Username",
+		},
+		{
+			name: "Valid oauth2 password grant",
+			auth: &authConfig{
+				Type:                api.MCPProxyConfigDataUpstreamAuthTypeOauth2,
+				Oauth2TokenEndpoint: stringPtr("https://idp.example.com/oauth2/token"),
+				Oauth2ClientId:      stringPtr("client-id"),
+				Oauth2ClientSecret:  stringPtr("client-secret"),
+				Oauth2GrantType:     mcpOauth2GrantTypePtr(api.MCPProxyConfigDataUpstreamAuthOauth2GrantTypePassword),
+				Oauth2Username:      stringPtr("resource-owner"),
+				Oauth2Password:      stringPtr("hunter2"),
+			},
+			wantError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -624,9 +695,15 @@ func TestMCPValidator_ValidateUpstreamAuth(t *testing.T) {
 					Type                        api.MCPProxyConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
 					Value                       *string                                                   `json:"value,omitempty" yaml:"value,omitempty"`
 				}{
-					Type:   tt.auth.Type,
-					Header: tt.auth.Header,
-					Value:  tt.auth.Value,
+					Type:                tt.auth.Type,
+					Header:              tt.auth.Header,
+					Value:               tt.auth.Value,
+					Oauth2TokenEndpoint: tt.auth.Oauth2TokenEndpoint,
+					Oauth2ClientId:      tt.auth.Oauth2ClientId,
+					Oauth2ClientSecret:  tt.auth.Oauth2ClientSecret,
+					Oauth2GrantType:     tt.auth.Oauth2GrantType,
+					Oauth2Username:      tt.auth.Oauth2Username,
+					Oauth2Password:      tt.auth.Oauth2Password,
 				}
 			}
 			config := &api.MCPProxyConfiguration{

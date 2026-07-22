@@ -33,3 +33,11 @@ func oauth2GrantTypePtr(v string) *management.LLMProviderConfigDataUpstreamAuthO
 	g := management.LLMProviderConfigDataUpstreamAuthOauth2GrantType(v)
 	return &g
 }
+
+// mcpOauth2GrantTypePtr is oauth2GrantTypePtr's MCP counterpart -
+// MCPProxyConfigData's upstream.auth uses its own generated grant-type type
+// even though it shares the same string values, since its OpenAPI schema is
+// inlined rather than $ref'ing LLMProvider's UpstreamAuth.
+func mcpOauth2GrantTypePtr(v management.MCPProxyConfigDataUpstreamAuthOauth2GrantType) *management.MCPProxyConfigDataUpstreamAuthOauth2GrantType {
+	return &v
+}

@@ -239,6 +239,122 @@ func TestMCPTransformer_Transform_WithPoliciesAndUpstreamAuth(t *testing.T) {
 	}
 }
 
+func TestMCPTransformer_Transform_WithOAuth2UpstreamAuth(t *testing.T) {
+	name := "petstore"
+	version := "1.0.0"
+	context := "/petstore"
+	url := "http://backend:8080"
+	authType := api.MCPProxyConfigDataUpstreamAuthTypeOauth2
+	tokenEndpoint := "https://idp.example.com/oauth2/token"
+	clientID := "client-id"
+	clientSecret := "client-secret"
+
+	upstream := api.MCPProxyConfigData_Upstream{
+		Url: &url,
+		Auth: &struct {
+			Header                      *string                                                   `json:"header,omitempty" yaml:"header,omitempty"`
+			Oauth2ClientAuthMethod      *api.MCPProxyConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+			Oauth2ClientId              *string                                                   `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+			Oauth2ClientSecret          *string                                                   `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+			Oauth2DefaultTokenTTL       *string                                                   `json:"oauth2DefaultTokenTTL,omitempty" yaml:"oauth2DefaultTokenTTL,omitempty"`
+			Oauth2GrantType             *api.MCPProxyConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+			Oauth2Params                *map[string]string                                        `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+			Oauth2Password              *string                                                   `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+			Oauth2TokenEndpoint         *string                                                   `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+			Oauth2TokenPurgeStatusCodes *[]int                                                    `json:"oauth2TokenPurgeStatusCodes,omitempty" yaml:"oauth2TokenPurgeStatusCodes,omitempty"`
+			Oauth2TokenRequestTimeout   *string                                                   `json:"oauth2TokenRequestTimeout,omitempty" yaml:"oauth2TokenRequestTimeout,omitempty"`
+			Oauth2Username              *string                                                   `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+			Type                        api.MCPProxyConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+			Value                       *string                                                   `json:"value,omitempty" yaml:"value,omitempty"`
+		}{
+			Type:                authType,
+			Oauth2TokenEndpoint: &tokenEndpoint,
+			Oauth2ClientId:      &clientID,
+			Oauth2ClientSecret:  &clientSecret,
+		},
+	}
+
+	latest := LATEST_SUPPORTED_MCP_SPEC_VERSION
+	in := &api.MCPProxyConfiguration{
+		Spec: api.MCPProxyConfigData{
+			DisplayName: name,
+			Version:     version,
+			Context:     &context,
+			Upstream:    upstream,
+			SpecVersion: &latest,
+		},
+	}
+
+	var out api.RestAPI
+	tr := &MCPTransformer{}
+	res, err := tr.Transform(in, &out)
+	require.NoError(t, err)
+
+	apiData := res.Spec
+	require.NotNil(t, apiData.Policies)
+	resPolicies := *apiData.Policies
+	require.Len(t, resPolicies, 1)
+
+	pol := resPolicies[0]
+	assert.Equal(t, constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME, pol.Name)
+	require.NotNil(t, pol.Params)
+	params := *pol.Params
+	assert.Equal(t, "client_credentials", params["grantType"])
+	assert.Equal(t, tokenEndpoint, params["tokenEndpoint"])
+	assert.Equal(t, clientID, params["clientId"])
+	assert.Equal(t, clientSecret, params["clientSecret"])
+}
+
+func TestMCPTransformer_Transform_WithOAuth2UpstreamAuth_MissingRequiredField(t *testing.T) {
+	context := "/petstore"
+	url := "http://backend:8080"
+	authType := api.MCPProxyConfigDataUpstreamAuthTypeOauth2
+	clientID := "client-id"
+	clientSecret := "client-secret"
+
+	upstream := api.MCPProxyConfigData_Upstream{
+		Url: &url,
+		Auth: &struct {
+			Header                      *string                                                   `json:"header,omitempty" yaml:"header,omitempty"`
+			Oauth2ClientAuthMethod      *api.MCPProxyConfigDataUpstreamAuthOauth2ClientAuthMethod `json:"oauth2ClientAuthMethod,omitempty" yaml:"oauth2ClientAuthMethod,omitempty"`
+			Oauth2ClientId              *string                                                   `json:"oauth2ClientId,omitempty" yaml:"oauth2ClientId,omitempty"`
+			Oauth2ClientSecret          *string                                                   `json:"oauth2ClientSecret,omitempty" yaml:"oauth2ClientSecret,omitempty"`
+			Oauth2DefaultTokenTTL       *string                                                   `json:"oauth2DefaultTokenTTL,omitempty" yaml:"oauth2DefaultTokenTTL,omitempty"`
+			Oauth2GrantType             *api.MCPProxyConfigDataUpstreamAuthOauth2GrantType        `json:"oauth2GrantType,omitempty" yaml:"oauth2GrantType,omitempty"`
+			Oauth2Params                *map[string]string                                        `json:"oauth2Params,omitempty" yaml:"oauth2Params,omitempty"`
+			Oauth2Password              *string                                                   `json:"oauth2Password,omitempty" yaml:"oauth2Password,omitempty"`
+			Oauth2TokenEndpoint         *string                                                   `json:"oauth2TokenEndpoint,omitempty" yaml:"oauth2TokenEndpoint,omitempty"`
+			Oauth2TokenPurgeStatusCodes *[]int                                                    `json:"oauth2TokenPurgeStatusCodes,omitempty" yaml:"oauth2TokenPurgeStatusCodes,omitempty"`
+			Oauth2TokenRequestTimeout   *string                                                   `json:"oauth2TokenRequestTimeout,omitempty" yaml:"oauth2TokenRequestTimeout,omitempty"`
+			Oauth2Username              *string                                                   `json:"oauth2Username,omitempty" yaml:"oauth2Username,omitempty"`
+			Type                        api.MCPProxyConfigDataUpstreamAuthType                    `json:"type" yaml:"type"`
+			Value                       *string                                                   `json:"value,omitempty" yaml:"value,omitempty"`
+		}{
+			// Oauth2TokenEndpoint deliberately omitted.
+			Type:               authType,
+			Oauth2ClientId:     &clientID,
+			Oauth2ClientSecret: &clientSecret,
+		},
+	}
+
+	latest := LATEST_SUPPORTED_MCP_SPEC_VERSION
+	in := &api.MCPProxyConfiguration{
+		Spec: api.MCPProxyConfigData{
+			DisplayName: "petstore",
+			Version:     "1.0.0",
+			Context:     &context,
+			Upstream:    upstream,
+			SpecVersion: &latest,
+		},
+	}
+
+	var out api.RestAPI
+	tr := &MCPTransformer{}
+	_, err := tr.Transform(in, &out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "oauth2TokenEndpoint")
+}
+
 func TestNewMCPTransformer(t *testing.T) {
 	tr := NewMCPTransformer()
 	if tr == nil {
