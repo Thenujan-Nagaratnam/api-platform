@@ -233,6 +233,19 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 			chain := t.buildPolicyChain(apiPolicies, op.Policies)
 			injected := utils.InjectSystemPolicies(chain, t.systemConfig, nil)
 			rdc.PolicyChains[routeKey] = sdkChainToModel(injected)
+
+			// model-failover routes must route via cluster_header to the AGGREGATE cluster
+			// xds/translator.go's translateRuntimeConfig builds for this exact route — not
+			// the plain-main-upstream default computed above — so the kernel's
+			// applyDefaultUpstream (no suspend override) and the real Envoy route (built from
+			// a SEPARATE Transform call, see xds.ModelFailoverAggregateClusterName's own
+			// comment) agree on the same cluster. Detected here by policy name only, since
+			// the aggregate cluster's name formula needs no parsed policyParams.
+			if hasModelFailoverPolicy(injected) {
+				aggName := xds.ModelFailoverAggregateClusterName(rdc.Metadata.Kind, rdc.Metadata.UUID, routeKey)
+				rdcRoute.Upstream.UseClusterHeader = true
+				rdcRoute.Upstream.DefaultCluster = aggName
+			}
 		}
 	}
 
@@ -420,6 +433,17 @@ func (t *RestAPITransformer) collectAPIPolicies(policies *[]api.Policy) []policy
 		result = append(result, convertAPIPolicyToSDK(p, policyv1alpha.LevelAPI, versionutil.MajorVersion(resolved)))
 	}
 	return result
+}
+
+// hasModelFailoverPolicy reports whether a resolved policy chain includes model-failover, by
+// name only — no need to parse policyParams just to decide the route's cluster-header default.
+func hasModelFailoverPolicy(policies []policyenginev1.PolicyInstance) bool {
+	for _, p := range policies {
+		if p.Name == "model-failover" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPolicyChain builds a merged list: API-level + operation-level policies (SDK format).
