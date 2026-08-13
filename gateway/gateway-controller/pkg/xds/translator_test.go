@@ -20,6 +20,7 @@ package xds
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"net/url"
 	"regexp"
@@ -33,6 +34,7 @@ import (
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	tracev3 "github.com/envoyproxy/go-control-plane/envoy/config/trace/v3"
+	aggregatev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/aggregate/v3"
 	extproc "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
@@ -3506,6 +3508,48 @@ func TestCreateWeightedCluster_PeerHostnameMetadata(t *testing.T) {
 				lb.GetMetadata().GetFilterMetadata()["envoy.lb"].GetFields()["hostname"].GetStringValue())
 		}
 	})
+}
+
+func TestModelFailoverMemberClusterNames_ResolvesInOrder(t *testing.T) {
+	mf := &config.ModelFailoverParams{
+		Models: []config.ModelFailoverTarget{
+			{Name: "gpt-4o", UpstreamDefinition: "primary"},
+			{Name: "gpt-4o-mini", UpstreamDefinition: "fallback-1"},
+		},
+	}
+	names := modelFailoverMemberClusterNames(mf, "LlmProvider", "abc-123")
+	want := []string{"upstream_LlmProvider_abc-123_primary", "upstream_LlmProvider_abc-123_fallback-1"}
+	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
+		t.Errorf("got %v, want %v", names, want)
+	}
+}
+
+func TestCreateAggregateCluster_ListsMembersInOrder(t *testing.T) {
+	tr := &Translator{logger: slog.Default()}
+	c, err := tr.createAggregateCluster("agg_test", []string{"upstream_a", "upstream_b"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Name != "agg_test" {
+		t.Errorf("unexpected cluster name: %q", c.Name)
+	}
+	if c.LbPolicy != cluster.Cluster_CLUSTER_PROVIDED {
+		t.Errorf("expected CLUSTER_PROVIDED lb_policy, got %v", c.LbPolicy)
+	}
+	ct, ok := c.ClusterDiscoveryType.(*cluster.Cluster_ClusterType)
+	if !ok {
+		t.Fatalf("expected Cluster_ClusterType, got %T", c.ClusterDiscoveryType)
+	}
+	if ct.ClusterType.Name != "envoy.clusters.aggregate" {
+		t.Errorf("unexpected cluster_type name: %q", ct.ClusterType.Name)
+	}
+	var cfg aggregatev3.ClusterConfig
+	if err := ct.ClusterType.TypedConfig.UnmarshalTo(&cfg); err != nil {
+		t.Fatalf("failed to unmarshal ClusterConfig: %v", err)
+	}
+	if len(cfg.Clusters) != 2 || cfg.Clusters[0] != "upstream_a" || cfg.Clusters[1] != "upstream_b" {
+		t.Errorf("unexpected member order: %v", cfg.Clusters)
+	}
 }
 
 // parseDurationAllowZero must accept exactly what the CRD admission controller accepts

@@ -49,6 +49,7 @@ import (
 	tracev3 "github.com/envoyproxy/go-control-plane/envoy/config/trace/v3"
 	fileaccesslog "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
 	grpc_accesslogv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/grpc/v3"
+	aggregatev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/aggregate/v3"
 	extproc "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	luav3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/lua/v3"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
@@ -640,6 +641,46 @@ func (t *Translator) createWeightedCluster(
 		c.TransportSocketMatches = transportSocketMatches
 	}
 	return c
+}
+
+// modelFailoverMemberClusterNames resolves each target's upstreamDefinition
+// reference to the exact cluster name RestAPITransformer already creates for
+// it (constants.UpstreamDefinitionClusterPrefix + kind + "_" + apiID + "_" +
+// sanitizeUpstreamDefinitionName(name)) — the SAME clusters upstreamDefinitions
+// always produces, never a new/parallel set. Order is preserved: index i
+// here corresponds to Envoy attempt i+1 (see the design spec's AttemptCount
+// note) — this function must never reorder or dedupe.
+func modelFailoverMemberClusterNames(mf *config.ModelFailoverParams, apiKind, apiID string) []string {
+	names := make([]string, len(mf.Models))
+	for i, m := range mf.Models {
+		names[i] = constants.UpstreamDefinitionClusterPrefix + apiKind + "_" + apiID + "_" + sanitizeUpstreamDefinitionName(m.UpstreamDefinition)
+	}
+	return names
+}
+
+// createAggregateCluster builds an envoy.clusters.aggregate cluster composing
+// memberClusterNames in priority order (index 0 = highest priority — Envoy's
+// aggregate cluster assigns priorities by list position). lb_policy MUST be
+// CLUSTER_PROVIDED: the aggregate cluster type supplies its own load
+// balancing and rejects any other value. This cluster carries no endpoints
+// of its own — connections are always established through whichever member
+// cluster the aggregate's priority/retry logic selects.
+func (t *Translator) createAggregateCluster(name string, memberClusterNames []string) (*cluster.Cluster, error) {
+	cfg := &aggregatev3.ClusterConfig{Clusters: memberClusterNames}
+	cfgAny, err := anypb.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal aggregate cluster config for %q: %w", name, err)
+	}
+	return &cluster.Cluster{
+		Name:     name,
+		LbPolicy: cluster.Cluster_CLUSTER_PROVIDED,
+		ClusterDiscoveryType: &cluster.Cluster_ClusterType{
+			ClusterType: &cluster.Cluster_CustomClusterType{
+				Name:        "envoy.clusters.aggregate",
+				TypedConfig: cfgAny,
+			},
+		},
+	}, nil
 }
 
 // TranslateConfigs translates all API configurations to Envoy resources
