@@ -1883,6 +1883,72 @@ func TestCollectClustersNeedingUpstreamBodyFilter_OnlyMarksAggregateClusters(t *
 	}
 }
 
+// TestCreateRouteFromRDC_ModelFailoverUsesClusterHeaderNotStaticCluster is the regression test
+// for the Task 12 e2e-discovered bug: a model-failover route must use ClusterHeader (reading
+// x-target-upstream at request time) so OnRequestBody's suspend-aware UpstreamName redirect can
+// actually reroute it — a static Cluster specifier silently ignores that header. RetryPolicy
+// (retry_priority + PerTryTimeout) must still be set exactly as before; only the
+// ClusterSpecifier changes.
+func TestCreateRouteFromRDC_ModelFailoverUsesClusterHeaderNotStaticCluster(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	routeKey := "POST|/mf-test/latest/chat/completions|"
+	timeout := 5 * time.Second
+	mf := &config.ModelFailoverParams{
+		Models:         []config.ModelFailoverTarget{{Name: "gpt-4o", UpstreamDefinition: "primary"}, {Name: "gpt-4o-mini", UpstreamDefinition: "fallback-1"}},
+		StatusCodes:    []int{500},
+		RequestTimeout: &timeout,
+	}
+	mfParamsMap := map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"name": "gpt-4o", "upstreamDefinition": "primary"},
+			map[string]interface{}{"name": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+		},
+		"statusCodes":    []interface{}{500},
+		"requestTimeout": "5s",
+	}
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{},
+		PolicyChains: map[string]*models.PolicyChain{
+			routeKey: {Policies: []models.Policy{{Name: "model-failover", Params: mfParamsMap}}},
+		},
+	}
+	rdcRoute := &models.Route{
+		Method:        "POST",
+		Path:          "/mf-test/latest/chat/completions",
+		OperationPath: "/chat/completions",
+		Upstream:      models.RouteUpstream{UseClusterHeader: true, DefaultCluster: "agg_modelfailover_test"},
+	}
+	modelFailoverClusterByRouteKey := map[string]string{routeKey: "agg_modelfailover_test"}
+
+	r := translator.createRouteFromRDC(routeKey, rdcRoute, rdc, modelFailoverClusterByRouteKey)
+	require.NotNil(t, r)
+
+	_, isClusterHeader := r.GetRoute().GetClusterSpecifier().(*route.RouteAction_ClusterHeader)
+	assert.True(t, isClusterHeader, "model-failover route must use ClusterHeader, not a static Cluster specifier, or UpstreamName redirects have no effect")
+	assert.Contains(t, r.RequestHeadersToRemove, constants.TargetUpstreamHeader, "x-target-upstream must be stripped before forwarding upstream, same as any other cluster_header route")
+
+	rp := r.GetRoute().GetRetryPolicy()
+	require.NotNil(t, rp, "RetryPolicy must still be set on a cluster_header model-failover route")
+	assert.NotNil(t, rp.GetRetryPriority(), "retry_priority must survive the switch to ClusterHeader")
+	assert.EqualValues(t, mf.RequestTimeout.Seconds(), rp.GetPerTryTimeout().AsDuration().Seconds())
+}
+
+// TestIsModelFailoverAggregateCluster verifies the detector createAggregateCluster's own output
+// satisfies, and that an ordinary (non-aggregate) cluster does not.
+func TestIsModelFailoverAggregateCluster(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	agg, err := translator.createAggregateCluster("agg_modelfailover_test", []string{"member-a", "member-b"})
+	require.NoError(t, err)
+	assert.True(t, isModelFailoverAggregateCluster(agg))
+
+	plain := &cluster.Cluster{Name: "plain", ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STRICT_DNS}}
+	assert.False(t, isModelFailoverAggregateCluster(plain))
+}
+
 func TestTranslator_CreateRouteConfiguration(t *testing.T) {
 	logger := createTestLogger()
 	routerCfg := testRouterConfig()

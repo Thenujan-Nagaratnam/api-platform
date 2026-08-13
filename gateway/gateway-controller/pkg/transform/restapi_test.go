@@ -29,6 +29,7 @@ import (
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/xds"
 )
 
 // ptrStr is a helper to get a pointer to a string literal.
@@ -545,6 +546,39 @@ func TestRestAPITransformer_DefaultClusterReferencesRealCluster(t *testing.T) {
 			"route %q default cluster %q must be an actual UpstreamClusters key (got keys %v)",
 			key, r.Upstream.DefaultCluster, upstreamClusterKeys(rdc))
 	}
+}
+
+// TestRestAPITransformer_ModelFailoverRouteDefaultsToAggregateCluster is the regression test for
+// the Task 12 e2e-discovered bug: a route whose policy chain includes model-failover must set
+// UseClusterHeader=true with DefaultCluster pointing at the AGGREGATE cluster
+// xds/translator.go's translateRuntimeConfig will build for this exact route — not the plain
+// main-upstream default every other cluster_header route gets — computed via the identical
+// xds.ModelFailoverAggregateClusterName formula both packages share (restapi.go's Transform and
+// translateRuntimeConfig run as two SEPARATE calls against two independently-transformed
+// RuntimeDeployConfig instances, so a hand-duplicated name would silently drift).
+func TestRestAPITransformer_ModelFailoverRouteDefaultsToAggregateCluster(t *testing.T) {
+	defs := map[string]models.PolicyDefinition{
+		"model-failover|v0.1.0": {Name: "model-failover", Version: "v0.1.0"},
+	}
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+
+	upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
+	cfg := makeRestAPIStoredConfig(nil, []api.Policy{{Name: "model-failover", Version: ""}})
+	restAPI := cfg.Configuration.(api.RestAPI)
+	restAPI.Spec.UpstreamDefinitions = &upDefs
+	cfg.Configuration = restAPI
+
+	rdc, err := transformer.Transform(cfg)
+	require.NoError(t, err)
+
+	routeKey := "GET|/test/hello|main.local"
+	rdcRoute, ok := rdc.Routes[routeKey]
+	require.True(t, ok, "expected route %q to exist", routeKey)
+
+	assert.True(t, rdcRoute.Upstream.UseClusterHeader, "model-failover route must use cluster_header, or OnRequestBody's UpstreamName redirect has no effect")
+	expected := xds.ModelFailoverAggregateClusterName(rdc.Metadata.Kind, rdc.Metadata.UUID, routeKey)
+	assert.Equal(t, expected, rdcRoute.Upstream.DefaultCluster,
+		"default cluster must be the SAME aggregate cluster name translateRuntimeConfig will build, not the plain main-upstream default")
 }
 
 func upstreamClusterKeys(rdc *models.RuntimeDeployConfig) []string {
