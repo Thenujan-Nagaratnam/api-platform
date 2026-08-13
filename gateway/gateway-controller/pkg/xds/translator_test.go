@@ -2244,6 +2244,8 @@ func TestTranslateConfigs_VirtualHostIncludesRequestAttemptCountWhenAnyRouteHasR
 	require.Contains(t, byName, "localhost", "expected the API's own vhost ('localhost', neither config sets a custom Vhosts.Main) to be present")
 	assert.True(t, byName["localhost"].IncludeRequestAttemptCount,
 		"the 'localhost' vhost carries the retry-configured route and must set IncludeRequestAttemptCount")
+	assert.True(t, byName["localhost"].IncludeAttemptCountInResponse,
+		"the 'localhost' vhost carries the retry-configured route and must also set IncludeAttemptCountInResponse, so model-failover's OnResponseHeaders can read x-envoy-attempt-count off the downstream response")
 	// The pre-seeded wildcard vhost carries neither API's routes at all (see
 	// vhostMap's pre-seeding in TranslateConfigs) - it must NOT be flagged just
 	// because some OTHER vhost happens to need it. This is exactly the gap a
@@ -2253,6 +2255,8 @@ func TestTranslateConfigs_VirtualHostIncludesRequestAttemptCountWhenAnyRouteHasR
 	if wildcard, ok := byName["*"]; ok {
 		assert.False(t, wildcard.IncludeRequestAttemptCount,
 			"the wildcard vhost carries no API routes and must not set IncludeRequestAttemptCount just because 'localhost' needs it")
+		assert.False(t, wildcard.IncludeAttemptCountInResponse,
+			"the wildcard vhost carries no API routes and must not set IncludeAttemptCountInResponse just because 'localhost' needs it")
 	}
 }
 
@@ -2279,6 +2283,8 @@ func TestTranslateConfigs_VirtualHostOmitsRequestAttemptCountWhenNoRetryConfigur
 			found = true
 			assert.False(t, vh.IncludeRequestAttemptCount,
 				"virtual host %q must not set IncludeRequestAttemptCount when nothing needs it", vh.Name)
+			assert.False(t, vh.IncludeAttemptCountInResponse,
+				"virtual host %q must not set IncludeAttemptCountInResponse when nothing needs it", vh.Name)
 		}
 	}
 	require.True(t, found, "expected at least one virtual host to be present")
@@ -2345,10 +2351,16 @@ func TestTranslateConfigs_MultipleVhosts_OnlyTheOneWithRetryGetsRequestAttemptCo
 
 	assert.True(t, byName["vhost-a.example.com"].IncludeRequestAttemptCount,
 		"vhost-a has the retry-configured route and must set IncludeRequestAttemptCount")
+	assert.True(t, byName["vhost-a.example.com"].IncludeAttemptCountInResponse,
+		"vhost-a has the retry-configured route and must also set IncludeAttemptCountInResponse")
 	assert.False(t, byName["vhost-b.example.com"].IncludeRequestAttemptCount,
+		"vhost-b has NO retry-configured route of its own and must not be affected by vhost-a's")
+	assert.False(t, byName["vhost-b.example.com"].IncludeAttemptCountInResponse,
 		"vhost-b has NO retry-configured route of its own and must not be affected by vhost-a's")
 	if wildcard, ok := byName["*"]; ok {
 		assert.False(t, wildcard.IncludeRequestAttemptCount,
+			"the wildcard vhost carries neither tenant's routes and must not be flagged either")
+		assert.False(t, wildcard.IncludeAttemptCountInResponse,
 			"the wildcard vhost carries neither tenant's routes and must not be flagged either")
 	}
 }

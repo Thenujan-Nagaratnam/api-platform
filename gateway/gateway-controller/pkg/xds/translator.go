@@ -1009,6 +1009,17 @@ func (t *Translator) TranslateConfigs(
 			// call) or an unrelated tenant's vhost would get x-envoy-attempt-count sent
 			// to its own backend for no reason.
 			IncludeRequestAttemptCount: vhostHasRetryConfiguredRoute,
+			// IncludeAttemptCountInResponse puts the SAME x-envoy-attempt-count value
+			// onto the response sent back to the downstream client, not just the
+			// upstream-bound request above - this is the only signal
+			// model-failover's OnResponseHeaders (gateway-controllers/policies/
+			// model-failover/model_failover.go) has to infer which targets failed
+			// on this request and suspend them. Reuses the identical
+			// vhostHasRetryConfiguredRoute scoping as the request-side flag: no
+			// tighter granularity is available (VirtualHost is the only level
+			// either flag exists at), and it's already accepted for the request
+			// side above.
+			IncludeAttemptCountInResponse: vhostHasRetryConfiguredRoute,
 			// Strip any client-supplied x-envoy-original-path so it cannot survive to
 			// the collector.ignore_path_prefixes access-log filter (buildIgnorePathsAccessLogFilter):
 			// on a route that performs a path rewrite, Envoy's router unconditionally
