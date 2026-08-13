@@ -21,6 +21,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2393,4 +2394,72 @@ func TestValidateLLMProvider_UpstreamRef(t *testing.T) {
 		errs := validator.Validate(providerWithUpstream(nil, api.LLMProviderConfigData_Upstream{Url: stringPtr("  https://api.openai.com  ")}))
 		assert.Empty(t, errs)
 	})
+}
+
+func TestParseModelFailoverParams_ValidConfig(t *testing.T) {
+	params := map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"name": "gpt-4o", "upstreamDefinition": "primary"},
+			map[string]interface{}{"name": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+		},
+		"statusCodes":     []interface{}{429, 500, 502, 503, 504},
+		"requestTimeout":  "10s",
+		"suspendDuration": "30s",
+	}
+
+	mf, err := ParseModelFailoverParams(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mf.Models) != 2 || mf.Models[0].Name != "gpt-4o" || mf.Models[0].UpstreamDefinition != "primary" {
+		t.Errorf("unexpected Models: %#v", mf.Models)
+	}
+	if len(mf.StatusCodes) != 5 || mf.StatusCodes[0] != 429 {
+		t.Errorf("unexpected StatusCodes: %v", mf.StatusCodes)
+	}
+	if mf.RequestTimeout == nil || *mf.RequestTimeout != 10*time.Second {
+		t.Errorf("unexpected RequestTimeout: %v", mf.RequestTimeout)
+	}
+	if mf.SuspendDuration == nil || *mf.SuspendDuration != 30*time.Second {
+		t.Errorf("unexpected SuspendDuration: %v", mf.SuspendDuration)
+	}
+}
+
+func TestParseModelFailoverParams_RequiresAtLeastTwoModels(t *testing.T) {
+	params := map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"name": "gpt-4o", "upstreamDefinition": "primary"},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	if _, err := ParseModelFailoverParams(params); err == nil {
+		t.Error("expected an error for a single-target models list — nothing to fail over to")
+	}
+}
+
+func TestParseModelFailoverParams_RequiresNonEmptyStatusCodes(t *testing.T) {
+	params := map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"name": "gpt-4o", "upstreamDefinition": "primary"},
+			map[string]interface{}{"name": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+		},
+		"statusCodes": []interface{}{},
+	}
+	if _, err := ParseModelFailoverParams(params); err == nil {
+		t.Error("expected an error for empty statusCodes")
+	}
+}
+
+func TestValidateModelFailoverPolicy_RejectsCoexistenceWithResilienceRetry(t *testing.T) {
+	mf := &ModelFailoverParams{
+		Models:      []ModelFailoverTarget{{Name: "a", UpstreamDefinition: "x"}, {Name: "b", UpstreamDefinition: "y"}},
+		StatusCodes: []int{500},
+	}
+	retry := &api.Retry{StatusCodes: []int{401}}
+	if err := ValidateModelFailoverPolicy(mf, retry); err == nil {
+		t.Error("expected an error when both model-failover and resilience.retry are configured on the same route")
+	}
+	if err := ValidateModelFailoverPolicy(mf, nil); err != nil {
+		t.Errorf("expected no error when resilience.retry is absent, got: %v", err)
+	}
 }
