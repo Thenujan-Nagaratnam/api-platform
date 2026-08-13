@@ -53,5 +53,27 @@ func TestUpstreamAttemptContext_AttemptCountGatesRefresh(t *testing.T) {
 	}
 }
 
+func TestUpstreamAttemptContext_BodyFieldExists(t *testing.T) {
+	actx := &UpstreamAttemptContext{
+		AttemptCount: 2,
+		Headers:      NewHeaders(nil),
+		Body:         &Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true, EndOfStream: true},
+	}
+	if actx.Body == nil || string(actx.Body.Content) != `{"model":"gpt-4o"}` {
+		t.Fatalf("expected Body.Content to round-trip, got %#v", actx.Body)
+	}
+}
+
+func TestUpstreamAttemptHeaderModifications_BodyFieldExists(t *testing.T) {
+	mods := UpstreamAttemptHeaderModifications{
+		HeadersToSet: map[string]string{"Authorization": "Bearer x"},
+		Body:         []byte(`{"model":"gpt-4o-mini"}`),
+	}
+	if string(mods.Body) != `{"model":"gpt-4o-mini"}` {
+		t.Fatalf("expected Body to round-trip, got %q", mods.Body)
+	}
+	var _ UpstreamAttemptAction = mods // still satisfies the sealed interface
+}
+
 // Compile-time interface satisfaction check, mirroring action.go's own convention.
 var _ UpstreamAttemptAction = UpstreamAttemptHeaderModifications{}

@@ -307,6 +307,17 @@ type UpstreamAttemptAction interface {
 // error).
 type UpstreamAttemptHeaderModifications struct {
 	HeadersToSet map[string]string
+
+	// Body replaces this attempt's outgoing request body when non-nil. Only
+	// meaningful when UpstreamAttemptContext.Body was non-nil (the kernel
+	// buffers the body for this attempt) — setting it otherwise is a no-op,
+	// not an error. The kernel — not the caller — sets Content-Length to
+	// match the replacement, matching setContentLengthHeader's existing
+	// downstream-body-path convention; policies must never do this
+	// themselves (a mismatched Content-Length makes Envoy reject the
+	// mutation outright before the backend is ever dialed — verified in
+	// the model-failover design spec's spike).
+	Body []byte
 }
 
 func (UpstreamAttemptHeaderModifications) isUpstreamAttemptAction() {}

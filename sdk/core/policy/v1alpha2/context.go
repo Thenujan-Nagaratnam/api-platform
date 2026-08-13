@@ -328,4 +328,14 @@ type UpstreamAttemptContext struct {
 	// Headers are this specific attempt's outgoing request headers, mutable
 	// via the returned UpstreamAttemptAction.
 	Headers *Headers
+
+	// Body is this specific attempt's outgoing request body — the ORIGINAL
+	// client-sent bytes, replayed fresh by Envoy on every attempt (verified:
+	// Envoy does not carry forward a previous attempt's mutation). Nil
+	// unless the backing cluster's ext_proc filter has RequestBodyMode:
+	// BUFFERED enabled (only clusters backing a model-failover route need
+	// this — see go-network-service-hardening.md on not widening buffering
+	// unnecessarily). A header-only consumer (oauth2-generator) never reads
+	// this field and is unaffected by its addition.
+	Body *Body
 }
