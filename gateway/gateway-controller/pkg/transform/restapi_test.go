@@ -548,6 +548,59 @@ func TestRestAPITransformer_DefaultClusterReferencesRealCluster(t *testing.T) {
 	}
 }
 
+// TestRestAPITransformer_ModelFailoverRejectsResilienceRetry is the regression test for a
+// confirmed-dead validator: config.ValidateModelFailoverPolicy existed to reject model-failover
+// combined with resilience.retry on the same operation (both drive RouteAction.RetryPolicy
+// independently — whichever translates last in createRouteFromRDC would otherwise silently win),
+// but was never actually called from any code path until this test's own fix wired it into
+// Transform. Covers both directions: op-level retry, and API-level retry inherited by an
+// operation with no op-level override.
+func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
+	defs := map[string]models.PolicyDefinition{
+		"model-failover|v0.1.0": {Name: "model-failover", Version: "v0.1.0"},
+	}
+
+	t.Run("operation-level retry", func(t *testing.T) {
+		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{{Name: "model-failover", Version: ""}})
+		restAPI := cfg.Configuration.(api.RestAPI)
+		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
+		restAPI.Spec.UpstreamDefinitions = &upDefs
+		numRetries := 1
+		restAPI.Spec.Operations[0].Resilience = &api.Resilience{Retry: &api.Retry{StatusCodes: []int{500}, NumRetries: &numRetries}}
+		cfg.Configuration = restAPI
+
+		_, err := transformer.Transform(cfg)
+		require.Error(t, err, "model-failover + operation-level resilience.retry must be rejected")
+	})
+
+	t.Run("API-level retry inherited by the operation", func(t *testing.T) {
+		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{{Name: "model-failover", Version: ""}})
+		restAPI := cfg.Configuration.(api.RestAPI)
+		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
+		restAPI.Spec.UpstreamDefinitions = &upDefs
+		numRetries := 1
+		restAPI.Spec.Resilience = &api.Resilience{Retry: &api.Retry{StatusCodes: []int{500}, NumRetries: &numRetries}}
+		cfg.Configuration = restAPI
+
+		_, err := transformer.Transform(cfg)
+		require.Error(t, err, "model-failover + API-level resilience.retry (inherited) must be rejected")
+	})
+
+	t.Run("model-failover alone is accepted", func(t *testing.T) {
+		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{{Name: "model-failover", Version: ""}})
+		restAPI := cfg.Configuration.(api.RestAPI)
+		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
+		restAPI.Spec.UpstreamDefinitions = &upDefs
+		cfg.Configuration = restAPI
+
+		_, err := transformer.Transform(cfg)
+		require.NoError(t, err, "model-failover with no resilience.retry configured must be accepted")
+	})
+}
+
 // TestRestAPITransformer_ModelFailoverRouteDefaultsToAggregateCluster is the regression test for
 // the Task 12 e2e-discovered bug: a route whose policy chain includes model-failover must set
 // UseClusterHeader=true with DefaultCluster pointing at the AGGREGATE cluster

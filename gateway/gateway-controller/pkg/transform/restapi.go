@@ -187,6 +187,34 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 		}
 		routeTimeout := buildRouteTimeout(opTimeout, apiTimeout, opIdleTimeout, apiIdleTimeout, opRetry, apiRetry)
 
+		// config.ValidateModelFailoverPolicy exists specifically to reject this combination
+		// (both policies drive RouteAction.RetryPolicy independently; whichever translates
+		// last in createRouteFromRDC would otherwise silently win) but was never actually
+		// invoked from any admission path - confirmed dead code by a Task 12 review. Wired
+		// in here since this is the one place that already has both facts (the effective,
+		// op-overriding-api retry, and the operation's policy list) available before a route
+		// is built. effectiveRetry mirrors buildRouteTimeout's own op-overriding-api
+		// precedence, recomputed rather than read off routeTimeout - routeTimeout itself is
+		// nil whenever no timeout/idle/retry is configured at all (the common case).
+		effectiveRetry := opRetry
+		if effectiveRetry == nil {
+			effectiveRetry = apiRetry
+		}
+		opHasModelFailover := false
+		if op.Policies != nil {
+			for _, p := range *op.Policies {
+				if p.Name == "model-failover" {
+					opHasModelFailover = true
+					break
+				}
+			}
+		}
+		if opHasModelFailover || hasModelFailoverPolicy(apiPolicies) {
+			if err := config.ValidateModelFailoverPolicy(&config.ModelFailoverParams{}, effectiveRetry); err != nil {
+				return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
+			}
+		}
+
 		vhosts := append([]string{}, mainVhosts...)
 		if hasSandbox {
 			vhosts = append(vhosts, effectiveSandboxVHost)
