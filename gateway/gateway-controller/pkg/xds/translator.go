@@ -55,6 +55,7 @@ import (
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
 	upstreamcodecv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/upstream_codec/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	previous_prioritiesv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/retry/priority/previous_priorities/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
@@ -283,6 +284,33 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		clusters = append(clusters, c)
 	}
 
+	// model-failover: for any route whose PolicyChain includes it, build an aggregate
+	// cluster from its resolved upstreamDefinition targets so createRouteFromRDC can point
+	// the route at it instead of its normal upstream. Mutual exclusivity with
+	// resilience.retry is already enforced at validation time (Task 4), so a route reaching
+	// here with model-failover configured never also has rdc.Routes[key].Timeout.Retry set.
+	modelFailoverClusterByRouteKey := make(map[string]string)
+	for routeKey, chain := range rdc.PolicyChains {
+		for _, p := range chain.Policies {
+			if p.Name != "model-failover" {
+				continue
+			}
+			mf, err := config.ParseModelFailoverParams(p.Params)
+			if err != nil {
+				return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
+			}
+			memberNames := modelFailoverMemberClusterNames(mf, rdc.Metadata.Kind, rdc.Metadata.UUID)
+			aggName := "agg_modelfailover_" + rdc.Metadata.Kind + "_" + rdc.Metadata.UUID + "_" + sanitizeUpstreamDefinitionName(routeKey)
+			aggCluster, err := t.createAggregateCluster(aggName, memberNames)
+			if err != nil {
+				return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
+			}
+			clusters = append(clusters, aggCluster)
+			modelFailoverClusterByRouteKey[routeKey] = aggName
+			break // a route has at most one model-failover policy — validated elsewhere, not re-checked here
+		}
+	}
+
 	// Build routes from Routes map. Iterate in a deterministic order — ascending
 	// Route.Order (the source operation/rule index), then route key — so the stable
 	// route sorter later resolves equal-precedence ties by Gateway-API rule order
@@ -299,7 +327,7 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		return routeKeys[i] < routeKeys[j]
 	})
 	for _, routeKey := range routeKeys {
-		r := t.createRouteFromRDC(routeKey, rdc.Routes[routeKey], rdc)
+		r := t.createRouteFromRDC(routeKey, rdc.Routes[routeKey], rdc, modelFailoverClusterByRouteKey)
 		routes = append(routes, r)
 	}
 
@@ -317,7 +345,10 @@ func (t *Translator) routeTimeoutOrDefault(v *time.Duration, defaultMs uint32) *
 }
 
 // createRouteFromRDC creates an Envoy route from a RuntimeDeployConfig Route.
-func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig) *route.Route {
+// modelFailoverClusterByRouteKey maps a route key to the aggregate cluster name built for
+// it in translateRuntimeConfig (nil/absent for the vast majority of routes, which have no
+// model-failover policy configured).
+func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig, modelFailoverClusterByRouteKey map[string]string) *route.Route {
 	fullPath := rdcRoute.Path
 	method := rdcRoute.Method
 	operationPath := rdcRoute.OperationPath
@@ -355,8 +386,27 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		routeAction.Route.RetryPolicy = buildRetryPolicy(routeResilienceRetry)
 	}
 
-	// Set cluster specifier
-	if rdcRoute.Upstream.UseClusterHeader {
+	// Set cluster specifier. A route configured with model-failover (looked up by routeKey
+	// in modelFailoverClusterByRouteKey, built once in translateRuntimeConfig before any
+	// route is built) always takes this leading branch instead of its normal
+	// upstream-cluster/UseClusterHeader routing below, and additionally overrides
+	// RetryPolicy with the model-failover-specific one (retry_priority + PerTryTimeout).
+	// Mutual exclusivity with resilience.retry is enforced at validation time (Task 4), so
+	// routeResilienceRetry above is never also set for a model-failover route.
+	if aggName, ok := modelFailoverClusterByRouteKey[routeKey]; ok {
+		routeAction.Route.ClusterSpecifier = &route.RouteAction_Cluster{Cluster: aggName}
+		if chain, ok := rdc.PolicyChains[routeKey]; ok {
+			for _, p := range chain.Policies {
+				if p.Name != "model-failover" {
+					continue
+				}
+				if mf, err := config.ParseModelFailoverParams(p.Params); err == nil {
+					routeAction.Route.RetryPolicy = buildModelFailoverRetryPolicy(mf)
+				}
+				break
+			}
+		}
+	} else if rdcRoute.Upstream.UseClusterHeader {
 		routeAction.Route.ClusterSpecifier = &route.RouteAction_ClusterHeader{
 			ClusterHeader: constants.TargetUpstreamHeader,
 		}
@@ -764,6 +814,12 @@ func (t *Translator) TranslateConfigs(
 	// createRouteFromRDC) paths — both already emit RouteAction.RetryPolicy identically.
 	clustersNeedingUpstreamFilter := make(map[string]bool)
 
+	// clustersNeedingUpstreamBodyFilter is the model-failover-specific counterpart to
+	// clustersNeedingUpstreamFilter above — a strictly separate set (see
+	// collectClustersNeedingUpstreamBodyFilter), so a cluster is never marked in both and
+	// never receives two upstream ext_proc filters.
+	clustersNeedingUpstreamBodyFilter := make(map[string]bool)
+
 	for _, cfg := range configs {
 		// Skip undeployed APIs - they should not appear in xDS routes
 		if cfg.DesiredState == models.StateUndeployed {
@@ -828,9 +884,14 @@ func (t *Translator) TranslateConfigs(
 			clusterMap[c.Name] = c
 		}
 		collectClustersNeedingUpstreamFilter(routesList, clustersNeedingUpstreamFilter)
+		collectClustersNeedingUpstreamBodyFilter(routesList, clustersNeedingUpstreamBodyFilter)
 	}
 
 	if err := t.attachUpstreamRefreshFilter(clusterMap, clustersNeedingUpstreamFilter); err != nil {
+		return nil, err
+	}
+
+	if err := t.attachUpstreamBodyFilter(clusterMap, clustersNeedingUpstreamBodyFilter); err != nil {
 		return nil, err
 	}
 
@@ -1087,6 +1148,24 @@ func collectClustersNeedingUpstreamFilter(routes []*route.Route, dest map[string
 	}
 }
 
+// collectClustersNeedingUpstreamBodyFilter is the model-failover-specific counterpart to
+// collectClustersNeedingUpstreamFilter above — deliberately a SEPARATE set, never merged
+// into it (a cluster must never receive two upstream ext_proc filters). A plain
+// resilience.retry route's cluster must never get RequestBodyMode: BUFFERED (unnecessary
+// buffering cost); only a route whose RetryPolicy carries RetryPriority — which only
+// model-failover routes ever set, via buildModelFailoverRetryPolicy — is marked here.
+func collectClustersNeedingUpstreamBodyFilter(routes []*route.Route, dest map[string]bool) {
+	for _, r := range routes {
+		ra := r.GetRoute()
+		if ra == nil || ra.GetRetryPolicy() == nil || ra.GetRetryPolicy().GetRetryPriority() == nil {
+			continue
+		}
+		if clusterName := ra.GetCluster(); clusterName != "" {
+			dest[clusterName] = true
+		}
+	}
+}
+
 // attachUpstreamRefreshFilter attaches the per-cluster upstream ext_proc filter (chained with
 // the mandatory terminal envoy.filters.http.upstream_codec filter) to every cluster in
 // clusterMap named in clustersNeedingUpstreamFilter, and unconditionally registers the
@@ -1151,6 +1230,105 @@ func (t *Translator) attachUpstreamRefreshFilter(clusterMap map[string]*cluster.
 	// Always register the internal cluster the filter targets, once, unconditionally — cheap,
 	// and only ever added when at least one real cluster needs the filter (the len==0 guard
 	// above).
+	if _, ok := clusterMap[constants.UpstreamRefreshPolicyEngineClusterName]; !ok {
+		clusterMap[constants.UpstreamRefreshPolicyEngineClusterName] = t.createUpstreamRefreshExtProcCluster()
+	}
+
+	return nil
+}
+
+// createUpstreamBodyExtProcFilter is the body-buffering counterpart to
+// createUpstreamRefreshExtProcFilter: it additionally requests the request-body phase
+// (RequestBodyMode: BUFFERED) so a model-failover retry attempt can have its request body
+// rewritten (e.g. the "model" field) before being resent to the next fallback priority. It
+// targets the same internal ext_proc cluster/server as the refresh filter — no new internal
+// cluster is needed.
+func (t *Translator) createUpstreamBodyExtProcFilter() (*hcm.HttpFilter, error) {
+	policyEngine := t.routerConfig.PolicyEngine
+	extProcConfig := &extproc.ExternalProcessor{
+		GrpcService: &core.GrpcService{
+			TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
+				EnvoyGrpc: &core.GrpcService_EnvoyGrpc{ClusterName: constants.UpstreamRefreshPolicyEngineClusterName},
+			},
+			Timeout: durationpb.New(time.Duration(policyEngine.TimeoutMs) * time.Millisecond),
+		},
+		FailureModeAllow: true, // fail open — a failure here must never block the retry
+		ProcessingMode: &extproc.ProcessingMode{
+			RequestHeaderMode: extproc.ProcessingMode_SEND,
+			RequestBodyMode:   extproc.ProcessingMode_BUFFERED,
+		},
+		MessageTimeout:    durationpb.New(time.Duration(policyEngine.MessageTimeoutMs) * time.Millisecond),
+		RequestAttributes: []string{constants.ExtProcRequestAttributeRouteName},
+	}
+	extProcAny, err := anypb.New(extProcConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal upstream body ext_proc config: %w", err)
+	}
+	return &hcm.HttpFilter{
+		Name:       constants.ExtProcFilterName + "_upstream_body",
+		ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: extProcAny},
+	}, nil
+}
+
+// attachUpstreamBodyFilter mirrors attachUpstreamRefreshFilter exactly (same
+// upstream_codec-terminated filter chain requirement, same ExplicitHttpConfig/
+// HTTP1ProtocolOptions choice) but with RequestBodyMode enabled and scoped to
+// clustersNeedingUpstreamBodyFilter — a route's cluster is never in both this set and
+// clustersNeedingUpstreamFilter (see collectClustersNeedingUpstreamBodyFilter), so no
+// cluster ever receives two upstream ext_proc filters. No-op when
+// clustersNeedingUpstreamBodyFilter is empty, so deployments with no model-failover
+// configured anywhere pay zero cost.
+func (t *Translator) attachUpstreamBodyFilter(clusterMap map[string]*cluster.Cluster, clustersNeedingUpstreamBodyFilter map[string]bool) error {
+	if len(clustersNeedingUpstreamBodyFilter) == 0 {
+		return nil
+	}
+
+	upstreamFilter, err := t.createUpstreamBodyExtProcFilter()
+	if err != nil {
+		return fmt.Errorf("failed to create upstream body ext_proc filter: %w", err)
+	}
+
+	// The upstream_codec filter is Envoy's built-in terminal filter: any non-empty upstream
+	// http_filters chain MUST end with it, or Envoy rejects the cluster config outright.
+	codecAny, err := anypb.New(&upstreamcodecv3.UpstreamCodec{})
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream codec filter: %w", err)
+	}
+	codecFilter := &hcm.HttpFilter{
+		Name:       constants.UpstreamCodecFilterName,
+		ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: codecAny},
+	}
+
+	protocolOptions := &httpv3.HttpProtocolOptions{
+		UpstreamProtocolOptions: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{
+					HttpProtocolOptions: &core.Http1ProtocolOptions{},
+				},
+			},
+		},
+		HttpFilters: []*hcm.HttpFilter{upstreamFilter, codecFilter},
+	}
+	protocolOptionsAny, err := anypb.New(protocolOptions)
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream HttpProtocolOptions for body filter: %w", err)
+	}
+
+	for clusterName := range clustersNeedingUpstreamBodyFilter {
+		c, ok := clusterMap[clusterName]
+		if !ok {
+			continue // cluster resolution failed elsewhere; nothing to attach to
+		}
+		if c.TypedExtensionProtocolOptions == nil {
+			c.TypedExtensionProtocolOptions = make(map[string]*anypb.Any)
+		}
+		c.TypedExtensionProtocolOptions[upstreamHTTPProtocolOptionsKey] = protocolOptionsAny
+	}
+
+	// Always register the internal cluster the filter targets, once, unconditionally — cheap,
+	// and only ever added when at least one real cluster needs the filter (the len==0 guard
+	// above). Shared with attachUpstreamRefreshFilter's registration (same internal
+	// cluster/server); the ok-check keeps this idempotent regardless of call order.
 	if _, ok := clusterMap[constants.UpstreamRefreshPolicyEngineClusterName]; !ok {
 		clusterMap[constants.UpstreamRefreshPolicyEngineClusterName] = t.createUpstreamRefreshExtProcCluster()
 	}
@@ -3549,6 +3727,41 @@ func buildRetryPolicy(retry *api.Retry) *route.RetryPolicy {
 		RetriableStatusCodes: statusCodes,
 		NumRetries:           wrapperspb.UInt32(numRetries),
 	}
+}
+
+// buildModelFailoverRetryPolicy mirrors buildRetryPolicy but derives NumRetries from
+// len(Models)-1 (never a separately configured knob — see the design spec) and adds
+// RetryPriority so Envoy prefers a not-yet-attempted priority (i.e. the next fallback in
+// the aggregate cluster) on each retry, plus PerTryTimeout from RequestTimeout when set.
+func buildModelFailoverRetryPolicy(mf *config.ModelFailoverParams) *route.RetryPolicy {
+	statusCodes := make([]uint32, len(mf.StatusCodes))
+	for i, code := range mf.StatusCodes {
+		statusCodes[i] = uint32(code)
+	}
+
+	priorityCfgAny, err := anypb.New(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
+	if err != nil {
+		// anypb.New only fails on a marshal error for a well-formed proto message, which
+		// PreviousPrioritiesConfig{UpdateFrequency: 1} can never produce — treated as
+		// unreachable, matching this file's existing convention of not threading an error
+		// return through every proto-marshal call site (see createUpstreamRefreshExtProcFilter
+		// for the same pattern).
+		priorityCfgAny = nil
+	}
+
+	rp := &route.RetryPolicy{
+		RetryOn:              "retriable-status-codes",
+		RetriableStatusCodes: statusCodes,
+		NumRetries:           wrapperspb.UInt32(uint32(len(mf.Models) - 1)),
+		RetryPriority: &route.RetryPolicy_RetryPriority{
+			Name:       "envoy.retry_priorities.previous_priorities",
+			ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: priorityCfgAny},
+		},
+	}
+	if mf.RequestTimeout != nil {
+		rp.PerTryTimeout = durationpb.New(*mf.RequestTimeout)
+	}
+	return rp
 }
 
 // ResolveResilience parses a resilience block into route timeout and idle-timeout durations,

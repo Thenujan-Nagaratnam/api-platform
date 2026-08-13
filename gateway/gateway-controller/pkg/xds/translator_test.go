@@ -795,7 +795,7 @@ func TestTranslator_WildcardUpstreamRewriteFromRDC(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r := translator.createRouteFromRDC("GET|"+tt.fullPath+"|", rdcRoute, rdc)
+			r := translator.createRouteFromRDC("GET|"+tt.fullPath+"|", rdcRoute, rdc, nil)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -841,7 +841,7 @@ func TestTranslator_RouteResilienceTimeoutsFromRDC(t *testing.T) {
 				Timeout:         tt.timeout,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
+			r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc, nil)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantTimeout, r.GetRoute().GetTimeout().AsDuration(), "route timeout")
 			assert.Equal(t, tt.wantIdle, r.GetRoute().GetIdleTimeout().AsDuration(), "route idle timeout")
@@ -875,7 +875,7 @@ func TestTranslator_CreateRouteFromRDC_ResilienceRetryEmitsNativeRetryPolicy(t *
 			Timeout:         &models.RouteTimeout{Retry: &api.Retry{StatusCodes: []int{401, 503}, NumRetries: &numRetries}},
 			Upstream:        models.RouteUpstream{ClusterKey: "main"},
 		}
-		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
+		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc, nil)
 		require.NotNil(t, r)
 		rp := r.GetRoute().GetRetryPolicy()
 		require.NotNil(t, rp)
@@ -893,7 +893,7 @@ func TestTranslator_CreateRouteFromRDC_ResilienceRetryEmitsNativeRetryPolicy(t *
 			AutoHostRewrite: true,
 			Upstream:        models.RouteUpstream{ClusterKey: "main"},
 		}
-		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
+		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc, nil)
 		require.NotNil(t, r)
 		assert.Nil(t, r.GetRoute().GetRetryPolicy())
 	})
@@ -940,7 +940,7 @@ func TestTranslator_MCPUpstreamRewriteFromRDC(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r := translator.createRouteFromRDC("POST|"+tt.fullPath+"|", rdcRoute, rdc)
+			r := translator.createRouteFromRDC("POST|"+tt.fullPath+"|", rdcRoute, rdc, nil)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -1000,7 +1000,7 @@ func TestTranslator_MCPAppendResourcePathToBackend(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r := translator.createRouteFromRDC("POST|"+tt.context+mcpPath+"|", rdcRoute, rdc)
+			r := translator.createRouteFromRDC("POST|"+tt.context+mcpPath+"|", rdcRoute, rdc, nil)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -1028,7 +1028,7 @@ func TestTranslator_ExactPathUsesNativeMatcher(t *testing.T) {
 		PathMatchType: "Exact",
 		Upstream:      models.RouteUpstream{ClusterKey: "main"},
 	}
-	r := translator.createRouteFromRDC("GET|/match/exact|", rdcRoute, rdc)
+	r := translator.createRouteFromRDC("GET|/match/exact|", rdcRoute, rdc, nil)
 	require.NotNil(t, r)
 	pathSpec, ok := r.GetMatch().GetPathSpecifier().(*route.RouteMatch_Path)
 	require.True(t, ok, "exact path should use RouteMatch_Path, got %T", r.GetMatch().GetPathSpecifier())
@@ -1827,6 +1827,60 @@ func TestCollectClustersNeedingUpstreamFilter(t *testing.T) {
 		collectClustersNeedingUpstreamFilter([]*route.Route{sharedRetry}, dest)
 		assert.Equal(t, map[string]bool{"shared-cluster": true}, dest)
 	})
+}
+
+// TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout verifies that
+// buildModelFailoverRetryPolicy derives NumRetries from len(Models)-1 (never a
+// separately configured knob) and attaches the previous_priorities RetryPriority
+// plus PerTryTimeout from RequestTimeout.
+func TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout(t *testing.T) {
+	timeout := 10 * time.Second
+	mf := &config.ModelFailoverParams{
+		Models:         []config.ModelFailoverTarget{{Name: "a", UpstreamDefinition: "x"}, {Name: "b", UpstreamDefinition: "y"}, {Name: "c", UpstreamDefinition: "z"}},
+		StatusCodes:    []int{500, 502},
+		RequestTimeout: &timeout,
+	}
+
+	rp := buildModelFailoverRetryPolicy(mf)
+
+	if rp.GetNumRetries().GetValue() != 2 { // len(Models) - 1
+		t.Errorf("expected NumRetries 2, got %v", rp.GetNumRetries())
+	}
+	if len(rp.RetriableStatusCodes) != 2 || rp.RetriableStatusCodes[0] != 500 {
+		t.Errorf("unexpected RetriableStatusCodes: %v", rp.RetriableStatusCodes)
+	}
+	if rp.GetRetryPriority().GetName() != "envoy.retry_priorities.previous_priorities" {
+		t.Errorf("expected previous_priorities retry_priority, got %v", rp.GetRetryPriority())
+	}
+	if rp.GetPerTryTimeout().AsDuration() != 10*time.Second {
+		t.Errorf("expected per_try_timeout 10s, got %v", rp.GetPerTryTimeout())
+	}
+}
+
+// TestCollectClustersNeedingUpstreamBodyFilter_OnlyMarksAggregateClusters verifies that
+// collectClustersNeedingUpstreamBodyFilter is a strictly separate accumulator from
+// collectClustersNeedingUpstreamFilter: only a route whose RetryPolicy carries
+// RetryPriority (set exclusively by model-failover routes) is marked here, never a
+// plain resilience.retry route.
+func TestCollectClustersNeedingUpstreamBodyFilter_OnlyMarksAggregateClusters(t *testing.T) {
+	routes := []*route.Route{
+		{Action: &route.Route_Route{Route: &route.RouteAction{
+			ClusterSpecifier: &route.RouteAction_Cluster{Cluster: "agg_modelfailover_1"},
+			RetryPolicy:      &route.RetryPolicy{RetryPriority: &route.RetryPolicy_RetryPriority{Name: "envoy.retry_priorities.previous_priorities"}},
+		}}},
+		{Action: &route.Route_Route{Route: &route.RouteAction{ // plain resilience.retry route — must NOT be marked
+			ClusterSpecifier: &route.RouteAction_Cluster{Cluster: "plain_retry_cluster"},
+			RetryPolicy:      &route.RetryPolicy{},
+		}}},
+	}
+	dest := make(map[string]bool)
+	collectClustersNeedingUpstreamBodyFilter(routes, dest)
+	if !dest["agg_modelfailover_1"] {
+		t.Error("expected the aggregate/retry_priority route's cluster to be marked")
+	}
+	if dest["plain_retry_cluster"] {
+		t.Error("a plain resilience.retry route (no retry_priority) must not be marked for body buffering")
+	}
 }
 
 func TestTranslator_CreateRouteConfiguration(t *testing.T) {
@@ -3149,7 +3203,7 @@ func TestTranslator_CreateRouteFromRDC_HTTPRouteMetadata(t *testing.T) {
 		Upstream:        models.RouteUpstream{ClusterKey: "main"},
 	}
 
-	r := translator.createRouteFromRDC("GET|/pets/v1.0/{id}|", rdcRoute, rdc)
+	r := translator.createRouteFromRDC("GET|/pets/v1.0/{id}|", rdcRoute, rdc, nil)
 	require.NotNil(t, r)
 	require.NotNil(t, r.Metadata)
 
@@ -3610,7 +3664,7 @@ func TestBuildMatchHeaders_HeaderMatchersRendered(t *testing.T) {
 			{Name: "X-Flavor", Type: "RegularExpression", Value: "red|blue"},
 		},
 	}
-	r := translator.createRouteFromRDC("GET|/svc/v1/things|main.local|abc123", route1, rdc)
+	r := translator.createRouteFromRDC("GET|/svc/v1/things|main.local|abc123", route1, rdc, nil)
 	require.NotNil(t, r)
 
 	var version, flavor *route.HeaderMatcher
