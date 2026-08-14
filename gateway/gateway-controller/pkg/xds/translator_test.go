@@ -795,7 +795,7 @@ func TestTranslator_WildcardUpstreamRewriteFromRDC(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r := translator.createRouteFromRDC("GET|"+tt.fullPath+"|", rdcRoute, rdc, nil)
+			r := translator.createRouteFromRDC("GET|"+tt.fullPath+"|", rdcRoute, rdc)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -841,7 +841,7 @@ func TestTranslator_RouteResilienceTimeoutsFromRDC(t *testing.T) {
 				Timeout:         tt.timeout,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc, nil)
+			r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantTimeout, r.GetRoute().GetTimeout().AsDuration(), "route timeout")
 			assert.Equal(t, tt.wantIdle, r.GetRoute().GetIdleTimeout().AsDuration(), "route idle timeout")
@@ -875,7 +875,7 @@ func TestTranslator_CreateRouteFromRDC_ResilienceRetryEmitsNativeRetryPolicy(t *
 			Timeout:         &models.RouteTimeout{Retry: &api.Retry{StatusCodes: []int{401, 503}, NumRetries: &numRetries}},
 			Upstream:        models.RouteUpstream{ClusterKey: "main"},
 		}
-		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc, nil)
+		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
 		require.NotNil(t, r)
 		rp := r.GetRoute().GetRetryPolicy()
 		require.NotNil(t, rp)
@@ -893,7 +893,7 @@ func TestTranslator_CreateRouteFromRDC_ResilienceRetryEmitsNativeRetryPolicy(t *
 			AutoHostRewrite: true,
 			Upstream:        models.RouteUpstream{ClusterKey: "main"},
 		}
-		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc, nil)
+		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
 		require.NotNil(t, r)
 		assert.Nil(t, r.GetRoute().GetRetryPolicy())
 	})
@@ -940,7 +940,7 @@ func TestTranslator_MCPUpstreamRewriteFromRDC(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r := translator.createRouteFromRDC("POST|"+tt.fullPath+"|", rdcRoute, rdc, nil)
+			r := translator.createRouteFromRDC("POST|"+tt.fullPath+"|", rdcRoute, rdc)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -1000,7 +1000,7 @@ func TestTranslator_MCPAppendResourcePathToBackend(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r := translator.createRouteFromRDC("POST|"+tt.context+mcpPath+"|", rdcRoute, rdc, nil)
+			r := translator.createRouteFromRDC("POST|"+tt.context+mcpPath+"|", rdcRoute, rdc)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -1028,7 +1028,7 @@ func TestTranslator_ExactPathUsesNativeMatcher(t *testing.T) {
 		PathMatchType: "Exact",
 		Upstream:      models.RouteUpstream{ClusterKey: "main"},
 	}
-	r := translator.createRouteFromRDC("GET|/match/exact|", rdcRoute, rdc, nil)
+	r := translator.createRouteFromRDC("GET|/match/exact|", rdcRoute, rdc)
 	require.NotNil(t, r)
 	pathSpec, ok := r.GetMatch().GetPathSpecifier().(*route.RouteMatch_Path)
 	require.True(t, ok, "exact path should use RouteMatch_Path, got %T", r.GetMatch().GetPathSpecifier())
@@ -1830,20 +1830,26 @@ func TestCollectClustersNeedingUpstreamFilter(t *testing.T) {
 }
 
 // TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout verifies that
-// buildModelFailoverRetryPolicy derives NumRetries from len(Models)-1 (never a
-// separately configured knob) and attaches the previous_priorities RetryPriority
-// plus PerTryTimeout from RequestTimeout.
+// buildModelFailoverRetryPolicy derives NumRetries from MaxFallbackChainLength (the longest
+// fallback chain across every target group — never a separately configured knob) and
+// attaches the previous_priorities RetryPriority plus PerTryTimeout from RequestTimeout.
 func TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout(t *testing.T) {
 	timeout := 10 * time.Second
 	mf := &config.ModelFailoverParams{
-		Models:         []config.ModelFailoverTarget{{Name: "a", UpstreamDefinition: "x"}, {Name: "b", UpstreamDefinition: "y"}, {Name: "c", UpstreamDefinition: "z"}},
+		Targets: []config.ModelFailoverTargetGroup{
+			{
+				Model:              "a",
+				UpstreamDefinition: "x",
+				Fallbacks:          []config.ModelFailoverFallback{{Model: "b", UpstreamDefinition: "y"}, {Model: "c", UpstreamDefinition: "z"}},
+			},
+		},
 		StatusCodes:    []int{500, 502},
 		RequestTimeout: &timeout,
 	}
 
 	rp := buildModelFailoverRetryPolicy(mf)
 
-	if rp.GetNumRetries().GetValue() != 2 { // len(Models) - 1
+	if rp.GetNumRetries().GetValue() != 2 { // MaxFallbackChainLength()
 		t.Errorf("expected NumRetries 2, got %v", rp.GetNumRetries())
 	}
 	if len(rp.RetriableStatusCodes) != 2 || rp.RetriableStatusCodes[0] != 500 {
@@ -1896,14 +1902,39 @@ func TestCreateRouteFromRDC_ModelFailoverUsesClusterHeaderNotStaticCluster(t *te
 	routeKey := "POST|/mf-test/latest/chat/completions|"
 	timeout := 5 * time.Second
 	mf := &config.ModelFailoverParams{
-		Models:         []config.ModelFailoverTarget{{Name: "gpt-4o", UpstreamDefinition: "primary"}, {Name: "gpt-4o-mini", UpstreamDefinition: "fallback-1"}},
+		Targets: []config.ModelFailoverTargetGroup{
+			{
+				Model:              "gpt-4o",
+				UpstreamDefinition: "primary",
+				Fallbacks:          []config.ModelFailoverFallback{{Model: "gpt-4o-mini", UpstreamDefinition: "fallback-1"}},
+			},
+			{
+				Model:              "claude-3-5-sonnet",
+				UpstreamDefinition: "anthropic-primary",
+				Fallbacks: []config.ModelFailoverFallback{
+					{Model: "claude-3-haiku", UpstreamDefinition: "anthropic-fallback-1"},
+					{Model: "claude-3-opus", UpstreamDefinition: "anthropic-fallback-2"},
+				},
+			},
+		},
 		StatusCodes:    []int{500},
 		RequestTimeout: &timeout,
 	}
 	mfParamsMap := map[string]interface{}{
-		"models": []interface{}{
-			map[string]interface{}{"name": "gpt-4o", "upstreamDefinition": "primary"},
-			map[string]interface{}{"name": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o", "upstreamDefinition": "primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+				},
+			},
+			map[string]interface{}{
+				"model": "claude-3-5-sonnet", "upstreamDefinition": "anthropic-primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude-3-haiku", "upstreamDefinition": "anthropic-fallback-1"},
+					map[string]interface{}{"model": "claude-3-opus", "upstreamDefinition": "anthropic-fallback-2"},
+				},
+			},
 		},
 		"statusCodes":    []interface{}{500},
 		"requestTimeout": "5s",
@@ -1918,11 +1949,10 @@ func TestCreateRouteFromRDC_ModelFailoverUsesClusterHeaderNotStaticCluster(t *te
 		Method:        "POST",
 		Path:          "/mf-test/latest/chat/completions",
 		OperationPath: "/chat/completions",
-		Upstream:      models.RouteUpstream{UseClusterHeader: true, DefaultCluster: "agg_modelfailover_test"},
+		Upstream:      models.RouteUpstream{UseClusterHeader: true, DefaultCluster: "upstream_LlmProvider_test-uuid_main"},
 	}
-	modelFailoverClusterByRouteKey := map[string]string{routeKey: "agg_modelfailover_test"}
 
-	r := translator.createRouteFromRDC(routeKey, rdcRoute, rdc, modelFailoverClusterByRouteKey)
+	r := translator.createRouteFromRDC(routeKey, rdcRoute, rdc)
 	require.NotNil(t, r)
 
 	_, isClusterHeader := r.GetRoute().GetClusterSpecifier().(*route.RouteAction_ClusterHeader)
@@ -1930,9 +1960,12 @@ func TestCreateRouteFromRDC_ModelFailoverUsesClusterHeaderNotStaticCluster(t *te
 	assert.Contains(t, r.RequestHeadersToRemove, constants.TargetUpstreamHeader, "x-target-upstream must be stripped before forwarding upstream, same as any other cluster_header route")
 
 	rp := r.GetRoute().GetRetryPolicy()
-	require.NotNil(t, rp, "RetryPolicy must still be set on a cluster_header model-failover route")
-	assert.NotNil(t, rp.GetRetryPriority(), "retry_priority must survive the switch to ClusterHeader")
+	require.NotNil(t, rp, "RetryPolicy must be set on a model-failover route")
+	assert.NotNil(t, rp.GetRetryPriority(), "retry_priority must be set")
 	assert.EqualValues(t, mf.RequestTimeout.Seconds(), rp.GetPerTryTimeout().AsDuration().Seconds())
+	// NumRetries derives from the LONGEST chain across every group (claude's, 2 fallbacks),
+	// not gpt-4o's shorter one (1 fallback) — Envoy has one shared retry budget per route.
+	assert.EqualValues(t, 2, rp.GetNumRetries().GetValue())
 }
 
 // TestIsModelFailoverAggregateCluster verifies the detector createAggregateCluster's own output
@@ -3281,7 +3314,7 @@ func TestTranslator_CreateRouteFromRDC_HTTPRouteMetadata(t *testing.T) {
 		Upstream:        models.RouteUpstream{ClusterKey: "main"},
 	}
 
-	r := translator.createRouteFromRDC("GET|/pets/v1.0/{id}|", rdcRoute, rdc, nil)
+	r := translator.createRouteFromRDC("GET|/pets/v1.0/{id}|", rdcRoute, rdc)
 	require.NotNil(t, r)
 	require.NotNil(t, r.Metadata)
 
@@ -3642,18 +3675,81 @@ func TestCreateWeightedCluster_PeerHostnameMetadata(t *testing.T) {
 	})
 }
 
-func TestModelFailoverMemberClusterNames_ResolvesInOrder(t *testing.T) {
-	mf := &config.ModelFailoverParams{
-		Models: []config.ModelFailoverTarget{
-			{Name: "gpt-4o", UpstreamDefinition: "primary"},
-			{Name: "gpt-4o-mini", UpstreamDefinition: "fallback-1"},
-		},
+func TestModelFailoverGroupMemberClusterNames_ResolvesInOrder(t *testing.T) {
+	target := config.ModelFailoverTargetGroup{
+		Model:              "gpt-4o",
+		UpstreamDefinition: "primary",
+		Fallbacks:          []config.ModelFailoverFallback{{Model: "gpt-4o-mini", UpstreamDefinition: "fallback-1"}},
 	}
-	names := modelFailoverMemberClusterNames(mf, "LlmProvider", "abc-123")
+	names := modelFailoverGroupMemberClusterNames(target, "LlmProvider", "abc-123")
 	want := []string{"upstream_LlmProvider_abc-123_primary", "upstream_LlmProvider_abc-123_fallback-1"}
 	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
 		t.Errorf("got %v, want %v", names, want)
 	}
+}
+
+func TestTranslateRuntimeConfig_ModelFailoverAggregateClustersAreRouteScoped(t *testing.T) {
+	tr := NewTranslator(createTestLogger(), testRouterConfig(), nil, testConfig())
+	routeA := "POST|/mf/chat/completions|main.local"
+	routeB := "POST|/mf/other-chat/completions|main.local"
+	paramsA := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary-a",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-a"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	paramsB := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary-b",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-b"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	rdc := &models.RuntimeDeployConfig{
+		Metadata: models.Metadata{Kind: "LlmProvider", UUID: "api-123"},
+		Routes: map[string]*models.Route{
+			routeA: {Method: "POST", Path: "/mf/chat/completions", OperationPath: "/chat/completions"},
+			routeB: {Method: "POST", Path: "/mf/other-chat/completions", OperationPath: "/other-chat/completions"},
+		},
+		UpstreamClusters: map[string]*models.UpstreamCluster{},
+		PolicyChains: map[string]*models.PolicyChain{
+			routeA: {Policies: []models.Policy{{Name: "model-failover", Params: paramsA}}},
+			routeB: {Policies: []models.Policy{{Name: "model-failover", Params: paramsB}}},
+		},
+	}
+
+	_, clusters, err := tr.translateRuntimeConfig(rdc)
+	require.NoError(t, err)
+
+	aggregates := map[string][]string{}
+	for _, c := range clusters {
+		if !isModelFailoverAggregateCluster(c) {
+			continue
+		}
+		ct := c.ClusterDiscoveryType.(*cluster.Cluster_ClusterType)
+		var cfg aggregatev3.ClusterConfig
+		require.NoError(t, ct.ClusterType.TypedConfig.UnmarshalTo(&cfg))
+		aggregates[c.Name] = cfg.Clusters
+	}
+
+	nameA := ModelFailoverGroupClusterKey("LlmProvider", "api-123", routeA, "gpt-4o")
+	nameB := ModelFailoverGroupClusterKey("LlmProvider", "api-123", routeB, "gpt-4o")
+	require.Contains(t, aggregates, nameA)
+	require.Contains(t, aggregates, nameB)
+	assert.NotEqual(t, nameA, nameB, "same model on different routes must not share one aggregate cluster")
+	assert.Equal(t, []string{"upstream_LlmProvider_api-123_primary-a", "upstream_LlmProvider_api-123_fallback-a"}, aggregates[nameA])
+	assert.Equal(t, []string{"upstream_LlmProvider_api-123_primary-b", "upstream_LlmProvider_api-123_fallback-b"}, aggregates[nameB])
 }
 
 func TestCreateAggregateCluster_ListsMembersInOrder(t *testing.T) {
@@ -3742,7 +3838,7 @@ func TestBuildMatchHeaders_HeaderMatchersRendered(t *testing.T) {
 			{Name: "X-Flavor", Type: "RegularExpression", Value: "red|blue"},
 		},
 	}
-	r := translator.createRouteFromRDC("GET|/svc/v1/things|main.local|abc123", route1, rdc, nil)
+	r := translator.createRouteFromRDC("GET|/svc/v1/things|main.local|abc123", route1, rdc)
 	require.NotNil(t, r)
 
 	var version, flavor *route.HeaderMatcher

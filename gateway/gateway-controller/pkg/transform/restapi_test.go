@@ -29,7 +29,6 @@ import (
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
-	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/xds"
 )
 
 // ptrStr is a helper to get a pointer to a string literal.
@@ -555,6 +554,25 @@ func TestRestAPITransformer_DefaultClusterReferencesRealCluster(t *testing.T) {
 // but was never actually called from any code path until this test's own fix wired it into
 // Transform. Covers both directions: op-level retry, and API-level retry inherited by an
 // operation with no op-level override.
+// modelFailoverPolicy builds an api.Policy attaching model-failover with a minimal, valid
+// single-target-group config (one fallback) — the shared fixture every test below starts
+// from, since ParseModelFailoverParams now genuinely parses/validates these params (it used
+// to be bypassed entirely via a dummy empty struct — see this test's own regression note).
+func modelFailoverPolicy() api.Policy {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o", "upstreamDefinition": "primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	return api.Policy{Name: "model-failover", Version: "", Params: &params}
+}
+
 func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
 	defs := map[string]models.PolicyDefinition{
 		"model-failover|v0.1.0": {Name: "model-failover", Version: "v0.1.0"},
@@ -562,7 +580,7 @@ func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
 
 	t.Run("operation-level retry", func(t *testing.T) {
 		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
-		cfg := makeRestAPIStoredConfig(nil, []api.Policy{{Name: "model-failover", Version: ""}})
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
 		restAPI := cfg.Configuration.(api.RestAPI)
 		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
 		restAPI.Spec.UpstreamDefinitions = &upDefs
@@ -576,7 +594,7 @@ func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
 
 	t.Run("API-level retry inherited by the operation", func(t *testing.T) {
 		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
-		cfg := makeRestAPIStoredConfig(nil, []api.Policy{{Name: "model-failover", Version: ""}})
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
 		restAPI := cfg.Configuration.(api.RestAPI)
 		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
 		restAPI.Spec.UpstreamDefinitions = &upDefs
@@ -590,7 +608,7 @@ func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
 
 	t.Run("model-failover alone is accepted", func(t *testing.T) {
 		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
-		cfg := makeRestAPIStoredConfig(nil, []api.Policy{{Name: "model-failover", Version: ""}})
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
 		restAPI := cfg.Configuration.(api.RestAPI)
 		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
 		restAPI.Spec.UpstreamDefinitions = &upDefs
@@ -601,22 +619,43 @@ func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
 	})
 }
 
-// TestRestAPITransformer_ModelFailoverRouteDefaultsToAggregateCluster is the regression test for
-// the Task 12 e2e-discovered bug: a route whose policy chain includes model-failover must set
-// UseClusterHeader=true with DefaultCluster pointing at the AGGREGATE cluster
-// xds/translator.go's translateRuntimeConfig will build for this exact route — not the plain
-// main-upstream default every other cluster_header route gets — computed via the identical
-// xds.ModelFailoverAggregateClusterName formula both packages share (restapi.go's Transform and
-// translateRuntimeConfig run as two SEPARATE calls against two independently-transformed
-// RuntimeDeployConfig instances, so a hand-duplicated name would silently drift).
-func TestRestAPITransformer_ModelFailoverRouteDefaultsToAggregateCluster(t *testing.T) {
+// TestRestAPITransformer_ModelFailoverRejectsUndeclaredUpstreamReference is the regression
+// test for a real gap: a target/fallback referencing an UpstreamDefinition name that isn't
+// actually declared on the API used to deploy "successfully" and only fail at REQUEST time
+// with an opaque Envoy "no such cluster" error — config.ValidateModelFailoverUpstreamReferences
+// exists specifically to catch this at registration time instead.
+func TestRestAPITransformer_ModelFailoverRejectsUndeclaredUpstreamReference(t *testing.T) {
+	defs := map[string]models.PolicyDefinition{
+		"model-failover|v0.1.0": {Name: "model-failover", Version: "v0.1.0"},
+	}
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+	cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
+	restAPI := cfg.Configuration.(api.RestAPI)
+	// Only "primary" declared - modelFailoverPolicy() also references "fallback-1", which
+	// isn't declared here.
+	upDefs := []api.UpstreamDefinition{{Name: "primary"}}
+	restAPI.Spec.UpstreamDefinitions = &upDefs
+	cfg.Configuration = restAPI
+
+	_, err := transformer.Transform(cfg)
+	require.Error(t, err, "model-failover referencing an undeclared upstreamDefinition must be rejected at registration time")
+}
+
+// TestRestAPITransformer_ModelFailoverRouteDefaultsToPlainMainUpstream verifies the redesign's
+// core routing property: a model-failover route needs no special DefaultCluster override at
+// all anymore — since every target/fallback requires an explicit upstreamDefinition, the
+// route already gets UseClusterHeader=true via the ordinary hasUpstreamDefinitions path, and
+// its default stays the plain main upstream. That plain default is exactly what makes an
+// unmatched client model pass through completely untouched instead of being forced through
+// any group's own chain.
+func TestRestAPITransformer_ModelFailoverRouteDefaultsToPlainMainUpstream(t *testing.T) {
 	defs := map[string]models.PolicyDefinition{
 		"model-failover|v0.1.0": {Name: "model-failover", Version: "v0.1.0"},
 	}
 	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
 
 	upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
-	cfg := makeRestAPIStoredConfig(nil, []api.Policy{{Name: "model-failover", Version: ""}})
+	cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
 	restAPI := cfg.Configuration.(api.RestAPI)
 	restAPI.Spec.UpstreamDefinitions = &upDefs
 	cfg.Configuration = restAPI
@@ -629,9 +668,8 @@ func TestRestAPITransformer_ModelFailoverRouteDefaultsToAggregateCluster(t *test
 	require.True(t, ok, "expected route %q to exist", routeKey)
 
 	assert.True(t, rdcRoute.Upstream.UseClusterHeader, "model-failover route must use cluster_header, or OnRequestBody's UpstreamName redirect has no effect")
-	expected := xds.ModelFailoverAggregateClusterName(rdc.Metadata.Kind, rdc.Metadata.UUID, routeKey)
-	assert.Equal(t, expected, rdcRoute.Upstream.DefaultCluster,
-		"default cluster must be the SAME aggregate cluster name translateRuntimeConfig will build, not the plain main-upstream default")
+	_, isMainCluster := rdc.UpstreamClusters[rdcRoute.Upstream.DefaultCluster]
+	assert.True(t, isMainCluster, "default cluster must be a real UpstreamClusters entry (the plain main upstream), not a model-failover-specific override")
 }
 
 func upstreamClusterKeys(rdc *models.RuntimeDeployConfig) []string {

@@ -328,6 +328,13 @@ func (s *APIDeploymentService) DeployAPIConfiguration(params APIDeploymentParams
 			s.logValidationErrors(params.Logger, apiID, apiName, validationErrors)
 			return nil, &ValidationErrorListError{Errors: validationErrors}
 		}
+		// Model-failover registration-time validation — see the identical call in
+		// llm_deployment.go's DeployLLMProxyConfiguration for the full rationale. A plain
+		// RestAPI can carry model-failover too, so this same synchronous check applies
+		// here, before persisting, not only from the async xDS transform.
+		if err := config.ValidateModelFailoverForOperations(&c.Spec); err != nil {
+			return nil, fmt.Errorf("model-failover validation failed: %w", err)
+		}
 		// Write c back: validateRestAPIConfiguration coerces rendered-template strings
 		// in policy params (e.g. "100" → float64(100) for integer params). The type
 		// switch above copies c from storedCfg.Configuration, and Validate(&c) mutates

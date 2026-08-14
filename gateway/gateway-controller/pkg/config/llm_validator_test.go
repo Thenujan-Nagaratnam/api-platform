@@ -2398,9 +2398,18 @@ func TestValidateLLMProvider_UpstreamRef(t *testing.T) {
 
 func TestParseModelFailoverParams_ValidConfig(t *testing.T) {
 	params := map[string]interface{}{
-		"models": []interface{}{
-			map[string]interface{}{"name": "gpt-4o", "upstreamDefinition": "primary"},
-			map[string]interface{}{"name": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+				},
+			},
+			map[string]interface{}{
+				"model":              "claude-3-5-sonnet",
+				"upstreamDefinition": "anthropic-primary",
+			},
 		},
 		"statusCodes":     []interface{}{429, 500, 502, 503, 504},
 		"requestTimeout":  "10s",
@@ -2411,8 +2420,14 @@ func TestParseModelFailoverParams_ValidConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(mf.Models) != 2 || mf.Models[0].Name != "gpt-4o" || mf.Models[0].UpstreamDefinition != "primary" {
-		t.Errorf("unexpected Models: %#v", mf.Models)
+	if len(mf.Targets) != 2 || mf.Targets[0].Model != "gpt-4o" || mf.Targets[0].UpstreamDefinition != "primary" {
+		t.Errorf("unexpected Targets: %#v", mf.Targets)
+	}
+	if len(mf.Targets[0].Fallbacks) != 1 || mf.Targets[0].Fallbacks[0].Model != "gpt-4o-mini" {
+		t.Errorf("unexpected Targets[0].Fallbacks: %#v", mf.Targets[0].Fallbacks)
+	}
+	if mf.Targets[1].UpstreamDefinition != "anthropic-primary" || len(mf.Targets[1].Fallbacks) != 0 {
+		t.Errorf("unexpected Targets[1]: %#v", mf.Targets[1])
 	}
 	if len(mf.StatusCodes) != 5 || mf.StatusCodes[0] != 429 {
 		t.Errorf("unexpected StatusCodes: %v", mf.StatusCodes)
@@ -2423,25 +2438,84 @@ func TestParseModelFailoverParams_ValidConfig(t *testing.T) {
 	if mf.SuspendDuration == nil || *mf.SuspendDuration != 30*time.Second {
 		t.Errorf("unexpected SuspendDuration: %v", mf.SuspendDuration)
 	}
+	if mf.MaxFallbackChainLength() != 1 {
+		t.Errorf("expected MaxFallbackChainLength 1, got %d", mf.MaxFallbackChainLength())
+	}
 }
 
-func TestParseModelFailoverParams_RequiresAtLeastTwoModels(t *testing.T) {
+func TestParseModelFailoverParams_RequiresNonEmptyTargets(t *testing.T) {
 	params := map[string]interface{}{
-		"models": []interface{}{
-			map[string]interface{}{"name": "gpt-4o", "upstreamDefinition": "primary"},
+		"targets":     []interface{}{},
+		"statusCodes": []interface{}{500},
+	}
+	if _, err := ParseModelFailoverParams(params); err == nil {
+		t.Error("expected an error for an empty targets list")
+	}
+}
+
+func TestParseModelFailoverParams_RejectsDuplicateTargetModel(t *testing.T) {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "primary"},
+			map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "fallback-1"},
 		},
 		"statusCodes": []interface{}{500},
 	}
 	if _, err := ParseModelFailoverParams(params); err == nil {
-		t.Error("expected an error for a single-target models list — nothing to fail over to")
+		t.Error("expected an error for two targets declaring the same dispatch model name")
+	}
+}
+
+func TestParseModelFailoverParams_RequiresTargetUpstreamDefinition(t *testing.T) {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "gpt-4o"}, // upstreamDefinition omitted
+		},
+		"statusCodes": []interface{}{500},
+	}
+	if _, err := ParseModelFailoverParams(params); err == nil {
+		t.Error("expected an error when a target omits upstreamDefinition — it must always be explicit, even when it matches another entry's")
+	}
+}
+
+func TestParseModelFailoverParams_RequiresFallbackUpstreamDefinition(t *testing.T) {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"}, // upstreamDefinition omitted
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	if _, err := ParseModelFailoverParams(params); err == nil {
+		t.Error("expected an error when a fallback omits upstreamDefinition")
+	}
+}
+
+func TestParseModelFailoverParams_TargetWithNoFallbacksIsLegal(t *testing.T) {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "primary"},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	mf, err := ParseModelFailoverParams(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mf.Targets) != 1 || len(mf.Targets[0].Fallbacks) != 0 {
+		t.Errorf("expected exactly one target with zero fallbacks, got: %#v", mf.Targets)
 	}
 }
 
 func TestParseModelFailoverParams_RequiresNonEmptyStatusCodes(t *testing.T) {
 	params := map[string]interface{}{
-		"models": []interface{}{
-			map[string]interface{}{"name": "gpt-4o", "upstreamDefinition": "primary"},
-			map[string]interface{}{"name": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+		"targets": []interface{}{
+			map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "primary"},
 		},
 		"statusCodes": []interface{}{},
 	}
@@ -2450,9 +2524,49 @@ func TestParseModelFailoverParams_RequiresNonEmptyStatusCodes(t *testing.T) {
 	}
 }
 
+func TestValidateModelFailoverUpstreamReferences(t *testing.T) {
+	mf := &ModelFailoverParams{
+		Targets: []ModelFailoverTargetGroup{
+			{
+				Model:              "gpt-4o",
+				UpstreamDefinition: "primary",
+				Fallbacks:          []ModelFailoverFallback{{Model: "gpt-4o-mini", UpstreamDefinition: "fallback-1"}},
+			},
+		},
+		StatusCodes: []int{500},
+	}
+
+	t.Run("all references declared", func(t *testing.T) {
+		declared := map[string]bool{"primary": true, "fallback-1": true}
+		if err := ValidateModelFailoverUpstreamReferences(mf, declared); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("target references an undeclared upstreamDefinition", func(t *testing.T) {
+		declared := map[string]bool{"fallback-1": true} // "primary" missing
+		if err := ValidateModelFailoverUpstreamReferences(mf, declared); err == nil {
+			t.Error("expected an error when a target's upstreamDefinition isn't declared on the API")
+		}
+	})
+
+	t.Run("fallback references an undeclared upstreamDefinition", func(t *testing.T) {
+		declared := map[string]bool{"primary": true} // "fallback-1" missing
+		if err := ValidateModelFailoverUpstreamReferences(mf, declared); err == nil {
+			t.Error("expected an error when a fallback's upstreamDefinition isn't declared on the API")
+		}
+	})
+
+	t.Run("no upstreamDefinitions declared at all", func(t *testing.T) {
+		if err := ValidateModelFailoverUpstreamReferences(mf, map[string]bool{}); err == nil {
+			t.Error("expected an error when the API declares no upstreamDefinitions at all")
+		}
+	})
+}
+
 func TestValidateModelFailoverPolicy_RejectsCoexistenceWithResilienceRetry(t *testing.T) {
 	mf := &ModelFailoverParams{
-		Models:      []ModelFailoverTarget{{Name: "a", UpstreamDefinition: "x"}, {Name: "b", UpstreamDefinition: "y"}},
+		Targets:     []ModelFailoverTargetGroup{{Model: "a", Fallbacks: []ModelFailoverFallback{{Model: "b"}}}},
 		StatusCodes: []int{500},
 	}
 	retry := &api.Retry{StatusCodes: []int{401}}
@@ -2461,5 +2575,108 @@ func TestValidateModelFailoverPolicy_RejectsCoexistenceWithResilienceRetry(t *te
 	}
 	if err := ValidateModelFailoverPolicy(mf, nil); err != nil {
 		t.Errorf("expected no error when resilience.retry is absent, got: %v", err)
+	}
+}
+
+// Regression test for a confirmed-live gap: registering an LlmProxy whose model-failover
+// config used a basePath-carrying upstreamDefinition (an additionalProviders alias) as an
+// aggregate-cluster member returned HTTP 201 — the only enforcement was the async xDS
+// transform, which runs off the request thread and never surfaces its error to the caller.
+// The route was then silently persisted and 500'd on every real invocation.
+// ValidateModelFailoverForOperations is the fix: it must be called synchronously, before
+// persisting, from every deploy path (LlmProvider, LlmProxy, plain RestAPI).
+func TestValidateModelFailoverForOperations_RejectsBasePathAggregateMember(t *testing.T) {
+	basePath := "/some-alias-ctx"
+	spec := &api.APIConfigData{
+		UpstreamDefinitions: &[]api.UpstreamDefinition{
+			{Name: "openai-alias", BasePath: &basePath},
+			{Name: "anthropic-alias", BasePath: &basePath},
+		},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{
+									"model":              "gpt-4o",
+									"upstreamDefinition": "openai-alias",
+									"fallbacks": []interface{}{
+										map[string]interface{}{"model": "claude-3-haiku", "upstreamDefinition": "anthropic-alias"},
+									},
+								},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := ValidateModelFailoverForOperations(spec)
+	if err == nil {
+		t.Fatal("expected an error for a basePath-carrying upstreamDefinition used as an aggregate-cluster member, got nil")
+	}
+}
+
+func TestValidateModelFailoverForOperations_RejectsUndeclaredUpstreamReference(t *testing.T) {
+	spec := &api.APIConfigData{
+		UpstreamDefinitions: &[]api.UpstreamDefinition{{Name: "primary"}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "does-not-exist"},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := ValidateModelFailoverForOperations(spec)
+	if err == nil {
+		t.Fatal("expected an error for a target referencing an undeclared upstreamDefinition, got nil")
+	}
+}
+
+func TestValidateModelFailoverForOperations_ValidZeroFallbackConfigPasses(t *testing.T) {
+	spec := &api.APIConfigData{
+		UpstreamDefinitions: &[]api.UpstreamDefinition{{Name: "primary"}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "primary"},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateModelFailoverForOperations(spec); err != nil {
+		t.Errorf("expected no error for a valid zero-fallback config, got: %v", err)
+	}
+}
+
+func TestValidateModelFailoverForOperations_NoModelFailoverPolicyIsNoOp(t *testing.T) {
+	spec := &api.APIConfigData{
+		Operations: []api.Operation{{Policies: &[]api.Policy{{Name: "some-other-policy"}}}},
+	}
+	if err := ValidateModelFailoverForOperations(spec); err != nil {
+		t.Errorf("expected no error when no operation has a model-failover policy, got: %v", err)
+	}
+	if err := ValidateModelFailoverForOperations(nil); err != nil {
+		t.Errorf("expected no error for a nil spec, got: %v", err)
 	}
 }

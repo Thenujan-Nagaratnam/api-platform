@@ -187,30 +187,46 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 		}
 		routeTimeout := buildRouteTimeout(opTimeout, apiTimeout, opIdleTimeout, apiIdleTimeout, opRetry, apiRetry)
 
-		// config.ValidateModelFailoverPolicy exists specifically to reject this combination
-		// (both policies drive RouteAction.RetryPolicy independently; whichever translates
-		// last in createRouteFromRDC would otherwise silently win) but was never actually
-		// invoked from any admission path - confirmed dead code by a Task 12 review. Wired
-		// in here since this is the one place that already has both facts (the effective,
-		// op-overriding-api retry, and the operation's policy list) available before a route
-		// is built. effectiveRetry mirrors buildRouteTimeout's own op-overriding-api
-		// precedence, recomputed rather than read off routeTimeout - routeTimeout itself is
-		// nil whenever no timeout/idle/retry is configured at all (the common case).
-		effectiveRetry := opRetry
-		if effectiveRetry == nil {
-			effectiveRetry = apiRetry
+		// Build policy chain: API-level + operation-level + system policies. Computed once
+		// here (not per-vhost below) since it doesn't depend on vhost at all.
+		chain := t.buildPolicyChain(apiPolicies, op.Policies)
+		injected := utils.InjectSystemPolicies(chain, t.systemConfig, nil)
+
+		// Belt-and-suspenders re-check: config.ValidateModelFailoverForOperations already ran
+		// synchronously at registration time (pkg/utils/llm_deployment.go,
+		// pkg/utils/api_deployment.go — before this config was ever persisted), so reaching
+		// an invalid config here should not normally happen. Kept here too since this
+		// transform is also the only thing standing between a config and a built route for
+		// any path that bypasses those deploy-time callers (e.g. a config loaded directly
+		// from storage at startup, see pkg/cmd/controller/runtime_bootstrap.go) — parse
+		// errors and the "no such cluster" failure mode this guards against are exactly the
+		// kind of thing that must never reach createRouteFromRDC.
+		mf, err := parseModelFailoverPolicyParams(injected)
+		if err != nil {
+			return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
 		}
-		opHasModelFailover := false
-		if op.Policies != nil {
-			for _, p := range *op.Policies {
-				if p.Name == "model-failover" {
-					opHasModelFailover = true
-					break
+		if mf != nil {
+			effectiveRetry := opRetry
+			if effectiveRetry == nil {
+				effectiveRetry = apiRetry
+			}
+			if err := config.ValidateModelFailoverPolicy(mf, effectiveRetry); err != nil {
+				return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
+			}
+			declaredUpstreamDefs := make(map[string]bool)
+			basePathByUpstreamDef := make(map[string]string)
+			if apiData.UpstreamDefinitions != nil {
+				for _, def := range *apiData.UpstreamDefinitions {
+					declaredUpstreamDefs[def.Name] = true
+					if def.BasePath != nil {
+						basePathByUpstreamDef[def.Name] = *def.BasePath
+					}
 				}
 			}
-		}
-		if opHasModelFailover || hasModelFailoverPolicy(apiPolicies) {
-			if err := config.ValidateModelFailoverPolicy(&config.ModelFailoverParams{}, effectiveRetry); err != nil {
+			if err := config.ValidateModelFailoverUpstreamReferences(mf, declaredUpstreamDefs); err != nil {
+				return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
+			}
+			if err := config.ValidateModelFailoverAggregateMembersHaveNoBasePath(mf, basePathByUpstreamDef); err != nil {
 				return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
 			}
 		}
@@ -256,24 +272,7 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 				},
 			}
 			rdc.Routes[routeKey] = rdcRoute
-
-			// Build policy chain: API-level + operation-level + system policies
-			chain := t.buildPolicyChain(apiPolicies, op.Policies)
-			injected := utils.InjectSystemPolicies(chain, t.systemConfig, nil)
 			rdc.PolicyChains[routeKey] = sdkChainToModel(injected)
-
-			// model-failover routes must route via cluster_header to the AGGREGATE cluster
-			// xds/translator.go's translateRuntimeConfig builds for this exact route — not
-			// the plain-main-upstream default computed above — so the kernel's
-			// applyDefaultUpstream (no suspend override) and the real Envoy route (built from
-			// a SEPARATE Transform call, see xds.ModelFailoverAggregateClusterName's own
-			// comment) agree on the same cluster. Detected here by policy name only, since
-			// the aggregate cluster's name formula needs no parsed policyParams.
-			if hasModelFailoverPolicy(injected) {
-				aggName := xds.ModelFailoverAggregateClusterName(rdc.Metadata.Kind, rdc.Metadata.UUID, routeKey)
-				rdcRoute.Upstream.UseClusterHeader = true
-				rdcRoute.Upstream.DefaultCluster = aggName
-			}
 		}
 	}
 
@@ -465,13 +464,19 @@ func (t *RestAPITransformer) collectAPIPolicies(policies *[]api.Policy) []policy
 
 // hasModelFailoverPolicy reports whether a resolved policy chain includes model-failover, by
 // name only — no need to parse policyParams just to decide the route's cluster-header default.
-func hasModelFailoverPolicy(policies []policyenginev1.PolicyInstance) bool {
+// parseModelFailoverPolicyParams returns the parsed model-failover policyParams from a
+// resolved policy chain. Returns (nil, nil) when model-failover isn't present at all, and
+// (nil, err) when it's present but malformed — callers should propagate that error
+// immediately rather than deferring to xds/translator.go's own later parse of the identical
+// params, which would otherwise be the first and only place a malformed config gets caught.
+func parseModelFailoverPolicyParams(policies []policyenginev1.PolicyInstance) (*config.ModelFailoverParams, error) {
 	for _, p := range policies {
-		if p.Name == "model-failover" {
-			return true
+		if p.Name != "model-failover" {
+			continue
 		}
+		return config.ParseModelFailoverParams(p.Parameters)
 	}
-	return false
+	return nil, nil
 }
 
 // buildPolicyChain builds a merged list: API-level + operation-level policies (SDK format).

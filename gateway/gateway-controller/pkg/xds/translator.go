@@ -284,12 +284,19 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		clusters = append(clusters, c)
 	}
 
-	// model-failover: for any route whose PolicyChain includes it, build an aggregate
-	// cluster from its resolved upstreamDefinition targets so createRouteFromRDC can point
-	// the route at it instead of its normal upstream. Mutual exclusivity with
-	// resilience.retry is already enforced at validation time (Task 4), so a route reaching
-	// here with model-failover configured never also has rdc.Routes[key].Timeout.Retry set.
-	modelFailoverClusterByRouteKey := make(map[string]string)
+	// model-failover: for any route whose PolicyChain includes it, build one aggregate
+	// cluster PER ROUTE + TARGET GROUP that has at least one fallback — a zero-fallback
+	// group needs no aggregate at all, its own single upstreamDefinition cluster (built
+	// above from rdc.UpstreamClusters) is enough. Each aggregate is registered under the
+	// SAME naming scheme real upstreamDefinition clusters use (ModelFailoverGroupClusterKey),
+	// NOT a bespoke name — so the kernel's EXISTING UpstreamName-resolution logic (built for
+	// plain upstreamDefinitions; see gateway-runtime/policy-engine's resolveUpstreamRedirect)
+	// finds it with zero changes on that side. The route key is part of the synthetic
+	// upstreamDefinition name because two operations on the same API can legally attach
+	// different model-failover chains for the same dispatch model; an API+model-only aggregate
+	// name would make those routes overwrite each other's clusters. Mutual exclusivity with
+	// resilience.retry is already enforced at validation time, so a route reaching here with
+	// model-failover configured never also has rdc.Routes[key].Timeout.Retry set.
 	for routeKey, chain := range rdc.PolicyChains {
 		for _, p := range chain.Policies {
 			if p.Name != "model-failover" {
@@ -299,14 +306,18 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 			if err != nil {
 				return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
 			}
-			memberNames := modelFailoverMemberClusterNames(mf, rdc.Metadata.Kind, rdc.Metadata.UUID)
-			aggName := ModelFailoverAggregateClusterName(rdc.Metadata.Kind, rdc.Metadata.UUID, routeKey)
-			aggCluster, err := t.createAggregateCluster(aggName, memberNames)
-			if err != nil {
-				return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
+			for _, target := range mf.Targets {
+				if len(target.Fallbacks) == 0 {
+					continue
+				}
+				memberNames := modelFailoverGroupMemberClusterNames(target, rdc.Metadata.Kind, rdc.Metadata.UUID)
+				aggName := ModelFailoverGroupClusterKey(rdc.Metadata.Kind, rdc.Metadata.UUID, routeKey, target.Model)
+				aggCluster, err := t.createAggregateCluster(aggName, memberNames)
+				if err != nil {
+					return nil, nil, fmt.Errorf("route %q, target %q: %w", routeKey, target.Model, err)
+				}
+				clusters = append(clusters, aggCluster)
 			}
-			clusters = append(clusters, aggCluster)
-			modelFailoverClusterByRouteKey[routeKey] = aggName
 			break // a route has at most one model-failover policy — validated elsewhere, not re-checked here
 		}
 	}
@@ -327,7 +338,7 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		return routeKeys[i] < routeKeys[j]
 	})
 	for _, routeKey := range routeKeys {
-		r := t.createRouteFromRDC(routeKey, rdc.Routes[routeKey], rdc, modelFailoverClusterByRouteKey)
+		r := t.createRouteFromRDC(routeKey, rdc.Routes[routeKey], rdc)
 		routes = append(routes, r)
 	}
 
@@ -345,10 +356,7 @@ func (t *Translator) routeTimeoutOrDefault(v *time.Duration, defaultMs uint32) *
 }
 
 // createRouteFromRDC creates an Envoy route from a RuntimeDeployConfig Route.
-// modelFailoverClusterByRouteKey maps a route key to the aggregate cluster name built for
-// it in translateRuntimeConfig (nil/absent for the vast majority of routes, which have no
-// model-failover policy configured).
-func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig, modelFailoverClusterByRouteKey map[string]string) *route.Route {
+func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig) *route.Route {
 	fullPath := rdcRoute.Path
 	method := rdcRoute.Method
 	operationPath := rdcRoute.OperationPath
@@ -386,46 +394,39 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		routeAction.Route.RetryPolicy = buildRetryPolicy(routeResilienceRetry)
 	}
 
-	// Set cluster specifier. A route configured with model-failover (looked up by routeKey
-	// in modelFailoverClusterByRouteKey, built once in translateRuntimeConfig before any
-	// route is built) always takes this leading branch, and additionally overrides
-	// RetryPolicy with the model-failover-specific one (retry_priority + PerTryTimeout).
-	// Mutual exclusivity with resilience.retry is enforced at validation time (Task 4), so
-	// routeResilienceRetry above is never also set for a model-failover route.
-	//
-	// Uses ClusterHeader (cluster_header), NOT a static Cluster specifier pointed directly
-	// at the aggregate cluster: model-failover's OnRequestBody can pre-emptively skip a
-	// currently-suspended target via UpstreamName, which the kernel only honors by setting
-	// the SAME x-target-upstream header cluster_header reads (see
-	// transform/restapi.go's UseClusterHeader/DefaultCluster override for this route, set to
-	// this identical aggregate cluster name via ModelFailoverAggregateClusterName) — a
-	// static Cluster specifier would make Envoy ignore that header entirely, silently
-	// defeating the suspend/skip-ahead path while the plain retry_priority failover (the
-	// idx==0, no-override case) still worked, which is exactly the gap a manual e2e run
-	// caught (Task 12): OnRequestBody's redirect was computed correctly but had zero
-	// effect on real routing.
-	if _, ok := modelFailoverClusterByRouteKey[routeKey]; ok {
-		routeAction.Route.ClusterSpecifier = &route.RouteAction_ClusterHeader{
-			ClusterHeader: constants.TargetUpstreamHeader,
-		}
-		if chain, ok := rdc.PolicyChains[routeKey]; ok {
-			for _, p := range chain.Policies {
-				if p.Name != "model-failover" {
-					continue
-				}
-				if mf, err := config.ParseModelFailoverParams(p.Params); err == nil {
-					routeAction.Route.RetryPolicy = buildModelFailoverRetryPolicy(mf)
-				}
-				break
-			}
-		}
-	} else if rdcRoute.Upstream.UseClusterHeader {
+	// Set cluster specifier. model-failover needs no special branch here at all now: it
+	// always declares upstreamDefinitions (required on every target/fallback, see
+	// config.ParseModelFailoverParams), so rdcRoute.Upstream.UseClusterHeader is already
+	// true via the generic path below, and the route's default cluster is already the
+	// plain main upstream — exactly the "unmatched client model passes through untouched"
+	// behavior this policy wants when nothing redirects it. All it still needs, set below,
+	// is its own RetryPolicy (retry_priority + PerTryTimeout) instead of a plain one.
+	if rdcRoute.Upstream.UseClusterHeader {
 		routeAction.Route.ClusterSpecifier = &route.RouteAction_ClusterHeader{
 			ClusterHeader: constants.TargetUpstreamHeader,
 		}
 	} else {
 		routeAction.Route.ClusterSpecifier = &route.RouteAction_Cluster{
 			Cluster: rdcRoute.Upstream.ClusterKey,
+		}
+	}
+
+	// model-failover overrides RetryPolicy with retry_priority + PerTryTimeout, and its own
+	// NumRetries derived from the LONGEST fallback chain across every target group — Envoy
+	// has one shared retry budget per route, not one per group, so whichever group a given
+	// request resolves to is retried under the same budget (see
+	// config.ModelFailoverParams.MaxFallbackChainLength's own doc comment). Mutual
+	// exclusivity with resilience.retry is enforced at validation time, so
+	// routeResilienceRetry above is never also set for a model-failover route.
+	if chain, ok := rdc.PolicyChains[routeKey]; ok {
+		for _, p := range chain.Policies {
+			if p.Name != "model-failover" {
+				continue
+			}
+			if mf, err := config.ParseModelFailoverParams(p.Params); err == nil {
+				routeAction.Route.RetryPolicy = buildModelFailoverRetryPolicy(mf)
+			}
+			break
 		}
 	}
 
@@ -713,10 +714,16 @@ func (t *Translator) createWeightedCluster(
 // always produces, never a new/parallel set. Order is preserved: index i
 // here corresponds to Envoy attempt i+1 (see the design spec's AttemptCount
 // note) — this function must never reorder or dedupe.
-func modelFailoverMemberClusterNames(mf *config.ModelFailoverParams, apiKind, apiID string) []string {
-	names := make([]string, len(mf.Models))
-	for i, m := range mf.Models {
-		names[i] = constants.UpstreamDefinitionClusterPrefix + apiKind + "_" + apiID + "_" + sanitizeUpstreamDefinitionName(m.UpstreamDefinition)
+// modelFailoverGroupMemberClusterNames resolves ONE target group's own priority chain
+// (itself, then its fallbacks, in order) into real upstreamDefinition cluster names — this
+// group's own aggregate cluster's member list. Every UpstreamDefinition referenced here is
+// required and pre-validated to exist (config.ValidateModelFailoverUpstreamReferences), so
+// this never needs to fall back to any default.
+func modelFailoverGroupMemberClusterNames(target config.ModelFailoverTargetGroup, apiKind, apiID string) []string {
+	names := make([]string, 0, 1+len(target.Fallbacks))
+	names = append(names, constants.UpstreamDefinitionClusterPrefix+apiKind+"_"+apiID+"_"+sanitizeUpstreamDefinitionName(target.UpstreamDefinition))
+	for _, fb := range target.Fallbacks {
+		names = append(names, constants.UpstreamDefinitionClusterPrefix+apiKind+"_"+apiID+"_"+sanitizeUpstreamDefinitionName(fb.UpstreamDefinition))
 	}
 	return names
 }
@@ -3083,15 +3090,36 @@ func sanitizeUpstreamDefinitionName(name string) string {
 	return sanitized
 }
 
-// ModelFailoverAggregateClusterName is the deterministic naming formula for the aggregate
-// cluster built for a model-failover route. Exported so transform/restapi.go can compute the
-// IDENTICAL name to set as this route's cluster_header default (Upstream.DefaultCluster) —
-// restapi.go's Transform and this package's translateRuntimeConfig are two SEPARATE calls
-// against two independently-transformed RuntimeDeployConfig instances (one feeds policyxds,
-// one feeds this xds package's own CDS/RDS build), so the name must be derived by an identical,
-// shared formula rather than duplicated by hand in both places, or the two would silently drift.
-func ModelFailoverAggregateClusterName(kind, uuid, routeKey string) string {
-	return "agg_modelfailover_" + kind + "_" + uuid + "_" + sanitizeUpstreamDefinitionName(routeKey)
+// modelFailoverGroupUpstreamName is the "logical upstreamDefinition name" model-failover
+// registers each route-scoped target group's own aggregate cluster under — reserved-looking
+// ("__modelfailover_target__" prefix) specifically so it can't collide with a real,
+// operator-declared UpstreamDefinition.Name that happens to equal a group's own dispatch
+// model name (e.g. an upstreamDefinition literally named "gpt-4o"). This EXACT formula is
+// duplicated, deliberately, in gateway-controllers/policies/model-failover/model_failover.go
+// (a separate repo — it cannot import this package) — the policy sets UpstreamName to this
+// same string for a target group's primary (non-skip-ahead) attempt, and the kernel's
+// existing resolveUpstreamRedirect (built for plain upstreamDefinitions, unmodified here)
+// resolves it into exactly the cluster key ModelFailoverGroupClusterKey below registers.
+// Keep both copies of this formula in sync — same pattern this codebase already uses for
+// sanitizeUpstreamDefinitionName/SanitizeUpstreamDefinitionName, independently duplicated
+// between this file and transform/restapi.go.
+func modelFailoverGroupUpstreamName(routeKey, groupModel string) string {
+	// routeKey is "METHOD|PATH|VHOST[|DISCRIMINATOR]" - "|" isn't handled by
+	// sanitizeUpstreamDefinitionName (which only strips "." and ":"), so replace it here
+	// rather than widening that shared function's behavior for every other caller.
+	safeRouteKey := strings.ReplaceAll(routeKey, "|", "_")
+	if routeKey == "" {
+		return "__modelfailover_target__" + groupModel
+	}
+	return "__modelfailover_target__" + safeRouteKey + "__" + groupModel
+}
+
+// ModelFailoverGroupClusterKey is the deterministic naming formula for the aggregate cluster
+// built for one route-scoped model-failover target group — registered under the SAME
+// constants.UpstreamDefinitionClusterPrefix + kind + "_" + apiID + "_" + <name> scheme real
+// upstreamDefinition clusters use (see modelFailoverGroupUpstreamName's own comment for why).
+func ModelFailoverGroupClusterKey(kind, uuid, routeKey, groupModel string) string {
+	return constants.UpstreamDefinitionClusterPrefix + kind + "_" + uuid + "_" + sanitizeUpstreamDefinitionName(modelFailoverGroupUpstreamName(routeKey, groupModel))
 }
 
 // createAccessLogConfig creates access log configuration based on format (JSON or text) to stdout
@@ -3808,7 +3836,7 @@ func buildModelFailoverRetryPolicy(mf *config.ModelFailoverParams) *route.RetryP
 	rp := &route.RetryPolicy{
 		RetryOn:              "retriable-status-codes",
 		RetriableStatusCodes: statusCodes,
-		NumRetries:           wrapperspb.UInt32(uint32(len(mf.Models) - 1)),
+		NumRetries:           wrapperspb.UInt32(uint32(mf.MaxFallbackChainLength())),
 		RetryPriority: &route.RetryPolicy_RetryPriority{
 			Name:       "envoy.retry_priorities.previous_priorities",
 			ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: priorityCfgAny},
