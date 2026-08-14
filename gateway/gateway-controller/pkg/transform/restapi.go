@@ -177,6 +177,21 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 		return nil, fmt.Errorf("invalid API-level resilience: %w", err)
 	}
 
+	// Belt-and-suspenders re-check: config.ValidateModelFailoverForOperations already ran
+	// synchronously at registration time (pkg/utils/llm_deployment.go,
+	// pkg/utils/api_deployment.go — before this config was ever persisted), so reaching an
+	// invalid config here should not normally happen. Kept here too since this transform is
+	// also the only thing standing between a config and a built route for any path that
+	// bypasses those deploy-time callers (e.g. a config loaded directly from storage at
+	// startup, see cmd/controller/runtime_bootstrap.go) — parse errors and the "no such
+	// cluster" failure mode this guards against are exactly the kind of thing that must
+	// never reach createRouteFromRDC. Runs once for the whole API (it already iterates every
+	// operation internally) rather than per-operation, since nothing else in the loop below
+	// depends on its parsed result.
+	if err := config.ValidateModelFailoverForOperations(&apiData); err != nil {
+		return nil, err
+	}
+
 	// Build routes and policy chains for each operation
 	for i, op := range apiData.Operations {
 		// Operation-level resilience overrides API-level (per field); nil leaves the
@@ -191,45 +206,6 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 		// here (not per-vhost below) since it doesn't depend on vhost at all.
 		chain := t.buildPolicyChain(apiPolicies, op.Policies)
 		injected := utils.InjectSystemPolicies(chain, t.systemConfig, nil)
-
-		// Belt-and-suspenders re-check: config.ValidateModelFailoverForOperations already ran
-		// synchronously at registration time (pkg/utils/llm_deployment.go,
-		// pkg/utils/api_deployment.go — before this config was ever persisted), so reaching
-		// an invalid config here should not normally happen. Kept here too since this
-		// transform is also the only thing standing between a config and a built route for
-		// any path that bypasses those deploy-time callers (e.g. a config loaded directly
-		// from storage at startup, see pkg/cmd/controller/runtime_bootstrap.go) — parse
-		// errors and the "no such cluster" failure mode this guards against are exactly the
-		// kind of thing that must never reach createRouteFromRDC.
-		mf, err := parseModelFailoverPolicyParams(injected)
-		if err != nil {
-			return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
-		}
-		if mf != nil {
-			effectiveRetry := opRetry
-			if effectiveRetry == nil {
-				effectiveRetry = apiRetry
-			}
-			if err := config.ValidateModelFailoverPolicy(mf, effectiveRetry); err != nil {
-				return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
-			}
-			declaredUpstreamDefs := make(map[string]bool)
-			basePathByUpstreamDef := make(map[string]string)
-			if apiData.UpstreamDefinitions != nil {
-				for _, def := range *apiData.UpstreamDefinitions {
-					declaredUpstreamDefs[def.Name] = true
-					if def.BasePath != nil {
-						basePathByUpstreamDef[def.Name] = *def.BasePath
-					}
-				}
-			}
-			if err := config.ValidateModelFailoverUpstreamReferences(mf, declaredUpstreamDefs); err != nil {
-				return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
-			}
-			if err := config.ValidateModelFailoverAggregateMembersHaveNoBasePath(mf, basePathByUpstreamDef); err != nil {
-				return nil, fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
-			}
-		}
 
 		vhosts := append([]string{}, mainVhosts...)
 		if hasSandbox {
@@ -460,23 +436,6 @@ func (t *RestAPITransformer) collectAPIPolicies(policies *[]api.Policy) []policy
 		result = append(result, convertAPIPolicyToSDK(p, policyv1alpha.LevelAPI, versionutil.MajorVersion(resolved)))
 	}
 	return result
-}
-
-// hasModelFailoverPolicy reports whether a resolved policy chain includes model-failover, by
-// name only — no need to parse policyParams just to decide the route's cluster-header default.
-// parseModelFailoverPolicyParams returns the parsed model-failover policyParams from a
-// resolved policy chain. Returns (nil, nil) when model-failover isn't present at all, and
-// (nil, err) when it's present but malformed — callers should propagate that error
-// immediately rather than deferring to xds/translator.go's own later parse of the identical
-// params, which would otherwise be the first and only place a malformed config gets caught.
-func parseModelFailoverPolicyParams(policies []policyenginev1.PolicyInstance) (*config.ModelFailoverParams, error) {
-	for _, p := range policies {
-		if p.Name != "model-failover" {
-			continue
-		}
-		return config.ParseModelFailoverParams(p.Parameters)
-	}
-	return nil, nil
 }
 
 // buildPolicyChain builds a merged list: API-level + operation-level policies (SDK format).

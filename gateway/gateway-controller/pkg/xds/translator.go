@@ -306,11 +306,15 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 			if err != nil {
 				return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
 			}
+			var mainClusterName string
+			if rdcRoute, ok := rdc.Routes[routeKey]; ok {
+				mainClusterName = rdcRoute.Upstream.DefaultCluster
+			}
 			for _, target := range mf.Targets {
 				if len(target.Fallbacks) == 0 {
 					continue
 				}
-				memberNames := modelFailoverGroupMemberClusterNames(target, rdc.Metadata.Kind, rdc.Metadata.UUID)
+				memberNames := modelFailoverGroupMemberClusterNames(target, rdc.Metadata.Kind, rdc.Metadata.UUID, mainClusterName)
 				aggName := ModelFailoverGroupClusterKey(rdc.Metadata.Kind, rdc.Metadata.UUID, routeKey, target.Model)
 				aggCluster, err := t.createAggregateCluster(aggName, memberNames)
 				if err != nil {
@@ -719,11 +723,23 @@ func (t *Translator) createWeightedCluster(
 // group's own aggregate cluster's member list. Every UpstreamDefinition referenced here is
 // required and pre-validated to exist (config.ValidateModelFailoverUpstreamReferences), so
 // this never needs to fall back to any default.
-func modelFailoverGroupMemberClusterNames(target config.ModelFailoverTargetGroup, apiKind, apiID string) []string {
+// mainClusterName is the route's own resolved main-upstream Envoy cluster name (rdc.Routes[
+// routeKey].Upstream.DefaultCluster — the same string used as both the rdc.UpstreamClusters
+// map key and the Envoy cluster's Name, see translateRuntimeConfig's cluster-building loop
+// above). An empty target/fallback UpstreamDefinition means "this API's own main upstream",
+// so it resolves here instead of the UpstreamDefinitionClusterPrefix scheme named
+// upstreamDefinitions use.
+func modelFailoverGroupMemberClusterNames(target config.ModelFailoverTargetGroup, apiKind, apiID, mainClusterName string) []string {
+	resolve := func(upstreamDef string) string {
+		if upstreamDef == "" {
+			return mainClusterName
+		}
+		return constants.UpstreamDefinitionClusterPrefix + apiKind + "_" + apiID + "_" + sanitizeUpstreamDefinitionName(upstreamDef)
+	}
 	names := make([]string, 0, 1+len(target.Fallbacks))
-	names = append(names, constants.UpstreamDefinitionClusterPrefix+apiKind+"_"+apiID+"_"+sanitizeUpstreamDefinitionName(target.UpstreamDefinition))
+	names = append(names, resolve(target.UpstreamDefinition))
 	for _, fb := range target.Fallbacks {
-		names = append(names, constants.UpstreamDefinitionClusterPrefix+apiKind+"_"+apiID+"_"+sanitizeUpstreamDefinitionName(fb.UpstreamDefinition))
+		names = append(names, resolve(fb.UpstreamDefinition))
 	}
 	return names
 }

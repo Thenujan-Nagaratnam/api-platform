@@ -20,20 +20,22 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 )
 
 // ModelFailoverFallback is one fallback entry within a target group's chain.
-// UpstreamDefinition is always required, even when a fallback shares the exact same
-// backend as its own target — reference the SAME UpstreamDefinition.Name on both rather
-// than leaving this empty. That keeps every entry's destination unambiguous just by
-// reading the config, with no implicit "empty means main upstream" rule to remember —
-// and costs nothing extra: reusing a name doesn't require declaring the backend twice.
+// UpstreamDefinition is OPTIONAL: empty means "the API's own main upstream" (spec.upstream),
+// the same backend used when no model-failover is configured at all. Most APIs have exactly
+// one upstream, so most fallbacks need nothing here — only a fallback that must reach a
+// genuinely different backend (a different upstreamDefinition, e.g. a real cross-provider
+// target) needs to name one explicitly.
 type ModelFailoverFallback struct {
 	Model              string // injected into the request body's "model" field for this attempt
-	UpstreamDefinition string // must match an UpstreamDefinition.Name declared on the same API
+	UpstreamDefinition string // "" means the API's main upstream; otherwise must match a declared UpstreamDefinition.Name
 }
 
 // ModelFailoverTargetGroup is one independently-selectable target: Model is the value
@@ -44,7 +46,7 @@ type ModelFailoverFallback struct {
 // only some of an API's supported models actually need a fallback chain.
 type ModelFailoverTargetGroup struct {
 	Model              string // the client-requested model name that selects this group
-	UpstreamDefinition string // must match an UpstreamDefinition.Name declared on the same API
+	UpstreamDefinition string // "" means the API's main upstream; otherwise must match a declared UpstreamDefinition.Name
 	Fallbacks          []ModelFailoverFallback
 }
 
@@ -90,10 +92,8 @@ func ParseModelFailoverParams(params map[string]interface{}) (*ModelFailoverPara
 			return nil, fmt.Errorf("model-failover: targets[%d].model %q is declared more than once — each target's model must be unique, it's the dispatch key matched against the client's own request.model", i, model)
 		}
 		seenModels[model] = true
+		// upstreamDefinition is optional: absent/empty means "this API's own main upstream".
 		upstreamDef, _ := t["upstreamDefinition"].(string)
-		if upstreamDef == "" {
-			return nil, fmt.Errorf("model-failover: targets[%d].upstreamDefinition is required (reference the same UpstreamDefinition name as another entry if they share a backend)", i)
-		}
 
 		rawFallbacks, _ := t["fallbacks"].([]interface{})
 		fallbacks := make([]ModelFailoverFallback, 0, len(rawFallbacks))
@@ -106,10 +106,8 @@ func ParseModelFailoverParams(params map[string]interface{}) (*ModelFailoverPara
 			if fbModel == "" {
 				return nil, fmt.Errorf("model-failover: targets[%d].fallbacks[%d].model is required", i, j)
 			}
+			// upstreamDefinition is optional here too: absent/empty means main upstream.
 			fbUpstreamDef, _ := fb["upstreamDefinition"].(string)
-			if fbUpstreamDef == "" {
-				return nil, fmt.Errorf("model-failover: targets[%d].fallbacks[%d].upstreamDefinition is required (reference the same UpstreamDefinition name as another entry if they share a backend)", i, j)
-			}
 			fallbacks = append(fallbacks, ModelFailoverFallback{Model: fbModel, UpstreamDefinition: fbUpstreamDef})
 		}
 
@@ -172,21 +170,23 @@ func (mf *ModelFailoverParams) MaxFallbackChainLength() int {
 }
 
 // ValidateModelFailoverUpstreamReferences rejects a model-failover config that references
-// an UpstreamDefinition name not actually declared on the same API. Without this, a typo'd
-// or entirely absent upstreamDefinitions list deploys "successfully" and only fails at
-// request time with an opaque Envoy "no such cluster" error — the kernel's UpstreamName
-// resolver builds the target cluster name unconditionally and never checks it exists (see
-// ParseModelFailoverParams's own doc comment).
+// a NAMED UpstreamDefinition not actually declared on the same API. An empty/omitted
+// UpstreamDefinition ("" — main upstream) always resolves and is never checked here; the
+// API's main upstream always exists by definition. Without this check on named references, a
+// typo'd upstreamDefinition name deploys "successfully" and only fails at request time with
+// an opaque Envoy "no such cluster" error — the kernel's UpstreamName resolver builds the
+// target cluster name unconditionally and never checks it exists (see ParseModelFailoverParams's
+// own doc comment).
 func ValidateModelFailoverUpstreamReferences(mf *ModelFailoverParams, declaredUpstreamDefs map[string]bool) error {
 	if mf == nil {
 		return nil
 	}
 	for i, t := range mf.Targets {
-		if !declaredUpstreamDefs[t.UpstreamDefinition] {
+		if t.UpstreamDefinition != "" && !declaredUpstreamDefs[t.UpstreamDefinition] {
 			return fmt.Errorf("model-failover: targets[%d].upstreamDefinition %q is not declared in this API's upstreamDefinitions", i, t.UpstreamDefinition)
 		}
 		for j, fb := range t.Fallbacks {
-			if !declaredUpstreamDefs[fb.UpstreamDefinition] {
+			if fb.UpstreamDefinition != "" && !declaredUpstreamDefs[fb.UpstreamDefinition] {
 				return fmt.Errorf("model-failover: targets[%d].fallbacks[%d].upstreamDefinition %q is not declared in this API's upstreamDefinitions", i, j, fb.UpstreamDefinition)
 			}
 		}
@@ -197,39 +197,58 @@ func ValidateModelFailoverUpstreamReferences(mf *ModelFailoverParams, declaredUp
 // ValidateModelFailoverAggregateMembersHaveNoBasePath rejects a target group (one with at
 // least one fallback, i.e. one that will actually get an aggregate cluster built — see
 // xds/translator.go) where the group's own upstreamDefinition, or any of its fallbacks',
-// declares a non-empty BasePath.
+// resolves to a backend with a non-empty BasePath. An empty UpstreamDefinition ("") means
+// "the API's main upstream" and is checked against mainBasePath — the SAME risk applies
+// there too: an LlmProxy's own main upstream is ALWAYS loopback-routed with the provider's
+// context baked into its URL (see llm_transformer.go's transformProxy), structurally
+// identical to an additionalProviders alias, just represented as a URL path instead of a
+// separate BasePath field. So defaulting to main is exactly as restricted as naming a
+// BasePath-carrying upstreamDefinition explicitly — this function treats them identically,
+// with no separate concept the caller needs to know about.
 //
 // This is a real, confirmed correctness gap, not a hypothetical: Envoy's aggregate-cluster +
 // retry_priority mechanism only ever varies WHICH CLUSTER gets dialed on a retry — it has no
 // hook to vary the REQUEST PATH per member. A plain external upstream with no base path
-// (the common case — every upstreamDefinition in this codebase's own working e2e coverage
-// has none) is unaffected, since "no rewrite" and "the trivial root rewrite" are the same
-// thing. But an upstreamDefinition that DOES rely on a base path to reach the right
-// destination — most notably an LlmProxy's additionalProviders-derived alias, which always
-// carries the aliased provider's own context as BasePath, since ALL such aliases resolve to
-// the identical loopback address (127.0.0.1:<gateway's own listener port>) and are
-// distinguished ONLY by that path — silently breaks: confirmed live, a retry that should
-// land on a different provider instead loops back to the SAME one, while the per-attempt
-// body rewrite still (incorrectly) labels the response as having come from the target it
-// never actually reached. That's not a clean failure, it's a silent mislabeling, which is
-// exactly the class of bug worth a hard rejection at registration time rather than a runtime
-// surprise. Suspend-driven skip-ahead (a separate, later request) is NOT affected by this —
-// it redirects directly to a single upstreamDefinition via the ordinary, already-working
+// (the common case for LlmProvider — every upstreamDefinition in this codebase's own working
+// e2e coverage has none, and a plain spec.upstream.url main has none either) is unaffected,
+// since "no rewrite" and "the trivial root rewrite" are the same thing. But an upstream that
+// DOES rely on a base path to reach the right destination — most notably an LlmProxy's
+// additionalProviders-derived alias, or an LlmProxy's own main upstream, both of which always
+// resolve to the identical loopback address (127.0.0.1:<gateway's own listener port>) and are
+// distinguished ONLY by path — silently breaks: confirmed live, a retry that should land on a
+// different provider instead loops back to the SAME one, while the per-attempt body rewrite
+// still (incorrectly) labels the response as having come from the target it never actually
+// reached. That's not a clean failure, it's a silent mislabeling, which is exactly the class
+// of bug worth a hard rejection at registration time rather than a runtime surprise.
+// Suspend-driven skip-ahead (a separate, later request) is NOT affected by this — it
+// redirects directly to a single upstream via the ordinary, already-working
 // resolveUpstreamRedirect path, never through an aggregate cluster at all.
-func ValidateModelFailoverAggregateMembersHaveNoBasePath(mf *ModelFailoverParams, basePathByUpstreamDef map[string]string) error {
+func ValidateModelFailoverAggregateMembersHaveNoBasePath(mf *ModelFailoverParams, basePathByUpstreamDef map[string]string, mainBasePath string) error {
 	if mf == nil {
 		return nil
+	}
+	resolve := func(upstreamDef string) string {
+		if upstreamDef == "" {
+			return mainBasePath
+		}
+		return basePathByUpstreamDef[upstreamDef]
+	}
+	describe := func(upstreamDef string) string {
+		if upstreamDef == "" {
+			return "the API's main upstream"
+		}
+		return fmt.Sprintf("upstreamDefinition %q", upstreamDef)
 	}
 	for i, t := range mf.Targets {
 		if len(t.Fallbacks) == 0 {
 			continue // no aggregate cluster is ever built for this group - not at risk
 		}
-		if bp := basePathByUpstreamDef[t.UpstreamDefinition]; bp != "" {
-			return fmt.Errorf("model-failover: targets[%d].upstreamDefinition %q has a non-empty basePath (%q) and this target has fallbacks, so it will be used as an aggregate-cluster member — Envoy's native retry cannot vary the request path per member, so a basePath-dependent upstream (e.g. an LlmProxy additionalProviders alias) would silently misroute on retry. Use suspend-driven skip-ahead instead (give this target zero fallbacks, or move basePath-dependent targets to their own zero-fallback groups) — or point every member of this chain at a plain, no-basePath upstream", i, t.UpstreamDefinition, bp)
+		if bp := resolve(t.UpstreamDefinition); bp != "" && bp != "/" {
+			return fmt.Errorf("model-failover: targets[%d] resolves to %s, which has a non-empty basePath (%q), and this target has fallbacks, so it will be used as an aggregate-cluster member — Envoy's native retry cannot vary the request path per member, so a basePath-dependent upstream (e.g. an LlmProxy additionalProviders alias, or an LlmProxy's own main upstream) would silently misroute on retry. Use suspend-driven skip-ahead instead (give this target zero fallbacks, or move basePath-dependent targets to their own zero-fallback groups) — or point every member of this chain at a plain, no-basePath upstream", i, describe(t.UpstreamDefinition), bp)
 		}
 		for j, fb := range t.Fallbacks {
-			if bp := basePathByUpstreamDef[fb.UpstreamDefinition]; bp != "" {
-				return fmt.Errorf("model-failover: targets[%d].fallbacks[%d].upstreamDefinition %q has a non-empty basePath (%q) and would be used as an aggregate-cluster member — Envoy's native retry cannot vary the request path per member, so a basePath-dependent upstream (e.g. an LlmProxy additionalProviders alias) would silently misroute on retry", i, j, fb.UpstreamDefinition, bp)
+			if bp := resolve(fb.UpstreamDefinition); bp != "" && bp != "/" {
+				return fmt.Errorf("model-failover: targets[%d].fallbacks[%d] resolves to %s, which has a non-empty basePath (%q), and would be used as an aggregate-cluster member — Envoy's native retry cannot vary the request path per member, so a basePath-dependent upstream (e.g. an LlmProxy additionalProviders alias, or an LlmProxy's own main upstream) would silently misroute on retry", i, j, describe(fb.UpstreamDefinition), bp)
 			}
 		}
 	}
@@ -281,6 +300,7 @@ func ValidateModelFailoverForOperations(spec *api.APIConfigData) error {
 			}
 		}
 	}
+	mainBasePath := mainUpstreamBasePath(spec.Upstream.Main, spec.UpstreamDefinitions)
 
 	apiRetry := effectiveResilienceRetry(spec.Resilience)
 
@@ -308,11 +328,39 @@ func ValidateModelFailoverForOperations(spec *api.APIConfigData) error {
 		if err := ValidateModelFailoverUpstreamReferences(mf, declaredUpstreamDefs); err != nil {
 			return fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
 		}
-		if err := ValidateModelFailoverAggregateMembersHaveNoBasePath(mf, basePathByUpstreamDef); err != nil {
+		if err := ValidateModelFailoverAggregateMembersHaveNoBasePath(mf, basePathByUpstreamDef, mainBasePath); err != nil {
 			return fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
 		}
 	}
 	return nil
+}
+
+// mainUpstreamBasePath derives the API's main upstream's effective base path, mirroring
+// pkg/transform.RestAPITransformer's own resolveUpstreamURL (a direct URL carries its base
+// path in the URL's own path component; a ref takes it from the referenced
+// UpstreamDefinition's BasePath field instead) — so ValidateModelFailoverAggregateMembersHaveNoBasePath
+// can treat "defaults to main" exactly like a named upstreamDefinition reference, with no
+// special-casing the caller needs to know about. Returns "" on any unresolvable shape
+// (missing URL/ref, malformed URL, dangling ref) — those are all real problems, but they're
+// caught elsewhere (schema validation, the main upstream's own cluster-build step); this
+// function only needs a best-effort basePath for the aggregate-cluster safety check.
+func mainUpstreamBasePath(main api.Upstream, upstreamDefinitions *[]api.UpstreamDefinition) string {
+	if main.Url != nil && strings.TrimSpace(*main.Url) != "" {
+		u, err := url.Parse(strings.TrimSpace(*main.Url))
+		if err != nil {
+			return ""
+		}
+		return u.Path
+	}
+	if main.Ref != nil && strings.TrimSpace(*main.Ref) != "" && upstreamDefinitions != nil {
+		refName := strings.TrimSpace(*main.Ref)
+		for _, def := range *upstreamDefinitions {
+			if def.Name == refName && def.BasePath != nil {
+				return *def.BasePath
+			}
+		}
+	}
+	return ""
 }
 
 // effectiveResilienceRetry extracts the Retry field from an optional api.Resilience, without

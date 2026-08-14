@@ -3681,8 +3681,22 @@ func TestModelFailoverGroupMemberClusterNames_ResolvesInOrder(t *testing.T) {
 		UpstreamDefinition: "primary",
 		Fallbacks:          []config.ModelFailoverFallback{{Model: "gpt-4o-mini", UpstreamDefinition: "fallback-1"}},
 	}
-	names := modelFailoverGroupMemberClusterNames(target, "LlmProvider", "abc-123")
+	names := modelFailoverGroupMemberClusterNames(target, "LlmProvider", "abc-123", "upstream_main_backend.example.com_9711")
 	want := []string{"upstream_LlmProvider_abc-123_primary", "upstream_LlmProvider_abc-123_fallback-1"}
+	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
+		t.Errorf("got %v, want %v", names, want)
+	}
+}
+
+func TestModelFailoverGroupMemberClusterNames_EmptyUpstreamDefinitionResolvesToMain(t *testing.T) {
+	target := config.ModelFailoverTargetGroup{
+		Model:              "gpt-4o",
+		UpstreamDefinition: "", // main
+		Fallbacks:          []config.ModelFailoverFallback{{Model: "gpt-4o-mini", UpstreamDefinition: "fallback-1"}},
+	}
+	mainClusterName := "upstream_main_backend.example.com_9711"
+	names := modelFailoverGroupMemberClusterNames(target, "LlmProvider", "abc-123", mainClusterName)
+	want := []string{mainClusterName, "upstream_LlmProvider_abc-123_fallback-1"}
 	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
 		t.Errorf("got %v, want %v", names, want)
 	}

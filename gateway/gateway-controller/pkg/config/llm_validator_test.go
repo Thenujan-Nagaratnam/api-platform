@@ -2466,33 +2466,41 @@ func TestParseModelFailoverParams_RejectsDuplicateTargetModel(t *testing.T) {
 	}
 }
 
-func TestParseModelFailoverParams_RequiresTargetUpstreamDefinition(t *testing.T) {
+func TestParseModelFailoverParams_TargetUpstreamDefinitionIsOptional(t *testing.T) {
 	params := map[string]interface{}{
 		"targets": []interface{}{
-			map[string]interface{}{"model": "gpt-4o"}, // upstreamDefinition omitted
+			map[string]interface{}{"model": "gpt-4o"}, // upstreamDefinition omitted - defaults to main
 		},
 		"statusCodes": []interface{}{500},
 	}
-	if _, err := ParseModelFailoverParams(params); err == nil {
-		t.Error("expected an error when a target omits upstreamDefinition — it must always be explicit, even when it matches another entry's")
+	mf, err := ParseModelFailoverParams(params)
+	if err != nil {
+		t.Fatalf("expected no error when a target omits upstreamDefinition (defaults to main), got: %v", err)
+	}
+	if mf.Targets[0].UpstreamDefinition != "" {
+		t.Errorf("expected empty UpstreamDefinition (main) to be preserved as-is, got %q", mf.Targets[0].UpstreamDefinition)
 	}
 }
 
-func TestParseModelFailoverParams_RequiresFallbackUpstreamDefinition(t *testing.T) {
+func TestParseModelFailoverParams_FallbackUpstreamDefinitionIsOptional(t *testing.T) {
 	params := map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
 				"model":              "gpt-4o",
 				"upstreamDefinition": "primary",
 				"fallbacks": []interface{}{
-					map[string]interface{}{"model": "gpt-4o-mini"}, // upstreamDefinition omitted
+					map[string]interface{}{"model": "gpt-4o-mini"}, // upstreamDefinition omitted - defaults to main
 				},
 			},
 		},
 		"statusCodes": []interface{}{500},
 	}
-	if _, err := ParseModelFailoverParams(params); err == nil {
-		t.Error("expected an error when a fallback omits upstreamDefinition")
+	mf, err := ParseModelFailoverParams(params)
+	if err != nil {
+		t.Fatalf("expected no error when a fallback omits upstreamDefinition (defaults to main), got: %v", err)
+	}
+	if mf.Targets[0].Fallbacks[0].UpstreamDefinition != "" {
+		t.Errorf("expected empty UpstreamDefinition (main) to be preserved as-is, got %q", mf.Targets[0].Fallbacks[0].UpstreamDefinition)
 	}
 }
 
@@ -2560,6 +2568,22 @@ func TestValidateModelFailoverUpstreamReferences(t *testing.T) {
 	t.Run("no upstreamDefinitions declared at all", func(t *testing.T) {
 		if err := ValidateModelFailoverUpstreamReferences(mf, map[string]bool{}); err == nil {
 			t.Error("expected an error when the API declares no upstreamDefinitions at all")
+		}
+	})
+
+	t.Run("empty upstreamDefinition (defaults to main) is always valid, even with zero declared", func(t *testing.T) {
+		mfDefaultsToMain := &ModelFailoverParams{
+			Targets: []ModelFailoverTargetGroup{
+				{
+					Model:              "gpt-4o",
+					UpstreamDefinition: "", // main
+					Fallbacks:          []ModelFailoverFallback{{Model: "gpt-4o-mini", UpstreamDefinition: ""}}, // main
+				},
+			},
+			StatusCodes: []int{500},
+		}
+		if err := ValidateModelFailoverUpstreamReferences(mfDefaultsToMain, map[string]bool{}); err != nil {
+			t.Errorf("expected no error - an empty UpstreamDefinition always resolves to the API's main upstream, which always exists, got: %v", err)
 		}
 	})
 }
@@ -2679,4 +2703,143 @@ func TestValidateModelFailoverForOperations_NoModelFailoverPolicyIsNoOp(t *testi
 	if err := ValidateModelFailoverForOperations(nil); err != nil {
 		t.Errorf("expected no error for a nil spec, got: %v", err)
 	}
+}
+
+// The minimal, common-case config: no upstreamDefinitions declared at all, and every
+// target/fallback omits upstreamDefinition - everything defaults to the API's own main
+// upstream, exactly the backend used with no model-failover configured at all.
+func TestValidateModelFailoverForOperations_DefaultsToMainWhenUpstreamDefinitionOmitted(t *testing.T) {
+	mainURL := "http://backend.example.com:9711"
+	spec := &api.APIConfigData{
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{Main: api.Upstream{Url: &mainURL}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{
+									"model": "gpt-4o",
+									"fallbacks": []interface{}{
+										map[string]interface{}{"model": "gpt-4o-mini"},
+									},
+								},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateModelFailoverForOperations(spec); err != nil {
+		t.Errorf("expected no error for the minimal config (no upstreamDefinitions, no explicit references), got: %v", err)
+	}
+}
+
+// LlmProxy's own main upstream is ALWAYS loopback-routed with the provider's context baked
+// into its URL path (see llm_transformer.go's transformProxy) - structurally identical to an
+// additionalProviders alias's BasePath. A group that has fallbacks and defaults to that main
+// upstream must be rejected the exact same way an explicit BasePath-carrying upstreamDefinition
+// reference would be.
+func TestValidateModelFailoverForOperations_RejectsMainWithBasePathAsAggregateMember(t *testing.T) {
+	loopbackURL := "http://127.0.0.1:8080/mf-proxy-primary-ctx"
+	spec := &api.APIConfigData{
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{Main: api.Upstream{Url: &loopbackURL}},
+		UpstreamDefinitions: &[]api.UpstreamDefinition{{Name: "anthropic-alias", BasePath: strPtr("/mf-proxy-anthropic-ctx")}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{
+									"model": "gpt-4o", // defaults to main - which has a non-trivial basePath here
+									"fallbacks": []interface{}{
+										map[string]interface{}{"model": "claude-3-haiku", "upstreamDefinition": "anthropic-alias"},
+									},
+								},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := ValidateModelFailoverForOperations(spec)
+	if err == nil {
+		t.Fatal("expected an error - main upstream has a non-trivial basePath and this target has fallbacks, so it would be used as an aggregate-cluster member")
+	}
+}
+
+// A zero-fallback group defaulting to a basePath-carrying main upstream is safe (never routed
+// through an aggregate cluster) - this is exactly what makes it the ONLY way for LlmProxy to
+// use model-failover with its own primary provider, with no additionalProviders self-aliasing
+// needed at all.
+func TestValidateModelFailoverForOperations_ZeroFallbackDefaultsToMainWithBasePathPasses(t *testing.T) {
+	loopbackURL := "http://127.0.0.1:8080/mf-proxy-primary-ctx"
+	spec := &api.APIConfigData{
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{Main: api.Upstream{Url: &loopbackURL}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{"model": "gpt-4o"}, // defaults to main, no fallbacks
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateModelFailoverForOperations(spec); err != nil {
+		t.Errorf("expected no error - a zero-fallback group is never an aggregate-cluster member regardless of main's basePath, got: %v", err)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+func TestMainUpstreamBasePath(t *testing.T) {
+	t.Run("direct URL with a path", func(t *testing.T) {
+		u := "http://127.0.0.1:8080/mf-proxy-primary-ctx"
+		if got := mainUpstreamBasePath(api.Upstream{Url: &u}, nil); got != "/mf-proxy-primary-ctx" {
+			t.Errorf("expected '/mf-proxy-primary-ctx', got %q", got)
+		}
+	})
+	t.Run("direct URL with no path", func(t *testing.T) {
+		u := "http://backend.example.com:9711"
+		if got := mainUpstreamBasePath(api.Upstream{Url: &u}, nil); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+	t.Run("ref resolves to the referenced definition's basePath", func(t *testing.T) {
+		ref := "shared"
+		defs := []api.UpstreamDefinition{{Name: "shared", BasePath: strPtr("/some-path")}}
+		if got := mainUpstreamBasePath(api.Upstream{Ref: &ref}, &defs); got != "/some-path" {
+			t.Errorf("expected '/some-path', got %q", got)
+		}
+	})
+	t.Run("ref with no matching definition returns empty (caught elsewhere)", func(t *testing.T) {
+		ref := "missing"
+		defs := []api.UpstreamDefinition{{Name: "shared", BasePath: strPtr("/some-path")}}
+		if got := mainUpstreamBasePath(api.Upstream{Ref: &ref}, &defs); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
 }
