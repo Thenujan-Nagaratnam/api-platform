@@ -79,59 +79,76 @@ func ParseRetryConditions(raw map[string]interface{}, params map[string]interfac
 		if err != nil {
 			return nil, fmt.Errorf("on: %w", err)
 		}
-		rc.On = toStringSlice(resolved)
+		if resolved != nil {
+			rc.On = toStringSlice(resolved)
+		}
 	}
 	if v, ok := raw["statusCodes"]; ok {
 		resolved, err := resolveConditionField(v, params, schema)
 		if err != nil {
 			return nil, fmt.Errorf("statusCodes: %w", err)
 		}
-		codes, err := toIntSlice(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("statusCodes: %w", err)
+		if resolved != nil {
+			codes, err := toIntSlice(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("statusCodes: %w", err)
+			}
+			for i, code := range codes {
+				if code < 100 || code > 599 {
+					return nil, fmt.Errorf("statusCodes[%d] value %d is not a valid HTTP status code", i, code)
+				}
+			}
+			rc.StatusCodes = codes
 		}
-		rc.StatusCodes = codes
 	}
 	if v, ok := raw["minAttempts"]; ok {
 		resolved, err := resolveConditionField(v, params, schema)
 		if err != nil {
 			return nil, fmt.Errorf("minAttempts: %w", err)
 		}
-		n, err := toInt(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("minAttempts: %w", err)
+		if resolved != nil {
+			n, err := toInt(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("minAttempts: %w", err)
+			}
+			rc.MinAttempts = &n
 		}
-		rc.MinAttempts = &n
 	}
 	if v, ok := raw["numRetries"]; ok {
 		resolved, err := resolveConditionField(v, params, schema)
 		if err != nil {
 			return nil, fmt.Errorf("numRetries: %w", err)
 		}
-		n, err := toInt(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("numRetries: %w", err)
+		if resolved != nil {
+			n, err := toInt(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("numRetries: %w", err)
+			}
+			rc.NumRetries = &n
 		}
-		rc.NumRetries = &n
 	}
 	if v, ok := raw["perTryTimeout"]; ok {
 		resolved, err := resolveConditionField(v, params, schema)
 		if err != nil {
 			return nil, fmt.Errorf("perTryTimeout: %w", err)
 		}
-		d, err := toDuration(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("perTryTimeout: %w", err)
+		if resolved != nil {
+			d, err := toDuration(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("perTryTimeout: %w", err)
+			}
+			rc.PerTryTimeout = &d
 		}
-		rc.PerTryTimeout = &d
 	}
 	if v, ok := raw["avoidPreviousHosts"]; ok {
 		resolved, err := resolveConditionField(v, params, schema)
 		if err != nil {
 			return nil, fmt.Errorf("avoidPreviousHosts: %w", err)
 		}
-		if b, ok := resolved.(bool); ok {
-			rc.AvoidPreviousHosts = b
+		if resolved != nil {
+			if b, ok := resolved.(bool); ok {
+				rc.AvoidPreviousHosts = b
+			}
 		}
 	}
 	if v, ok := raw["backOff"]; ok {

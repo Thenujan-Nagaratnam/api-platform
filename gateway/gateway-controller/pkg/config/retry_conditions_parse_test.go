@@ -19,6 +19,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,5 +94,65 @@ func TestParseRetryConditions_EmptyRawYieldsZeroValue(t *testing.T) {
 	}
 	if len(rc.StatusCodes) != 0 || rc.MinAttempts != nil {
 		t.Errorf("expected zero-value RetryConditions for nil raw block, got %+v", rc)
+	}
+}
+
+func TestParseRetryConditions_AbsentFromParamNoDefault_YieldsEmptyContribution(t *testing.T) {
+	raw := map[string]interface{}{
+		"statusCodes": map[string]interface{}{"fromParam": "missingParam"},
+	}
+	rc, err := ParseRetryConditions(raw, map[string]interface{}{}, nil)
+	if err != nil {
+		t.Fatalf("expected an absent fromParam with no schema default to be a silent no-op, got error: %v", err)
+	}
+	if len(rc.StatusCodes) != 0 {
+		t.Errorf("expected no StatusCodes contributed, got %v", rc.StatusCodes)
+	}
+}
+
+func TestParseRetryConditions_AbsentFromParamNoDefault_AllFieldTypes(t *testing.T) {
+	raw := map[string]interface{}{
+		"on":                 map[string]interface{}{"fromParam": "missing1"},
+		"minAttempts":        map[string]interface{}{"fromParam": "missing2"},
+		"numRetries":         map[string]interface{}{"fromParam": "missing3"},
+		"perTryTimeout":      map[string]interface{}{"fromParam": "missing4"},
+		"avoidPreviousHosts": map[string]interface{}{"fromParam": "missing5"},
+	}
+	rc, err := ParseRetryConditions(raw, map[string]interface{}{}, nil)
+	if err != nil {
+		t.Fatalf("expected every absent-fromParam-no-default field to be a silent no-op, got error: %v", err)
+	}
+	if len(rc.On) != 0 || rc.MinAttempts != nil || rc.NumRetries != nil || rc.PerTryTimeout != nil || rc.AvoidPreviousHosts {
+		t.Errorf("expected a fully zero-value RetryConditions, got %+v", rc)
+	}
+}
+
+func TestParseRetryConditions_StatusCodeOutOfRange_Errors(t *testing.T) {
+	raw := map[string]interface{}{"statusCodes": []interface{}{700}}
+	_, err := ParseRetryConditions(raw, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error for an out-of-range status code (700)")
+	}
+	if !strings.Contains(err.Error(), "700") {
+		t.Errorf("expected error to mention the invalid code, got: %v", err)
+	}
+}
+
+func TestParseRetryConditions_StatusCodeBelowMinimum_Errors(t *testing.T) {
+	raw := map[string]interface{}{"statusCodes": []interface{}{50}}
+	_, err := ParseRetryConditions(raw, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error for a below-minimum status code (50)")
+	}
+}
+
+func TestParseRetryConditions_StatusCodeInRange_StillWorks(t *testing.T) {
+	raw := map[string]interface{}{"statusCodes": []interface{}{401, 599, 100}}
+	rc, err := ParseRetryConditions(raw, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error for valid boundary values: %v", err)
+	}
+	if len(rc.StatusCodes) != 3 {
+		t.Errorf("expected all 3 valid codes to pass through, got %v", rc.StatusCodes)
 	}
 }
