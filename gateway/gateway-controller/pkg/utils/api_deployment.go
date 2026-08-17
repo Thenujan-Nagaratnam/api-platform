@@ -84,6 +84,22 @@ type APIDeploymentService struct {
 	secretResolver  funcs.SecretResolver
 }
 
+// retrySourceResolver reaches the startup-loaded policy definitions through the configured
+// validator, which already holds them (main.go wires the same PolicyValidator into both).
+// The config.Validator interface deliberately exposes only Validate, so this narrows to the
+// concrete accessor when present. Returns nil for a service built without a policy-aware
+// validator, which config.ValidateRetrySourcesForOperations treats as "nothing to discover" —
+// correct, since without policy definitions no policy can declare a retry source.
+func (s *APIDeploymentService) retrySourceResolver() config.RetrySourceResolver {
+	provider, ok := s.validator.(interface {
+		PolicyValidator() *config.PolicyValidator
+	})
+	if !ok {
+		return nil
+	}
+	return provider.PolicyValidator().RetrySourceResolver()
+}
+
 func (s *APIDeploymentService) validateArtifactConflicts(kind, currentID, displayName, version, handle string) error {
 	existingByNameVersion, err := s.db.GetConfigByKindNameAndVersion(kind, displayName, version)
 	if err == nil {
@@ -327,6 +343,13 @@ func (s *APIDeploymentService) DeployAPIConfiguration(params APIDeploymentParams
 		if len(validationErrors) > 0 {
 			s.logValidationErrors(params.Logger, apiID, apiName, validationErrors)
 			return nil, &ValidationErrorListError{Errors: validationErrors}
+		}
+		// Retry-source registration-time validation — see the identical call in
+		// llm_deployment.go's DeployLLMProxyConfiguration for the full rationale. A plain
+		// RestAPI can carry a retry-source policy too, so this same synchronous check
+		// applies here, before persisting, not only from the async xDS transform.
+		if err := config.ValidateRetrySourcesForOperations(&c.Spec, s.retrySourceResolver()); err != nil {
+			return nil, fmt.Errorf("retry-source validation failed: %w", err)
 		}
 		// Write c back: validateRestAPIConfiguration coerces rendered-template strings
 		// in policy params (e.g. "100" → float64(100) for integer params). The type

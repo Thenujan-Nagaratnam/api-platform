@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 )
 
 // TestNewLLMValidator tests the constructor
@@ -587,9 +588,12 @@ func TestValidateLLMProvider_Valid(t *testing.T) {
 					Upstream: api.LLMProviderConfigData_Upstream{
 						Url: stringPtr("https://api.openai.com"),
 						Auth: &struct {
-							Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-							Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-							Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+							Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+							PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+							PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+							PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+							Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+							Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 						}{
 							Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 							Header: stringPtr("Authorization"),
@@ -1253,9 +1257,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 	tests := []struct {
 		name string
 		auth *struct {
-			Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-			Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-			Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+			Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+			PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+			PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+			PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+			Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+			Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 		}
 		expectError bool
 		errorField  string
@@ -1264,9 +1271,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 		{
 			name: "missing auth type",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
 				Type:   "",
 				Header: stringPtr("Authorization"),
@@ -1279,9 +1289,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 		{
 			name: "invalid auth type",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
 				Type:   "bearer",
 				Header: stringPtr("Authorization"),
@@ -1294,9 +1307,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 		{
 			name: "api-key without header",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
 				Type:  api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 				Value: stringPtr("sk-test"),
@@ -1308,9 +1324,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 		{
 			name: "api-key with empty header",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
 				Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 				Header: stringPtr(""),
@@ -1323,9 +1342,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 		{
 			name: "api-key without value",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
 				Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 				Header: stringPtr("Authorization"),
@@ -1337,9 +1359,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 		{
 			name: "api-key with empty value",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
 				Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 				Header: stringPtr("Authorization"),
@@ -1352,9 +1377,12 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 		{
 			name: "valid api-key auth",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
 				Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
 				Header: stringPtr("Authorization"),
@@ -1363,24 +1391,161 @@ func TestValidateLLMProvider_UpstreamAuth(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid other auth without header or value",
+			name: "oauth2 without policyParams",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
-				Type: api.LLMProviderConfigDataUpstreamAuthTypeOther,
+				Type: api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+			},
+			expectError: true,
+			errorField:  "spec.upstream.auth.policyParams",
+			errorPart:   "required",
+		},
+		{
+			name: "valid oauth2 auth via policyParams",
+			auth: &struct {
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+			}{
+				Type: api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				PolicyParams: &map[string]interface{}{
+					"tokenEndpoint": "https://idp.example.com/oauth2/token",
+					"clientId":      "client-id",
+					"clientSecret":  "client-secret",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "oauth2 with policyName override and policyVersion",
+			auth: &struct {
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+			}{
+				Type:          api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				PolicyName:    stringPtr("my-oauth2-fork"),
+				PolicyVersion: stringPtr("v2"),
+				PolicyParams: &map[string]interface{}{
+					"bearerToken": "static-token",
+				},
 			},
 			expectError: false,
 		},
 		{
 			name: "valid none auth without header or value",
 			auth: &struct {
-				Header *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
-				Type   api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
-				Value  *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
 			}{
 				Type: api.LLMProviderConfigDataUpstreamAuthTypeNone,
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid policyVersion format",
+			auth: &struct {
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+			}{
+				Type:          api.LLMProviderConfigDataUpstreamAuthTypeOauth2,
+				PolicyVersion: stringPtr("v1.0.0"),
+				PolicyParams: &map[string]interface{}{
+					"bearerToken": "static-token",
+				},
+			},
+			expectError: true,
+			errorField:  "spec.upstream.auth.policyVersion",
+			errorPart:   "major-only",
+		},
+		{
+			name: "api-key with both header/value and policyParams",
+			auth: &struct {
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+			}{
+				Type:   api.LLMProviderConfigDataUpstreamAuthTypeApiKey,
+				Header: stringPtr("Authorization"),
+				Value:  stringPtr("Bearer sk-test"),
+				PolicyParams: &map[string]interface{}{
+					"request": map[string]interface{}{"headers": []interface{}{}},
+				},
+			},
+			expectError: true,
+			errorField:  "spec.upstream.auth.policyParams",
+			errorPart:   "cannot be combined",
+		},
+		{
+			name: "other without policyName",
+			auth: &struct {
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+			}{
+				Type:         api.LLMProviderConfigDataUpstreamAuthTypeOther,
+				PolicyParams: &map[string]interface{}{"foo": "bar"},
+			},
+			expectError: true,
+			errorField:  "spec.upstream.auth.policyName",
+			errorPart:   "required",
+		},
+		{
+			name: "other without policyParams",
+			auth: &struct {
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+			}{
+				Type:       api.LLMProviderConfigDataUpstreamAuthTypeOther,
+				PolicyName: stringPtr("my-custom-auth-policy"),
+			},
+			expectError: true,
+			errorField:  "spec.upstream.auth.policyParams",
+			errorPart:   "required",
+		},
+		{
+			name: "valid other auth",
+			auth: &struct {
+				Header        *string                                   `json:"header,omitempty" yaml:"header,omitempty"`
+				PolicyName    *string                                   `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+				PolicyParams  *map[string]interface{}                   `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+				PolicyVersion *string                                   `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+				Type          api.LLMProviderConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+				Value         *string                                   `json:"value,omitempty" yaml:"value,omitempty"`
+			}{
+				Type:         api.LLMProviderConfigDataUpstreamAuthTypeOther,
+				PolicyName:   stringPtr("my-custom-auth-policy"),
+				PolicyParams: &map[string]interface{}{"foo": "bar"},
 			},
 			expectError: false,
 		},
@@ -1994,6 +2159,21 @@ func TestValidateLLMProvider_Resilience(t *testing.T) {
 		errs := validator.Validate(validProviderWithResilience(&api.Resilience{IdleTimeout: stringPtr("abc")}))
 		assertHasFieldError(t, errs, "spec.resilience.idleTimeout")
 	})
+
+	t.Run("retry with empty statusCodes is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProviderWithResilience(&api.Resilience{
+			Retry: &api.Retry{StatusCodes: []int{}},
+		}))
+		assertHasFieldError(t, errs, "spec.resilience.retry.statusCodes")
+	})
+
+	t.Run("retry with valid statusCodes and numRetries is accepted", func(t *testing.T) {
+		numRetries := 2
+		errs := validator.Validate(validProviderWithResilience(&api.Resilience{
+			Retry: &api.Retry{StatusCodes: []int{401, 503}, NumRetries: &numRetries},
+		}))
+		assert.Empty(t, errs)
+	})
 }
 
 func TestValidateLLMProxy_Resilience(t *testing.T) {
@@ -2017,6 +2197,100 @@ func TestValidateLLMProxy_Resilience(t *testing.T) {
 	t.Run("negative idleTimeout is rejected", func(t *testing.T) {
 		errs := validator.Validate(validProxyWithResilience(&api.Resilience{IdleTimeout: stringPtr("-1s")}))
 		assertHasFieldError(t, errs, "spec.resilience.idleTimeout")
+	})
+
+	t.Run("retry with empty statusCodes is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithResilience(&api.Resilience{
+			Retry: &api.Retry{StatusCodes: []int{}},
+		}))
+		assertHasFieldError(t, errs, "spec.resilience.retry.statusCodes")
+	})
+
+	t.Run("retry with valid statusCodes and numRetries is accepted", func(t *testing.T) {
+		numRetries := 2
+		errs := validator.Validate(validProxyWithResilience(&api.Resilience{
+			Retry: &api.Retry{StatusCodes: []int{401, 503}, NumRetries: &numRetries},
+		}))
+		assert.Empty(t, errs)
+	})
+}
+
+// validProxyWithAuth builds an LlmProxy whose primary provider.auth is set - the
+// shared entry point for both validateLLMUpstreamAuth call sites is exercised
+// separately below via additionalProviders.
+func validProxyWithAuth(auth *api.LLMUpstreamAuth) api.LLMProxyConfiguration {
+	return api.LLMProxyConfiguration{
+		ApiVersion: api.LLMProxyConfigurationApiVersionGatewayApiPlatformWso2Comv1,
+		Kind:       api.LLMProxyConfigurationKindLlmProxy,
+		Metadata:   api.Metadata{Name: "openai-proxy"},
+		Spec: api.LLMProxyConfigData{
+			DisplayName: "my-proxy",
+			Version:     "v1.0",
+			Provider:    api.LLMProxyProvider{Id: "openai", Auth: auth},
+		},
+	}
+}
+
+// TestValidateLLMProxy_ProviderAuth covers validateLLMUpstreamAuth, the
+// LlmProxy-side counterpart to validateUpstreamWithAuth's LlmProvider
+// upstream.auth handling - previously exercised by no test at all (0%
+// coverage), even though it shares validateUpstreamAuthFields with the
+// LlmProvider/Mcp paths that were already covered.
+func TestValidateLLMProxy_ProviderAuth(t *testing.T) {
+	validator := NewLLMValidator()
+
+	t.Run("oauth2 with policyParams is valid", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithAuth(&api.LLMUpstreamAuth{
+			Type:         "oauth2",
+			PolicyParams: &map[string]interface{}{"tokenEndpoint": "https://idp.example.com/token"},
+		}))
+		assert.Empty(t, errs)
+	})
+
+	t.Run("oauth2 without policyParams is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithAuth(&api.LLMUpstreamAuth{Type: "oauth2"}))
+		assertHasFieldError(t, errs, "spec.provider.auth.policyParams")
+	})
+
+	t.Run("other without policyName is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithAuth(&api.LLMUpstreamAuth{
+			Type:         "other",
+			PolicyParams: &map[string]interface{}{"foo": "bar"},
+		}))
+		assertHasFieldError(t, errs, "spec.provider.auth.policyName")
+	})
+
+	t.Run("nil auth is fine", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithAuth(nil))
+		assert.Empty(t, errs)
+	})
+}
+
+// TestValidateLLMProxy_AdditionalProviderAuth covers the second
+// validateLLMUpstreamAuth call site (spec.additionalProviders[].auth),
+// distinct from the primary provider's - also previously untested.
+func TestValidateLLMProxy_AdditionalProviderAuth(t *testing.T) {
+	validator := NewLLMValidator()
+
+	proxyWithAdditional := func(auth *api.LLMUpstreamAuth) api.LLMProxyConfiguration {
+		p := validProxyWithAuth(nil)
+		p.Spec.AdditionalProviders = &[]api.LLMProxyAdditionalProvider{
+			{Id: "anthropic", Auth: auth},
+		}
+		return p
+	}
+
+	t.Run("oauth2 with policyParams is valid", func(t *testing.T) {
+		errs := validator.Validate(proxyWithAdditional(&api.LLMUpstreamAuth{
+			Type:         "oauth2",
+			PolicyParams: &map[string]interface{}{"tokenEndpoint": "https://idp.example.com/token"},
+		}))
+		assert.Empty(t, errs)
+	})
+
+	t.Run("oauth2 without policyParams is rejected on the additional provider's own field path", func(t *testing.T) {
+		errs := validator.Validate(proxyWithAdditional(&api.LLMUpstreamAuth{Type: "oauth2"}))
+		assertHasFieldError(t, errs, "spec.additionalProviders[0].auth.policyParams")
 	})
 }
 
@@ -2119,5 +2393,278 @@ func TestValidateLLMProvider_UpstreamRef(t *testing.T) {
 	t.Run("url with surrounding whitespace is accepted", func(t *testing.T) {
 		errs := validator.Validate(providerWithUpstream(nil, api.LLMProviderConfigData_Upstream{Url: stringPtr("  https://api.openai.com  ")}))
 		assert.Empty(t, errs)
+	})
+}
+
+func TestValidateModelFailoverPolicy_RejectsCoexistenceWithResilienceRetry(t *testing.T) {
+	// model-failover declares retry-source ownership, so a route with it plus
+	// resilience.retry has retrySourceCount=1 and a non-nil retry — the same
+	// conflict ValidateAtMostOneRetrySourcePerRoute rejects generically now
+	// (see TestValidateAtMostOneRetrySourcePerRoute_RejectsDeclarationPlusResilienceRetry).
+	retry := &api.Retry{StatusCodes: []int{401}}
+	if err := ValidateAtMostOneRetrySourcePerRoute(1, retry); err == nil {
+		t.Error("expected an error when both model-failover and resilience.retry are configured on the same route")
+	}
+	if err := ValidateAtMostOneRetrySourcePerRoute(1, nil); err != nil {
+		t.Errorf("expected no error when resilience.retry is absent, got: %v", err)
+	}
+}
+
+// retrySourceTestResolver builds the generic resolver over a policy-definition registry in
+// which "model-failover" declares x-wso2-retry-source — i.e. exactly what Task 11 ships in
+// that policy's own policy-definition.yaml. Every case below therefore exercises the generic
+// discovery path (metadata lookup, not a name match) while asserting the same verdicts the
+// name-matching implementation used to reach.
+func retrySourceTestResolver() RetrySourceResolver {
+	defs := map[string]models.PolicyDefinition{
+		"model-failover|v1.0.0": {
+			Name:        "model-failover",
+			Version:     "v1.0.0",
+			RetrySource: &models.RetrySourceMetadata{GroupKeyField: "model"},
+		},
+		"some-other-policy|v1.0.0": {Name: "some-other-policy", Version: "v1.0.0"},
+	}
+	return NewRetrySourceResolver(defs, BuildLatestVersionIndex(defs))
+}
+
+// Regression test for a confirmed-live gap: registering an LlmProxy whose model-failover
+// config used a basePath-carrying upstreamDefinition (an additionalProviders alias) as an
+// aggregate-cluster member returned HTTP 201 — the only enforcement was the async xDS
+// transform, which runs off the request thread and never surfaces its error to the caller.
+// The route was then silently persisted and 500'd on every real invocation.
+// ValidateModelFailoverForOperations is the fix: it must be called synchronously, before
+// persisting, from every deploy path (LlmProvider, LlmProxy, plain RestAPI).
+func TestValidateRetrySourcesForOperations_RejectsBasePathAggregateMember(t *testing.T) {
+	basePath := "/some-alias-ctx"
+	spec := &api.APIConfigData{
+		UpstreamDefinitions: &[]api.UpstreamDefinition{
+			{Name: "openai-alias", BasePath: &basePath},
+			{Name: "anthropic-alias", BasePath: &basePath},
+		},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{
+									"model":              "gpt-4o",
+									"upstreamDefinition": "openai-alias",
+									"fallbacks": []interface{}{
+										map[string]interface{}{"model": "claude-3-haiku", "upstreamDefinition": "anthropic-alias"},
+									},
+								},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := ValidateRetrySourcesForOperations(spec, retrySourceTestResolver())
+	if err == nil {
+		t.Fatal("expected an error for a basePath-carrying upstreamDefinition used as an aggregate-cluster member, got nil")
+	}
+}
+
+func TestValidateRetrySourcesForOperations_RejectsUndeclaredUpstreamReference(t *testing.T) {
+	spec := &api.APIConfigData{
+		UpstreamDefinitions: &[]api.UpstreamDefinition{{Name: "primary"}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "does-not-exist"},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := ValidateRetrySourcesForOperations(spec, retrySourceTestResolver())
+	if err == nil {
+		t.Fatal("expected an error for a target referencing an undeclared upstreamDefinition, got nil")
+	}
+}
+
+func TestValidateRetrySourcesForOperations_ValidZeroFallbackConfigPasses(t *testing.T) {
+	spec := &api.APIConfigData{
+		UpstreamDefinitions: &[]api.UpstreamDefinition{{Name: "primary"}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "primary"},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateRetrySourcesForOperations(spec, retrySourceTestResolver()); err != nil {
+		t.Errorf("expected no error for a valid zero-fallback config, got: %v", err)
+	}
+}
+
+func TestValidateRetrySourcesForOperations_NoModelFailoverPolicyIsNoOp(t *testing.T) {
+	spec := &api.APIConfigData{
+		Operations: []api.Operation{{Policies: &[]api.Policy{{Name: "some-other-policy"}}}},
+	}
+	if err := ValidateRetrySourcesForOperations(spec, retrySourceTestResolver()); err != nil {
+		t.Errorf("expected no error when no operation has a model-failover policy, got: %v", err)
+	}
+	if err := ValidateRetrySourcesForOperations(nil, retrySourceTestResolver()); err != nil {
+		t.Errorf("expected no error for a nil spec, got: %v", err)
+	}
+}
+
+// The minimal, common-case config: no upstreamDefinitions declared at all, and every
+// target/fallback omits upstreamDefinition - everything defaults to the API's own main
+// upstream, exactly the backend used with no model-failover configured at all.
+func TestValidateRetrySourcesForOperations_DefaultsToMainWhenUpstreamDefinitionOmitted(t *testing.T) {
+	mainURL := "http://backend.example.com:9711"
+	spec := &api.APIConfigData{
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{Main: api.Upstream{Url: &mainURL}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{
+									"model": "gpt-4o",
+									"fallbacks": []interface{}{
+										map[string]interface{}{"model": "gpt-4o-mini"},
+									},
+								},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateRetrySourcesForOperations(spec, retrySourceTestResolver()); err != nil {
+		t.Errorf("expected no error for the minimal config (no upstreamDefinitions, no explicit references), got: %v", err)
+	}
+}
+
+// LlmProxy's own main upstream is ALWAYS loopback-routed with the provider's context baked
+// into its URL path (see llm_transformer.go's transformProxy) - structurally identical to an
+// additionalProviders alias's BasePath. A group that has fallbacks and defaults to that main
+// upstream must be rejected the exact same way an explicit BasePath-carrying upstreamDefinition
+// reference would be.
+func TestValidateRetrySourcesForOperations_RejectsMainWithBasePathAsAggregateMember(t *testing.T) {
+	loopbackURL := "http://127.0.0.1:8080/mf-proxy-primary-ctx"
+	spec := &api.APIConfigData{
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{Main: api.Upstream{Url: &loopbackURL}},
+		UpstreamDefinitions: &[]api.UpstreamDefinition{{Name: "anthropic-alias", BasePath: strPtr("/mf-proxy-anthropic-ctx")}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{
+									"model": "gpt-4o", // defaults to main - which has a non-trivial basePath here
+									"fallbacks": []interface{}{
+										map[string]interface{}{"model": "claude-3-haiku", "upstreamDefinition": "anthropic-alias"},
+									},
+								},
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := ValidateRetrySourcesForOperations(spec, retrySourceTestResolver())
+	if err == nil {
+		t.Fatal("expected an error - main upstream has a non-trivial basePath and this target has fallbacks, so it would be used as an aggregate-cluster member")
+	}
+}
+
+// A zero-fallback group defaulting to a basePath-carrying main upstream is safe (never routed
+// through an aggregate cluster) - this is exactly what makes it the ONLY way for LlmProxy to
+// use model-failover with its own primary provider, with no additionalProviders self-aliasing
+// needed at all.
+func TestValidateRetrySourcesForOperations_ZeroFallbackDefaultsToMainWithBasePathPasses(t *testing.T) {
+	loopbackURL := "http://127.0.0.1:8080/mf-proxy-primary-ctx"
+	spec := &api.APIConfigData{
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{Main: api.Upstream{Url: &loopbackURL}},
+		Operations: []api.Operation{
+			{
+				Policies: &[]api.Policy{
+					{
+						Name: "model-failover",
+						Params: &map[string]interface{}{
+							"targets": []interface{}{
+								map[string]interface{}{"model": "gpt-4o"}, // defaults to main, no fallbacks
+							},
+							"statusCodes": []interface{}{float64(500)},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateRetrySourcesForOperations(spec, retrySourceTestResolver()); err != nil {
+		t.Errorf("expected no error - a zero-fallback group is never an aggregate-cluster member regardless of main's basePath, got: %v", err)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+func TestMainUpstreamBasePath(t *testing.T) {
+	t.Run("direct URL with a path", func(t *testing.T) {
+		u := "http://127.0.0.1:8080/mf-proxy-primary-ctx"
+		if got := mainUpstreamBasePath(api.Upstream{Url: &u}, nil); got != "/mf-proxy-primary-ctx" {
+			t.Errorf("expected '/mf-proxy-primary-ctx', got %q", got)
+		}
+	})
+	t.Run("direct URL with no path", func(t *testing.T) {
+		u := "http://backend.example.com:9711"
+		if got := mainUpstreamBasePath(api.Upstream{Url: &u}, nil); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+	t.Run("ref resolves to the referenced definition's basePath", func(t *testing.T) {
+		ref := "shared"
+		defs := []api.UpstreamDefinition{{Name: "shared", BasePath: strPtr("/some-path")}}
+		if got := mainUpstreamBasePath(api.Upstream{Ref: &ref}, &defs); got != "/some-path" {
+			t.Errorf("expected '/some-path', got %q", got)
+		}
+	})
+	t.Run("ref with no matching definition returns empty (caught elsewhere)", func(t *testing.T) {
+		ref := "missing"
+		defs := []api.UpstreamDefinition{{Name: "shared", BasePath: strPtr("/some-path")}}
+		if got := mainUpstreamBasePath(api.Upstream{Ref: &ref}, &defs); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
 	})
 }

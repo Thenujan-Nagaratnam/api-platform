@@ -18,6 +18,33 @@
 
 package models
 
+// RetrySourceMetadata is a policy-definition.yaml's x-wso2-retry-source
+// declaration: this policy's params describe one or more
+// independently-selectable failover chains, in the fixed structural shape
+// ParseRetrySourceParams understands (targets: [{<GroupKeyField>: string,
+// upstreamDefinition: string, fallbacks: [{upstreamDefinition: string}]}],
+// statusCodes: [int]).
+type RetrySourceMetadata struct {
+	// GroupKeyField names which field in each targets[] entry
+	// gateway-controller treats as the group's opaque discriminator (e.g.
+	// "model" for model-failover). Required when RetrySource is non-nil.
+	GroupKeyField string `json:"groupKeyField" yaml:"groupKeyField"`
+}
+
+// RetryTriggerMetadata is a policy-definition.yaml's x-wso2-retry-trigger
+// declaration: this policy's params contribute retry conditions without
+// owning destination selection.
+type RetryTriggerMetadata struct {
+	// StatusCodesField names which top-level field in this policy's params
+	// holds the array of retriable status codes (e.g.
+	// "tokenPurgeStatusCodes" for oauth2-generator).
+	StatusCodesField string `json:"statusCodesField" yaml:"statusCodesField"`
+
+	// MinAttempts is a fixed constant (not read from params) — the minimum
+	// total attempts this policy needs to get value from retrying.
+	MinAttempts int `json:"minAttempts" yaml:"minAttempts"`
+}
+
 // PolicyDefinition represents the definition/schema of a policy
 type PolicyDefinition struct {
 	Name             string                  `json:"name" yaml:"name"`
@@ -27,4 +54,17 @@ type PolicyDefinition struct {
 	Parameters       *map[string]interface{} `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 	SystemParameters *map[string]interface{} `json:"systemParameters,omitempty" yaml:"systemParameters,omitempty"`
 	ManagedBy        string                  `json:"managedBy" yaml:"managedBy,omitempty"`
+
+	// RetrySource is non-nil when this policy's policy-definition.yaml
+	// declares x-wso2-retry-source.
+	RetrySource *RetrySourceMetadata `json:"x-wso2-retry-source,omitempty" yaml:"x-wso2-retry-source,omitempty"`
+
+	// RetryTrigger is non-nil when this policy's policy-definition.yaml
+	// declares x-wso2-retry-trigger.
+	RetryTrigger *RetryTriggerMetadata `json:"x-wso2-retry-trigger,omitempty" yaml:"x-wso2-retry-trigger,omitempty"`
+
+	// UpstreamResponseObserver is true when this policy's
+	// policy-definition.yaml declares x-wso2-upstream-response-observer:
+	// true — see Task 8.
+	UpstreamResponseObserver bool `json:"x-wso2-upstream-response-observer,omitempty" yaml:"x-wso2-upstream-response-observer,omitempty"`
 }

@@ -213,6 +213,18 @@ func (pv *PolicyValidator) resolvePolicyVersion(name, version string) (string, e
 	return ResolvePolicyVersion(pv.policyDefinitions, pv.latestVersions, name, version)
 }
 
+// RetrySourceResolver exposes this validator's already-loaded policy definitions
+// as the resolver ValidateRetrySourcesForOperations needs, so a deploy path that
+// already holds a PolicyValidator doesn't have to be re-plumbed with a second
+// copy of the same registry. Nil-safe: a nil validator yields a nil resolver,
+// which ValidateRetrySourcesForOperations treats as "nothing to discover".
+func (pv *PolicyValidator) RetrySourceResolver() RetrySourceResolver {
+	if pv == nil {
+		return nil
+	}
+	return NewRetrySourceResolver(pv.policyDefinitions, pv.latestVersions)
+}
+
 // ResolvePolicyVersion resolves a policy version using the given definitions map.
 // Only major-only versions (e.g., v1) are accepted; they are resolved to the
 // unique full version (vX.Y.Z) for that policy name. Full semantic version

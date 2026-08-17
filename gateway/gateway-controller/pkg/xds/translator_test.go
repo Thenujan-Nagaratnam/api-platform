@@ -19,6 +19,8 @@
 package xds
 
 import (
+	"fmt"
+	"log/slog"
 	"math"
 	"net/url"
 	"regexp"
@@ -32,12 +34,16 @@ import (
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	tracev3 "github.com/envoyproxy/go-control-plane/envoy/config/trace/v3"
+	aggregatev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/aggregate/v3"
+	extproc "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
 	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
 	metadatav3 "github.com/envoyproxy/go-control-plane/envoy/type/metadata/v3"
 	tracingv3 "github.com/envoyproxy/go-control-plane/envoy/type/tracing/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	resource "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,6 +52,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 func TestResolveUpstreamDefinition_Found(t *testing.T) {
@@ -170,7 +177,7 @@ func TestResolveUpstreamCluster_WithDirectURL(t *testing.T) {
 		Url: &url,
 	}
 
-	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("main", upstream, nil)
+	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("main", upstream, nil, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 
 	require.NoError(t, err)
 	assert.Equal(t, "cluster_http_backend_8080", clusterName)
@@ -182,7 +189,7 @@ func TestResolveUpstreamCluster_WithDirectURL(t *testing.T) {
 }
 
 func TestResolveUpstreamCluster_WithRef_WithTimeout(t *testing.T) {
-	translator := &Translator{}
+	translator := NewTranslator(createTestLogger(), testRouterConfig(), nil, testConfig())
 	ref := "my-upstream"
 	timeoutStr := "45s"
 	basePath := "/v2"
@@ -207,10 +214,15 @@ func TestResolveUpstreamCluster_WithRef_WithTimeout(t *testing.T) {
 		},
 	}
 
-	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("main", upstream, definitions)
+	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("main", upstream, definitions, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 
 	require.NoError(t, err)
-	assert.Equal(t, "cluster_http_backend-1_9000", clusterName)
+	// A ref-based upstream now resolves to the SAME named-definition cluster the
+	// UpstreamDefinitions loop would build (constants.UpstreamDefinitionClusterPrefix +
+	// kind + "_" + apiID + "_" + sanitizedName), not the old host+scheme-keyed name — see
+	// resolveOrCreateUpstreamDefinitionCluster. This is what makes dedup possible: the same
+	// named target reached both via ref and via upstreamDefinitions must resolve to one name.
+	assert.Equal(t, "upstream_RestApi_test-uuid_my-upstream", clusterName)
 	assert.NotNil(t, parsedURL)
 	assert.Equal(t, "http", parsedURL.Scheme)
 	assert.Equal(t, "backend-1:9000", parsedURL.Host)
@@ -221,7 +233,7 @@ func TestResolveUpstreamCluster_WithRef_WithTimeout(t *testing.T) {
 }
 
 func TestResolveUpstreamCluster_WithRef_NoTimeout(t *testing.T) {
-	translator := &Translator{}
+	translator := NewTranslator(createTestLogger(), testRouterConfig(), nil, testConfig())
 	ref := "my-upstream"
 	upstream := &api.Upstream{
 		Ref: &ref,
@@ -240,10 +252,10 @@ func TestResolveUpstreamCluster_WithRef_NoTimeout(t *testing.T) {
 		},
 	}
 
-	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("main", upstream, definitions)
+	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("main", upstream, definitions, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 
 	require.NoError(t, err)
-	assert.Equal(t, "cluster_http_backend_8080", clusterName)
+	assert.Equal(t, "upstream_RestApi_test-uuid_my-upstream", clusterName)
 	assert.NotNil(t, parsedURL)
 	assert.Nil(t, timeout, "No timeout in definition should result in nil timeout")
 }
@@ -268,7 +280,7 @@ func TestResolveUpstreamCluster_WithRef_NotFound(t *testing.T) {
 		},
 	}
 
-	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, definitions)
+	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, definitions, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to resolve main upstream ref")
@@ -299,7 +311,7 @@ func TestResolveUpstreamCluster_WithRef_InvalidTimeout(t *testing.T) {
 		},
 	}
 
-	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, definitions)
+	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, definitions, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid timeout in upstream definition")
@@ -321,7 +333,7 @@ func TestResolveUpstreamCluster_WithRef_NoURLs(t *testing.T) {
 		},
 	}
 
-	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, definitions)
+	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, definitions, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "has no URLs configured")
@@ -331,7 +343,7 @@ func TestResolveUpstreamCluster_NoURLOrRef(t *testing.T) {
 	translator := &Translator{}
 	upstream := &api.Upstream{}
 
-	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, nil)
+	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, nil, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no main upstream configured")
@@ -344,7 +356,7 @@ func TestResolveUpstreamCluster_InvalidURL(t *testing.T) {
 		Url: &invalidURL,
 	}
 
-	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, nil)
+	_, _, _, err := translator.resolveUpstreamCluster("main", upstream, nil, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid main upstream URL")
@@ -841,6 +853,56 @@ func TestTranslator_RouteResilienceTimeoutsFromRDC(t *testing.T) {
 			assert.Equal(t, tt.wantIdle, r.GetRoute().GetIdleTimeout().AsDuration(), "route idle timeout")
 		})
 	}
+}
+
+// TestTranslator_CreateRouteFromRDC_ResilienceRetryEmitsNativeRetryPolicy verifies that the
+// RuntimeDeployConfig path (used by RestApi/LLM kinds, see RestAPITransformer) also emits a
+// native Envoy RouteAction.RetryPolicy from a resolved models.RouteTimeout.Retry, and leaves
+// RetryPolicy nil when resilience.retry was not configured.
+func TestTranslator_CreateRouteFromRDC_ResilienceRetryEmitsNativeRetryPolicy(t *testing.T) {
+	logger := createTestLogger()
+	routerCfg := testRouterConfig()
+	cfg := testConfig()
+	translator := NewTranslator(logger, routerCfg, nil, cfg)
+
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"main": {Endpoints: []models.Endpoint{{Host: "echo", Port: 80}}},
+		},
+	}
+
+	t.Run("retry configured", func(t *testing.T) {
+		numRetries := 2
+		rdcRoute := &models.Route{
+			Method:          "GET",
+			Path:            "/api/v1.0/items",
+			OperationPath:   "/items",
+			AutoHostRewrite: true,
+			Timeout:         &models.RouteTimeout{Retry: &api.Retry{StatusCodes: []int{401, 503}, NumRetries: &numRetries}},
+			Upstream:        models.RouteUpstream{ClusterKey: "main"},
+		}
+		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
+		require.NotNil(t, r)
+		rp := r.GetRoute().GetRetryPolicy()
+		require.NotNil(t, rp)
+		assert.Equal(t, "retriable-status-codes", rp.RetryOn)
+		require.NotNil(t, rp.NumRetries)
+		assert.EqualValues(t, 2, rp.NumRetries.Value)
+		assert.Equal(t, []uint32{401, 503}, rp.RetriableStatusCodes)
+	})
+
+	t.Run("retry not configured", func(t *testing.T) {
+		rdcRoute := &models.Route{
+			Method:          "GET",
+			Path:            "/api/v1.0/items",
+			OperationPath:   "/items",
+			AutoHostRewrite: true,
+			Upstream:        models.RouteUpstream{ClusterKey: "main"},
+		}
+		r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
+		require.NotNil(t, r)
+		assert.Nil(t, r.GetRoute().GetRetryPolicy())
+	})
 }
 
 // TestTranslator_MCPUpstreamRewriteFromRDC verifies the MCP "/mcp"-not-appended behavior on the
@@ -1609,6 +1671,304 @@ func TestTranslator_CreateExtProcFilter(t *testing.T) {
 	})
 }
 
+func TestTranslator_CreateUpstreamRefreshExtProcCluster(t *testing.T) {
+	logger := createTestLogger()
+
+	t.Run("UDS mode (default)", func(t *testing.T) {
+		routerCfg := testRouterConfig()
+		routerCfg.PolicyEngine = config.PolicyEngineConfig{
+			Mode:             "uds",
+			TimeoutMs:        1000,
+			MessageTimeoutMs: 500,
+		}
+		cfg := testConfig()
+		cfg.Router = *routerCfg
+		translator := NewTranslator(logger, routerCfg, nil, cfg)
+
+		c := translator.createUpstreamRefreshExtProcCluster()
+		require.NotNil(t, c)
+		assert.Equal(t, constants.UpstreamRefreshPolicyEngineClusterName, c.Name)
+		assert.Equal(t, cluster.Cluster_STATIC, c.ClusterDiscoveryType.(*cluster.Cluster_Type).Type)
+
+		lbEndpoint := c.LoadAssignment.Endpoints[0].LbEndpoints[0]
+		pipe := lbEndpoint.GetEndpoint().Address.GetPipe()
+		require.NotNil(t, pipe, "expected Pipe address for UDS mode")
+		assert.Equal(t, constants.DefaultUpstreamExtProcSocketPath, pipe.Path)
+		// Must be a distinct socket from the main downstream ext_proc server.
+		assert.NotEqual(t, constants.DefaultPolicyEngineSocketPath, pipe.Path)
+	})
+
+	t.Run("TCP mode with host:port", func(t *testing.T) {
+		routerCfg := testRouterConfig()
+		routerCfg.PolicyEngine = config.PolicyEngineConfig{
+			Mode:                "tcp",
+			Host:                "policy-engine",
+			Port:                9001,
+			UpstreamRefreshPort: 9004,
+			TimeoutMs:           1000,
+			MessageTimeoutMs:    500,
+		}
+		cfg := testConfig()
+		cfg.Router = *routerCfg
+		translator := NewTranslator(logger, routerCfg, nil, cfg)
+
+		c := translator.createUpstreamRefreshExtProcCluster()
+		require.NotNil(t, c)
+		assert.Equal(t, cluster.Cluster_STRICT_DNS, c.ClusterDiscoveryType.(*cluster.Cluster_Type).Type)
+
+		lbEndpoint := c.LoadAssignment.Endpoints[0].LbEndpoints[0]
+		socketAddr := lbEndpoint.GetEndpoint().Address.GetSocketAddress()
+		require.NotNil(t, socketAddr, "expected SocketAddress for TCP mode")
+		assert.Equal(t, "policy-engine", socketAddr.Address)
+		// Must dial the upstream-refresh port, not the main downstream ext_proc port.
+		assert.Equal(t, uint32(9004), socketAddr.GetPortValue())
+	})
+}
+
+func TestTranslator_CreateUpstreamRefreshExtProcFilter(t *testing.T) {
+	logger := createTestLogger()
+	routerCfg := testRouterConfig()
+	routerCfg.PolicyEngine = config.PolicyEngineConfig{
+		Host:             "localhost",
+		Port:             50051,
+		TimeoutMs:        1000,
+		MessageTimeoutMs: 500,
+	}
+	cfg := testConfig()
+	cfg.Router = *routerCfg
+	translator := NewTranslator(logger, routerCfg, nil, cfg)
+
+	filter, err := translator.createUpstreamRefreshExtProcFilter()
+	require.NoError(t, err)
+	require.NotNil(t, filter)
+	assert.Equal(t, constants.ExtProcFilterName+"_upstream_refresh", filter.Name)
+	assert.NotEqual(t, constants.ExtProcFilterName, filter.Name, "must not collide with the main downstream filter's name")
+
+	var extProcConfig extproc.ExternalProcessor
+	require.NoError(t, filter.GetTypedConfig().UnmarshalTo(&extProcConfig))
+	assert.True(t, extProcConfig.FailureModeAllow, "upstream refresh filter must fail open, unlike the downstream filter")
+	assert.Equal(t, extproc.ProcessingMode_SEND, extProcConfig.ProcessingMode.RequestHeaderMode)
+	assert.Equal(t, extproc.ProcessingMode_DEFAULT, extProcConfig.ProcessingMode.ResponseHeaderMode,
+		"must only ever request the headers phase")
+	assert.Equal(t, constants.UpstreamRefreshPolicyEngineClusterName,
+		extProcConfig.GrpcService.GetEnvoyGrpc().ClusterName)
+}
+
+// TestCollectClustersNeedingUpstreamFilter unit-tests the OR-across-sharers eligibility scan
+// directly against hand-built route.Route objects, independent of which translation path
+// (legacy createRoute or RDC createRouteFromRDC) produced them — both emit the identical
+// RouteAction shape, which is exactly what makes this scan path-agnostic.
+func TestCollectClustersNeedingUpstreamFilter(t *testing.T) {
+	staticRouteWithRetry := &route.Route{
+		Action: &route.Route_Route{
+			Route: &route.RouteAction{
+				ClusterSpecifier: &route.RouteAction_Cluster{Cluster: "cluster-a"},
+				RetryPolicy:      &route.RetryPolicy{RetryOn: "retriable-status-codes"},
+			},
+		},
+	}
+	staticRouteNoRetry := &route.Route{
+		Action: &route.Route_Route{
+			Route: &route.RouteAction{
+				ClusterSpecifier: &route.RouteAction_Cluster{Cluster: "cluster-b"},
+			},
+		},
+	}
+	dynamicRouteWithRetry := &route.Route{
+		Action: &route.Route_Route{
+			Route: &route.RouteAction{
+				ClusterSpecifier: &route.RouteAction_ClusterHeader{ClusterHeader: "x-target-upstream"},
+				RetryPolicy:      &route.RetryPolicy{RetryOn: "retriable-status-codes"},
+			},
+		},
+	}
+	directResponseRoute := &route.Route{
+		Action: &route.Route_DirectResponse{DirectResponse: &route.DirectResponseAction{Status: 404}},
+	}
+
+	t.Run("marks a static cluster backing a retry-configured route", func(t *testing.T) {
+		dest := make(map[string]bool)
+		collectClustersNeedingUpstreamFilter([]*route.Route{staticRouteWithRetry}, dest)
+		assert.Equal(t, map[string]bool{"cluster-a": true}, dest)
+	})
+
+	t.Run("does not mark a cluster with no retry configured", func(t *testing.T) {
+		dest := make(map[string]bool)
+		collectClustersNeedingUpstreamFilter([]*route.Route{staticRouteNoRetry}, dest)
+		assert.Empty(t, dest)
+	})
+
+	t.Run("skips dynamic cluster_header routing even with retry configured", func(t *testing.T) {
+		dest := make(map[string]bool)
+		collectClustersNeedingUpstreamFilter([]*route.Route{dynamicRouteWithRetry}, dest)
+		assert.Empty(t, dest, "cluster identity is resolved only per-request; must never be marked at xDS-build time")
+	})
+
+	t.Run("ignores non-RouteAction actions (e.g. direct response)", func(t *testing.T) {
+		dest := make(map[string]bool)
+		collectClustersNeedingUpstreamFilter([]*route.Route{directResponseRoute}, dest)
+		assert.Empty(t, dest)
+	})
+
+	t.Run("OR's across sharers: one retry-configured route is enough to mark a shared cluster", func(t *testing.T) {
+		sharedRetry := &route.Route{
+			Action: &route.Route_Route{
+				Route: &route.RouteAction{
+					ClusterSpecifier: &route.RouteAction_Cluster{Cluster: "shared-cluster"},
+					RetryPolicy:      &route.RetryPolicy{RetryOn: "retriable-status-codes"},
+				},
+			},
+		}
+		sharedNoRetry := &route.Route{
+			Action: &route.Route_Route{
+				Route: &route.RouteAction{
+					ClusterSpecifier: &route.RouteAction_Cluster{Cluster: "shared-cluster"},
+				},
+			},
+		}
+		dest := make(map[string]bool)
+		// Simulate two separate configs contributing routes to the same cluster across two
+		// separate accumulation calls, exactly as TranslateConfigs does per-cfg.
+		collectClustersNeedingUpstreamFilter([]*route.Route{sharedNoRetry}, dest)
+		collectClustersNeedingUpstreamFilter([]*route.Route{sharedRetry}, dest)
+		assert.Equal(t, map[string]bool{"shared-cluster": true}, dest)
+	})
+}
+
+// TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout verifies that
+// buildRetrySourceRetryPolicy derives NumRetries from the longest group chain (never a
+// separately configured knob) and attaches the previous_priorities RetryPriority plus
+// PerTryTimeout from the declaration's PerAttemptTimeout.
+func TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout(t *testing.T) {
+	timeout := 10 * time.Second
+	decl := &policy.RetrySourceDeclaration{
+		Groups: []policy.RetryGroup{{
+			Key: "a",
+			OrderedTargets: []policy.RetryTarget{
+				{UpstreamDefinitionName: "x"},
+				{UpstreamDefinitionName: "y"},
+				{UpstreamDefinitionName: "z"},
+			},
+		}},
+		RetriableStatusCodes: []int{500, 502},
+		PerAttemptTimeout:    &timeout,
+	}
+
+	rp := buildRetrySourceRetryPolicy(decl, 0)
+
+	if rp.GetNumRetries().GetValue() != 2 { // longest chain (3 targets) - 1
+		t.Errorf("expected NumRetries 2, got %v", rp.GetNumRetries())
+	}
+	if len(rp.RetriableStatusCodes) != 2 || rp.RetriableStatusCodes[0] != 500 {
+		t.Errorf("unexpected RetriableStatusCodes: %v", rp.RetriableStatusCodes)
+	}
+	if rp.GetRetryPriority().GetName() != "envoy.retry_priorities.previous_priorities" {
+		t.Errorf("expected previous_priorities retry_priority, got %v", rp.GetRetryPriority())
+	}
+	if rp.GetPerTryTimeout().AsDuration() != 10*time.Second {
+		t.Errorf("expected per_try_timeout 10s, got %v", rp.GetPerTryTimeout())
+	}
+}
+
+// TestCollectClustersNeedingUpstreamBodyFilter_OnlyMarksAggregateClusters verifies that
+// collectClustersNeedingUpstreamBodyFilter is a strictly separate accumulator from
+// collectClustersNeedingUpstreamFilter: only a route whose RetryPolicy carries
+// RetryPriority (set exclusively by model-failover routes) is marked here, never a
+// plain resilience.retry route.
+func TestCollectClustersNeedingUpstreamBodyFilter_OnlyMarksAggregateClusters(t *testing.T) {
+	routes := []*route.Route{
+		{Action: &route.Route_Route{Route: &route.RouteAction{
+			ClusterSpecifier: &route.RouteAction_Cluster{Cluster: "agg_modelfailover_1"},
+			RetryPolicy:      &route.RetryPolicy{RetryPriority: &route.RetryPolicy_RetryPriority{Name: "envoy.retry_priorities.previous_priorities"}},
+		}}},
+		{Action: &route.Route_Route{Route: &route.RouteAction{ // plain resilience.retry route — must NOT be marked
+			ClusterSpecifier: &route.RouteAction_Cluster{Cluster: "plain_retry_cluster"},
+			RetryPolicy:      &route.RetryPolicy{},
+		}}},
+	}
+	dest := make(map[string]bool)
+	collectClustersNeedingUpstreamBodyFilter(routes, dest)
+	if !dest["agg_modelfailover_1"] {
+		t.Error("expected the aggregate/retry_priority route's cluster to be marked")
+	}
+	if dest["plain_retry_cluster"] {
+		t.Error("a plain resilience.retry route (no retry_priority) must not be marked for body buffering")
+	}
+}
+
+// TestCreateRouteFromRDC_ModelFailoverUsesClusterHeaderNotStaticCluster is the regression test
+// for the Task 12 e2e-discovered bug: a model-failover route must use ClusterHeader (reading
+// x-target-upstream at request time) so OnRequestBody's suspend-aware UpstreamName redirect can
+// actually reroute it — a static Cluster specifier silently ignores that header. RetryPolicy
+// (retry_priority + PerTryTimeout) must still be set exactly as before; only the
+// ClusterSpecifier changes.
+func TestCreateRouteFromRDC_RetrySourceUsesClusterHeaderNotStaticCluster(t *testing.T) {
+	translator := newRetryTestTranslator()
+
+	routeKey := "POST|/mf-test/latest/chat/completions|"
+	timeout := 5 * time.Second
+	mfParamsMap := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o", "upstreamDefinition": "primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+				},
+			},
+			map[string]interface{}{
+				"model": "claude-3-5-sonnet", "upstreamDefinition": "anthropic-primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude-3-haiku", "upstreamDefinition": "anthropic-fallback-1"},
+					map[string]interface{}{"model": "claude-3-opus", "upstreamDefinition": "anthropic-fallback-2"},
+				},
+			},
+		},
+		"statusCodes":    []interface{}{500},
+		"requestTimeout": "5s",
+	}
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{},
+		PolicyChains: map[string]*models.PolicyChain{
+			routeKey: {Policies: []models.Policy{{Name: "src-policy", Version: "v1", Params: mfParamsMap}}},
+		},
+	}
+	rdcRoute := &models.Route{
+		Method:        "POST",
+		Path:          "/mf-test/latest/chat/completions",
+		OperationPath: "/chat/completions",
+		Upstream:      models.RouteUpstream{UseClusterHeader: true, DefaultCluster: "upstream_LlmProvider_test-uuid_main"},
+	}
+
+	r := translator.createRouteFromRDC(routeKey, rdcRoute, rdc)
+	require.NotNil(t, r)
+
+	_, isClusterHeader := r.GetRoute().GetClusterSpecifier().(*route.RouteAction_ClusterHeader)
+	assert.True(t, isClusterHeader, "a retry-source route must use ClusterHeader, not a static Cluster specifier, or UpstreamName redirects have no effect")
+	assert.Contains(t, r.RequestHeadersToRemove, constants.TargetUpstreamHeader, "x-target-upstream must be stripped before forwarding upstream, same as any other cluster_header route")
+
+	rp := r.GetRoute().GetRetryPolicy()
+	require.NotNil(t, rp, "RetryPolicy must be set on a retry-source route")
+	assert.NotNil(t, rp.GetRetryPriority(), "retry_priority must be set")
+	assert.EqualValues(t, timeout.Seconds(), rp.GetPerTryTimeout().AsDuration().Seconds())
+	// NumRetries derives from the LONGEST chain across every group (claude's, 2 fallbacks),
+	// not gpt-4o's shorter one (1 fallback) — Envoy has one shared retry budget per route.
+	assert.EqualValues(t, 2, rp.GetNumRetries().GetValue())
+}
+
+// TestIsModelFailoverAggregateCluster verifies the detector createAggregateCluster's own output
+// satisfies, and that an ordinary (non-aggregate) cluster does not.
+func TestIsModelFailoverAggregateCluster(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	agg, err := translator.createAggregateCluster("agg_modelfailover_test", []string{"member-a", "member-b"})
+	require.NoError(t, err)
+	assert.True(t, isRetrySourceAggregateCluster(agg))
+
+	plain := &cluster.Cluster{Name: "plain", ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STRICT_DNS}}
+	assert.False(t, isRetrySourceAggregateCluster(plain))
+}
+
 func TestTranslator_CreateRouteConfiguration(t *testing.T) {
 	logger := createTestLogger()
 	routerCfg := testRouterConfig()
@@ -1745,6 +2105,386 @@ func TestTranslator_TranslateConfigs_GatewayHealthRoutes(t *testing.T) {
 		require.True(t, vhostsSeen["localhost"], "expected the API's own vhost to carry the health routes too")
 		require.True(t, vhostsSeen["*"], "expected the wildcard vhost to still be present")
 	})
+}
+
+// makeRestAPIWithUpstreamAndRetry is like makeRestAPI but allows a custom upstream URL (so
+// two configs can be made to share a deduped Envoy cluster, per resolveUpstreamCluster's
+// host+scheme dedup) and an optional API-level resilience.retry.
+func makeRestAPIWithUpstreamAndRetry(uuid, name, ctx, upstreamURL string, retry *api.Retry) *models.StoredConfig {
+	cfg := api.RestAPI{
+		Kind:     api.RestAPIKindRestApi,
+		Metadata: api.Metadata{Name: name},
+		Spec: api.APIConfigData{
+			DisplayName: name,
+			Version:     "v1.0",
+			Context:     ctx,
+			Upstream: struct {
+				Main    api.Upstream  `json:"main" yaml:"main"`
+				Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+			}{
+				Main: api.Upstream{Url: api.Ptr(upstreamURL)},
+			},
+			Operations: []api.Operation{
+				{Method: api.Ptr(api.OperationMethodGET), Path: api.Ptr("/resource")},
+			},
+		},
+	}
+	if retry != nil {
+		cfg.Spec.Resilience = &api.Resilience{Retry: retry}
+	}
+	return &models.StoredConfig{
+		UUID:                uuid,
+		Kind:                models.KindRestApi,
+		Handle:              name,
+		DisplayName:         name,
+		Version:             "v1.0",
+		DesiredState:        models.StateDeployed,
+		Configuration:       cfg,
+		SourceConfiguration: cfg,
+	}
+}
+
+// makeRestAPIWithUpstreamRefAndDefinitions builds a RestApi config whose main upstream is a
+// `ref` to a named upstreamDefinition, with that same definitions list also passed through —
+// the live scenario Task 7's cluster-dedup fix targets: the same named target reachable both
+// as the API's default upstream and as a standalone named upstreamDefinition.
+func makeRestAPIWithUpstreamRefAndDefinitions(uuid, name, ctx, ref string, defs []api.UpstreamDefinition) *models.StoredConfig {
+	cfg := api.RestAPI{
+		Kind:     api.RestAPIKindRestApi,
+		Metadata: api.Metadata{Name: name},
+		Spec: api.APIConfigData{
+			DisplayName: name,
+			Version:     "v1.0",
+			Context:     ctx,
+			Upstream: struct {
+				Main    api.Upstream  `json:"main" yaml:"main"`
+				Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+			}{
+				Main: api.Upstream{Ref: api.Ptr(ref)},
+			},
+			UpstreamDefinitions: &defs,
+			Operations: []api.Operation{
+				{Method: api.Ptr(api.OperationMethodGET), Path: api.Ptr("/resource")},
+			},
+		},
+	}
+	return &models.StoredConfig{
+		UUID:                uuid,
+		Kind:                models.KindRestApi,
+		Handle:              name,
+		DisplayName:         name,
+		Version:             "v1.0",
+		DesiredState:        models.StateDeployed,
+		Configuration:       cfg,
+		SourceConfiguration: cfg,
+	}
+}
+
+// TestTranslateConfigs_ClusterGetsUpstreamFilterWhenAnyRouteHasRetryConfigured exercises the
+// LEGACY translation path (translateAPIConfig/createRoute — no transformer registered, same
+// as every other TranslateConfigs test in this file). Two RestApi configs share the identical
+// upstream host+scheme, so resolveUpstreamCluster/sanitizeClusterName dedupe them into ONE
+// Envoy cluster; only one of the two configs has resilience.retry set. This proves the
+// OR-across-sharers behavior: the shared cluster must get the upstream filter attached
+// because at least one sharer needs it.
+func TestTranslateConfigs_ClusterGetsUpstreamFilterWhenAnyRouteHasRetryConfigured(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	const sharedUpstream = "http://shared-backend:9999"
+	configs := []*models.StoredConfig{
+		makeRestAPIWithUpstreamAndRetry("uuid-legacy-1", "api-one", "/api-one", sharedUpstream, nil),
+		makeRestAPIWithUpstreamAndRetry("uuid-legacy-2", "api-two", "/api-two", sharedUpstream, &api.Retry{StatusCodes: []int{503}}),
+	}
+
+	resources, err := translator.TranslateConfigs(configs, "test-correlation-id")
+	require.NoError(t, err)
+
+	expectedClusterName := translator.sanitizeClusterName("shared-backend:9999", "http")
+
+	var sharedEnvoyCluster *cluster.Cluster
+	internalClusterPresent := false
+	for _, res := range resources[resource.ClusterType] {
+		c, ok := res.(*cluster.Cluster)
+		require.True(t, ok)
+		if c.Name == expectedClusterName {
+			sharedEnvoyCluster = c
+		}
+		if c.Name == constants.UpstreamRefreshPolicyEngineClusterName {
+			internalClusterPresent = true
+		}
+	}
+
+	require.NotNil(t, sharedEnvoyCluster, "expected to find the deduped shared cluster %q", expectedClusterName)
+	assert.True(t, internalClusterPresent, "expected the internal upstream-refresh policy-engine cluster to be registered")
+
+	protocolOptionsAny, ok := sharedEnvoyCluster.TypedExtensionProtocolOptions[upstreamHTTPProtocolOptionsKey]
+	require.True(t, ok, "expected TypedExtensionProtocolOptions on the shared cluster")
+
+	var protocolOptions httpv3.HttpProtocolOptions
+	require.NoError(t, protocolOptionsAny.UnmarshalTo(&protocolOptions))
+	require.Len(t, protocolOptions.HttpFilters, 2)
+	assert.Equal(t, constants.ExtProcFilterName+"_upstream_refresh", protocolOptions.HttpFilters[0].Name)
+	assert.Equal(t, constants.UpstreamCodecFilterName, protocolOptions.HttpFilters[1].Name,
+		"upstream_codec must be the terminal filter or Envoy rejects the config")
+}
+
+// TestTranslateConfigs_ClusterWithNoRetryConfiguredAnywhereGetsNoUpstreamFilter is the negative
+// counterpart: same shared-cluster shape, but NEITHER config has resilience.retry set.
+func TestTranslateConfigs_ClusterWithNoRetryConfiguredAnywhereGetsNoUpstreamFilter(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	const sharedUpstream = "http://shared-backend-2:9999"
+	configs := []*models.StoredConfig{
+		makeRestAPIWithUpstreamAndRetry("uuid-legacy-3", "api-three", "/api-three", sharedUpstream, nil),
+		makeRestAPIWithUpstreamAndRetry("uuid-legacy-4", "api-four", "/api-four", sharedUpstream, nil),
+	}
+
+	resources, err := translator.TranslateConfigs(configs, "test-correlation-id")
+	require.NoError(t, err)
+
+	expectedClusterName := translator.sanitizeClusterName("shared-backend-2:9999", "http")
+
+	var sharedEnvoyCluster *cluster.Cluster
+	for _, res := range resources[resource.ClusterType] {
+		c, ok := res.(*cluster.Cluster)
+		require.True(t, ok)
+		if c.Name == expectedClusterName {
+			sharedEnvoyCluster = c
+		}
+		assert.NotEqual(t, constants.UpstreamRefreshPolicyEngineClusterName, c.Name,
+			"internal upstream-refresh cluster must not be registered when nothing needs it")
+	}
+
+	require.NotNil(t, sharedEnvoyCluster)
+	assert.Empty(t, sharedEnvoyCluster.TypedExtensionProtocolOptions)
+}
+
+// fakeRDCTransformer is a minimal models.ConfigTransformer that returns a hand-built
+// RuntimeDeployConfig keyed by StoredConfig.UUID, letting tests exercise the RDC path
+// (translateRuntimeConfig/createRouteFromRDC) without the full RestAPITransformer.Transform
+// machinery (policy definitions, secrets, etc.) — mirroring how Task 7's
+// TestTranslator_CreateRouteFromRDC_ResilienceRetryEmitsNativeRetryPolicy hand-builds a
+// RuntimeDeployConfig directly rather than going through Transform().
+type fakeRDCTransformer map[string]*models.RuntimeDeployConfig
+
+func (f fakeRDCTransformer) Transform(cfg *models.StoredConfig) (*models.RuntimeDeployConfig, error) {
+	rdc, ok := f[cfg.UUID]
+	if !ok {
+		return nil, fmt.Errorf("no fake RuntimeDeployConfig registered for %s", cfg.UUID)
+	}
+	return rdc, nil
+}
+
+// TestTranslateConfigs_RDCPath_ClusterGetsUpstreamFilterWhenAnyRouteHasRetryConfigured proves
+// the RDC path (translateRuntimeConfig, the one RestApi/Mcp/LlmProvider/LlmProxy actually use
+// in production via a registered transformer) gets the same OR-across-sharers upstream filter
+// attachment as the legacy path above — the two are entirely separate cluster-building loops
+// in translator.go, so this must be verified independently, not assumed from the legacy-path
+// test alone.
+func TestTranslateConfigs_RDCPath_ClusterGetsUpstreamFilterWhenAnyRouteHasRetryConfigured(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	sharedCluster := &models.UpstreamCluster{Endpoints: []models.Endpoint{{Host: "shared-rdc-backend", Port: 9999}}}
+
+	rdcNoRetry := &models.RuntimeDeployConfig{
+		Metadata:         models.Metadata{Kind: "RestApi"},
+		UpstreamClusters: map[string]*models.UpstreamCluster{"shared": sharedCluster},
+		Routes: map[string]*models.Route{
+			"GET|/api-two/v1.0/items|localhost": {
+				Method: "GET", Path: "/api-two/v1.0/items", OperationPath: "/items",
+				Upstream: models.RouteUpstream{ClusterKey: "shared"},
+			},
+		},
+	}
+	rdcWithRetry := &models.RuntimeDeployConfig{
+		Metadata:         models.Metadata{Kind: "RestApi"},
+		UpstreamClusters: map[string]*models.UpstreamCluster{"shared": sharedCluster},
+		Routes: map[string]*models.Route{
+			"GET|/api-one/v1.0/items|localhost": {
+				Method: "GET", Path: "/api-one/v1.0/items", OperationPath: "/items",
+				Timeout:  &models.RouteTimeout{Retry: &api.Retry{StatusCodes: []int{503}}},
+				Upstream: models.RouteUpstream{ClusterKey: "shared"},
+			},
+		},
+	}
+
+	translator.SetTransformers(map[string]models.ConfigTransformer{
+		"RestApi": fakeRDCTransformer{
+			"uuid-rdc-1": rdcNoRetry,
+			"uuid-rdc-2": rdcWithRetry,
+		},
+	})
+
+	configs := []*models.StoredConfig{
+		{UUID: "uuid-rdc-1", Kind: "RestApi", DesiredState: models.StateDeployed},
+		{UUID: "uuid-rdc-2", Kind: "RestApi", DesiredState: models.StateDeployed},
+	}
+
+	resources, err := translator.TranslateConfigs(configs, "test-correlation-id")
+	require.NoError(t, err)
+
+	var sharedEnvoyCluster *cluster.Cluster
+	for _, res := range resources[resource.ClusterType] {
+		c, ok := res.(*cluster.Cluster)
+		require.True(t, ok)
+		if c.Name == "shared" {
+			sharedEnvoyCluster = c
+		}
+	}
+	require.NotNil(t, sharedEnvoyCluster, "expected the RDC-path cluster 'shared' to be present")
+
+	_, ok := sharedEnvoyCluster.TypedExtensionProtocolOptions[upstreamHTTPProtocolOptionsKey]
+	assert.True(t, ok, "RDC-path cluster must also get the upstream filter attached — both translation paths must be covered")
+}
+
+// TestTranslateConfigs_VirtualHostIncludesRequestAttemptCountWhenAnyRouteHasRetryConfigured proves
+// the VirtualHost carries IncludeRequestAttemptCount whenever at least one route anywhere has
+// resilience.retry set. Without this, Envoy never emits x-envoy-attempt-count on the upstream
+// request, so UpstreamExternalProcessorServer.processRequestHeaders (policy-engine) can never tell
+// a native retry attempt apart from the original one — silently defeating the whole
+// upstream-attempt refresh mechanism (oauth2-generator's OnUpstreamAttemptRequestHeaders gates
+// entirely on AttemptCount > 1) even though the route's own RetryPolicy and the cluster's upstream
+// ext_proc filter are both present and correct. Confirmed live via e2e (Task 10): without this
+// flag, a native retry silently reused the same already-rejected cached token.
+func TestTranslateConfigs_VirtualHostIncludesRequestAttemptCountWhenAnyRouteHasRetryConfigured(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	const sharedUpstream = "http://shared-backend-attempt-count:9999"
+	configs := []*models.StoredConfig{
+		makeRestAPIWithUpstreamAndRetry("uuid-attempt-count-1", "api-one", "/api-one", sharedUpstream, nil),
+		makeRestAPIWithUpstreamAndRetry("uuid-attempt-count-2", "api-two", "/api-two", sharedUpstream, &api.Retry{StatusCodes: []int{503}}),
+	}
+
+	resources, err := translator.TranslateConfigs(configs, "test-correlation-id")
+	require.NoError(t, err)
+
+	byName := virtualHostsByName(t, resources)
+	require.Contains(t, byName, "localhost", "expected the API's own vhost ('localhost', neither config sets a custom Vhosts.Main) to be present")
+	assert.True(t, byName["localhost"].IncludeRequestAttemptCount,
+		"the 'localhost' vhost carries the retry-configured route and must set IncludeRequestAttemptCount")
+	assert.True(t, byName["localhost"].IncludeAttemptCountInResponse,
+		"the 'localhost' vhost carries the retry-configured route and must also set IncludeAttemptCountInResponse, so model-failover's OnResponseHeaders can read x-envoy-attempt-count off the downstream response")
+	// The pre-seeded wildcard vhost carries neither API's routes at all (see
+	// vhostMap's pre-seeding in TranslateConfigs) - it must NOT be flagged just
+	// because some OTHER vhost happens to need it. This is exactly the gap a
+	// global (rather than per-vhost) scoping would miss - see
+	// TestTranslateConfigs_MultipleVhosts_OnlyTheOneWithRetryGetsRequestAttemptCount
+	// for the sharper, explicit-multi-vhost version of this same proof.
+	if wildcard, ok := byName["*"]; ok {
+		assert.False(t, wildcard.IncludeRequestAttemptCount,
+			"the wildcard vhost carries no API routes and must not set IncludeRequestAttemptCount just because 'localhost' needs it")
+		assert.False(t, wildcard.IncludeAttemptCountInResponse,
+			"the wildcard vhost carries no API routes and must not set IncludeAttemptCountInResponse just because 'localhost' needs it")
+	}
+}
+
+// TestTranslateConfigs_VirtualHostOmitsRequestAttemptCountWhenNoRetryConfiguredAnywhere is the
+// negative counterpart: same shared-cluster shape, but NEITHER config has resilience.retry set.
+func TestTranslateConfigs_VirtualHostOmitsRequestAttemptCountWhenNoRetryConfiguredAnywhere(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	const sharedUpstream = "http://shared-backend-no-attempt-count:9999"
+	configs := []*models.StoredConfig{
+		makeRestAPIWithUpstreamAndRetry("uuid-no-attempt-count-1", "api-three", "/api-three", sharedUpstream, nil),
+		makeRestAPIWithUpstreamAndRetry("uuid-no-attempt-count-2", "api-four", "/api-four", sharedUpstream, nil),
+	}
+
+	resources, err := translator.TranslateConfigs(configs, "test-correlation-id")
+	require.NoError(t, err)
+
+	found := false
+	for _, res := range resources[resource.RouteType] {
+		rc, ok := res.(*route.RouteConfiguration)
+		require.True(t, ok)
+		for _, vh := range rc.VirtualHosts {
+			found = true
+			assert.False(t, vh.IncludeRequestAttemptCount,
+				"virtual host %q must not set IncludeRequestAttemptCount when nothing needs it", vh.Name)
+			assert.False(t, vh.IncludeAttemptCountInResponse,
+				"virtual host %q must not set IncludeAttemptCountInResponse when nothing needs it", vh.Name)
+		}
+	}
+	require.True(t, found, "expected at least one virtual host to be present")
+}
+
+// makeRestAPIWithUpstreamRetryAndVhost is makeRestAPIWithUpstreamAndRetry plus an explicit
+// Vhosts.Main override, so a test can put two configs on two DIFFERENT vhosts (the default
+// helper always lands every config on the same vhost - config.RouterConfig's VHosts.Main.Default,
+// "localhost" in testRouterConfig() - which cannot exercise cross-vhost scoping at all).
+func makeRestAPIWithUpstreamRetryAndVhost(uuid, name, ctx, upstreamURL string, retry *api.Retry, vhost string) *models.StoredConfig {
+	cfg := makeRestAPIWithUpstreamAndRetry(uuid, name, ctx, upstreamURL, retry)
+	restAPI := cfg.Configuration.(api.RestAPI)
+	restAPI.Spec.Vhosts = &struct {
+		Main    string  `json:"main" yaml:"main"`
+		Sandbox *string `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+	}{Main: vhost}
+	cfg.Configuration = restAPI
+	cfg.SourceConfiguration = restAPI
+	return cfg
+}
+
+// virtualHostsByName flattens every RouteConfiguration resource's VirtualHosts into a
+// name-keyed map, for tests that need to assert on one specific vhost rather than looping
+// over all of them (which is exactly the kind of loose assertion that let the original,
+// globally-scoped IncludeRequestAttemptCount bug slip past both existing tests above - see
+// the code-review finding this helper and the test below were added to address).
+func virtualHostsByName(t *testing.T, resources map[resource.Type][]types.Resource) map[string]*route.VirtualHost {
+	t.Helper()
+	byName := make(map[string]*route.VirtualHost)
+	for _, res := range resources[resource.RouteType] {
+		rc, ok := res.(*route.RouteConfiguration)
+		require.True(t, ok)
+		for _, vh := range rc.VirtualHosts {
+			byName[vh.Name] = vh
+		}
+	}
+	return byName
+}
+
+// TestTranslateConfigs_MultipleVhosts_OnlyTheOneWithRetryGetsRequestAttemptCount is the sharp
+// regression test for the code-review finding: IncludeRequestAttemptCount must be scoped
+// per-vhost, not globally across the whole TranslateConfigs call. Two configs on two entirely
+// different, explicit vhosts (simulating two unrelated tenants) - only ONE has resilience.retry
+// configured. A global (rather than per-vhost) implementation would incorrectly flag BOTH
+// vhosts, since clustersNeedingUpstreamFilter (keyed by cluster name, with no vhost affinity)
+// would be non-empty for the whole call the moment either config needs it.
+func TestTranslateConfigs_MultipleVhosts_OnlyTheOneWithRetryGetsRequestAttemptCount(t *testing.T) {
+	logger := createTestLogger()
+	translator := NewTranslator(logger, testRouterConfig(), nil, testConfig())
+
+	configs := []*models.StoredConfig{
+		makeRestAPIWithUpstreamRetryAndVhost("uuid-vhost-a", "api-vhost-a", "/api-vhost-a",
+			"http://backend-vhost-a:9999", &api.Retry{StatusCodes: []int{503}}, "vhost-a.example.com"),
+		makeRestAPIWithUpstreamRetryAndVhost("uuid-vhost-b", "api-vhost-b", "/api-vhost-b",
+			"http://backend-vhost-b:9999", nil, "vhost-b.example.com"),
+	}
+
+	resources, err := translator.TranslateConfigs(configs, "test-correlation-id")
+	require.NoError(t, err)
+
+	byName := virtualHostsByName(t, resources)
+	require.Contains(t, byName, "vhost-a.example.com")
+	require.Contains(t, byName, "vhost-b.example.com")
+
+	assert.True(t, byName["vhost-a.example.com"].IncludeRequestAttemptCount,
+		"vhost-a has the retry-configured route and must set IncludeRequestAttemptCount")
+	assert.True(t, byName["vhost-a.example.com"].IncludeAttemptCountInResponse,
+		"vhost-a has the retry-configured route and must also set IncludeAttemptCountInResponse")
+	assert.False(t, byName["vhost-b.example.com"].IncludeRequestAttemptCount,
+		"vhost-b has NO retry-configured route of its own and must not be affected by vhost-a's")
+	assert.False(t, byName["vhost-b.example.com"].IncludeAttemptCountInResponse,
+		"vhost-b has NO retry-configured route of its own and must not be affected by vhost-a's")
+	if wildcard, ok := byName["*"]; ok {
+		assert.False(t, wildcard.IncludeRequestAttemptCount,
+			"the wildcard vhost carries neither tenant's routes and must not be flagged either")
+		assert.False(t, wildcard.IncludeAttemptCountInResponse,
+			"the wildcard vhost carries neither tenant's routes and must not be flagged either")
+	}
 }
 
 func TestTranslator_GetVHostDomains(t *testing.T) {
@@ -2378,7 +3118,7 @@ func TestTranslator_ResolveUpstreamCluster_SimpleURL(t *testing.T) {
 		Url: &urlStr,
 	}
 
-	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("test-upstream", upstream, nil)
+	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("test-upstream", upstream, nil, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 	assert.NoError(t, err)
 	assert.NotEmpty(t, clusterName)
 	assert.NotNil(t, parsedURL)
@@ -2397,7 +3137,7 @@ func TestTranslator_ResolveUpstreamCluster_HTTPSUrl(t *testing.T) {
 		Url: &urlStr,
 	}
 
-	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("secure-upstream", upstream, nil)
+	clusterName, parsedURL, timeout, err := translator.resolveUpstreamCluster("secure-upstream", upstream, nil, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 	assert.NoError(t, err)
 	assert.NotEmpty(t, clusterName)
 	assert.NotNil(t, parsedURL)
@@ -2415,7 +3155,7 @@ func TestTranslator_ResolveUpstreamCluster_MissingURL(t *testing.T) {
 		Url: nil, // No URL
 	}
 
-	_, _, _, err := translator.resolveUpstreamCluster("no-url-upstream", upstream, nil)
+	_, _, _, err := translator.resolveUpstreamCluster("no-url-upstream", upstream, nil, "RestApi", "test-uuid", map[string]*cluster.Cluster{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no no-url-upstream upstream configured")
 }
@@ -2536,6 +3276,40 @@ func TestTranslator_CreateRoute_Basic(t *testing.T) {
 	require.NotNil(t, route.Metadata)
 	assert.Equal(t, "/api/users",
 		route.Metadata.FilterMetadata["wso2.route"].Fields["http.route"].GetStringValue())
+}
+
+// TestCreateRoute_ResilienceRetryEmitsNativeRetryPolicy verifies that a resolvedTimeout
+// carrying a non-nil Retry field (resolved from resilience.retry) causes createRoute to
+// set a native Envoy RouteAction.RetryPolicy on the resulting route.
+func TestCreateRoute_ResilienceRetryEmitsNativeRetryPolicy(t *testing.T) {
+	logger := createTestLogger()
+	routerCfg := testRouterConfig()
+	cfg := testConfig()
+	translator := NewTranslator(logger, routerCfg, nil, cfg)
+
+	numRetries := 2
+	timeoutCfg := &resolvedTimeout{Retry: &api.Retry{StatusCodes: []int{401, 503}, NumRetries: &numRetries}}
+
+	r := translator.createRoute("api-id", "TestAPI", "v1", "/test", "GET", "/foo", "test-cluster",
+		"", "localhost", "RestApi", "", "", nil, "project-1", timeoutCfg, false, nil)
+
+	routeAction, ok := r.Action.(*route.Route_Route)
+	if !ok {
+		t.Fatalf("expected a Route_Route action, got %T", r.Action)
+	}
+	rp := routeAction.Route.RetryPolicy
+	if rp == nil {
+		t.Fatal("expected a non-nil RetryPolicy")
+	}
+	if rp.RetryOn != "retriable-status-codes" {
+		t.Errorf("got RetryOn %q, want %q", rp.RetryOn, "retriable-status-codes")
+	}
+	if rp.NumRetries == nil || rp.NumRetries.Value != 2 {
+		t.Errorf("got NumRetries %v, want 2", rp.NumRetries)
+	}
+	if len(rp.RetriableStatusCodes) != 2 || rp.RetriableStatusCodes[0] != 401 || rp.RetriableStatusCodes[1] != 503 {
+		t.Errorf("got RetriableStatusCodes %v, want [401 503]", rp.RetriableStatusCodes)
+	}
 }
 
 // TestTranslator_CreateRouteFromRDC_HTTPRouteMetadata guards the http.route tracing fix:
@@ -2922,6 +3696,129 @@ func TestCreateWeightedCluster_PeerHostnameMetadata(t *testing.T) {
 				lb.GetMetadata().GetFilterMetadata()["envoy.lb"].GetFields()["hostname"].GetStringValue())
 		}
 	})
+}
+
+func TestRetrySourceTargetClusterNames_ResolvesInOrder(t *testing.T) {
+	group := policy.RetryGroup{
+		Key: "gpt-4o",
+		OrderedTargets: []policy.RetryTarget{
+			{UpstreamDefinitionName: "primary"},
+			{UpstreamDefinitionName: "fallback-1"},
+		},
+	}
+	names := retrySourceTargetClusterNames(group, "LlmProvider", "abc-123", "upstream_main_backend.example.com_9711")
+	want := []string{"upstream_LlmProvider_abc-123_primary", "upstream_LlmProvider_abc-123_fallback-1"}
+	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
+		t.Errorf("got %v, want %v", names, want)
+	}
+}
+
+func TestRetrySourceTargetClusterNames_EmptyUpstreamDefinitionResolvesToMain(t *testing.T) {
+	group := policy.RetryGroup{
+		Key: "gpt-4o",
+		OrderedTargets: []policy.RetryTarget{
+			{UpstreamDefinitionName: ""}, // main
+			{UpstreamDefinitionName: "fallback-1"},
+		},
+	}
+	mainClusterName := "upstream_main_backend.example.com_9711"
+	names := retrySourceTargetClusterNames(group, "LlmProvider", "abc-123", mainClusterName)
+	want := []string{mainClusterName, "upstream_LlmProvider_abc-123_fallback-1"}
+	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
+		t.Errorf("got %v, want %v", names, want)
+	}
+}
+
+func TestTranslateRuntimeConfig_RetrySourceAggregateClustersAreRouteScoped(t *testing.T) {
+	tr := newRetryTestTranslator()
+	routeA := "POST|/mf/chat/completions|main.local"
+	routeB := "POST|/mf/other-chat/completions|main.local"
+	paramsA := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary-a",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-a"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	paramsB := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary-b",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-b"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	rdc := &models.RuntimeDeployConfig{
+		Metadata: models.Metadata{Kind: "LlmProvider", UUID: "api-123"},
+		Routes: map[string]*models.Route{
+			routeA: {Method: "POST", Path: "/mf/chat/completions", OperationPath: "/chat/completions"},
+			routeB: {Method: "POST", Path: "/mf/other-chat/completions", OperationPath: "/other-chat/completions"},
+		},
+		UpstreamClusters: map[string]*models.UpstreamCluster{},
+		PolicyChains: map[string]*models.PolicyChain{
+			routeA: {Policies: []models.Policy{{Name: "src-policy", Version: "v1", Params: paramsA}}},
+			routeB: {Policies: []models.Policy{{Name: "src-policy", Version: "v1", Params: paramsB}}},
+		},
+	}
+
+	_, clusters, err := tr.translateRuntimeConfig(rdc)
+	require.NoError(t, err)
+
+	aggregates := map[string][]string{}
+	for _, c := range clusters {
+		if !isRetrySourceAggregateCluster(c) {
+			continue
+		}
+		ct := c.ClusterDiscoveryType.(*cluster.Cluster_ClusterType)
+		var cfg aggregatev3.ClusterConfig
+		require.NoError(t, ct.ClusterType.TypedConfig.UnmarshalTo(&cfg))
+		aggregates[c.Name] = cfg.Clusters
+	}
+
+	nameA := RetrySourceAggregateClusterKey("LlmProvider", "api-123", routeA, "gpt-4o")
+	nameB := RetrySourceAggregateClusterKey("LlmProvider", "api-123", routeB, "gpt-4o")
+	require.Contains(t, aggregates, nameA)
+	require.Contains(t, aggregates, nameB)
+	assert.NotEqual(t, nameA, nameB, "same group key on different routes must not share one aggregate cluster")
+	assert.Equal(t, []string{"upstream_LlmProvider_api-123_primary-a", "upstream_LlmProvider_api-123_fallback-a"}, aggregates[nameA])
+	assert.Equal(t, []string{"upstream_LlmProvider_api-123_primary-b", "upstream_LlmProvider_api-123_fallback-b"}, aggregates[nameB])
+}
+
+func TestCreateAggregateCluster_ListsMembersInOrder(t *testing.T) {
+	tr := &Translator{logger: slog.Default()}
+	c, err := tr.createAggregateCluster("agg_test", []string{"upstream_a", "upstream_b"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Name != "agg_test" {
+		t.Errorf("unexpected cluster name: %q", c.Name)
+	}
+	if c.LbPolicy != cluster.Cluster_CLUSTER_PROVIDED {
+		t.Errorf("expected CLUSTER_PROVIDED lb_policy, got %v", c.LbPolicy)
+	}
+	ct, ok := c.ClusterDiscoveryType.(*cluster.Cluster_ClusterType)
+	if !ok {
+		t.Fatalf("expected Cluster_ClusterType, got %T", c.ClusterDiscoveryType)
+	}
+	if ct.ClusterType.Name != "envoy.clusters.aggregate" {
+		t.Errorf("unexpected cluster_type name: %q", ct.ClusterType.Name)
+	}
+	var cfg aggregatev3.ClusterConfig
+	if err := ct.ClusterType.TypedConfig.UnmarshalTo(&cfg); err != nil {
+		t.Fatalf("failed to unmarshal ClusterConfig: %v", err)
+	}
+	if len(cfg.Clusters) != 2 || cfg.Clusters[0] != "upstream_a" || cfg.Clusters[1] != "upstream_b" {
+		t.Errorf("unexpected member order: %v", cfg.Clusters)
+	}
 }
 
 // parseDurationAllowZero must accept exactly what the CRD admission controller accepts

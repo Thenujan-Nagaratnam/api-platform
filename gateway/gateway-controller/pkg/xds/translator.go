@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wso2/api-platform/common/collector"
@@ -49,12 +50,16 @@ import (
 	tracev3 "github.com/envoyproxy/go-control-plane/envoy/config/trace/v3"
 	fileaccesslog "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
 	grpc_accesslogv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/grpc/v3"
+	aggregatev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/aggregate/v3"
 	extproc "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	luav3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/lua/v3"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
+	upstreamcodecv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/upstream_codec/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	previous_prioritiesv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/retry/priority/previous_priorities/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
 	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
 	metadatav3 "github.com/envoyproxy/go-control-plane/envoy/type/metadata/v3"
 	tracingv3 "github.com/envoyproxy/go-control-plane/envoy/type/tracing/v3"
@@ -68,6 +73,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	anypb "google.golang.org/protobuf/types/known/anypb"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -88,6 +94,10 @@ const (
 	// and other route-scoped consumers.
 	envoyRouteMetadataNamespace = "wso2.route"
 	envoyRouteHTTPRouteKey      = "http.route"
+
+	// upstreamHTTPProtocolOptionsKey is the TypedExtensionProtocolOptions map key Envoy
+	// expects for a cluster's upstream HTTP filter chain (see attachUpstreamRefreshFilter).
+	upstreamHTTPProtocolOptionsKey = "envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
 )
 
 func checkedUInt32FromPositiveInt(fieldName string, value int) (uint32, error) {
@@ -108,6 +118,24 @@ type Translator struct {
 	config            *config.Config
 	transformers      map[string]models.ConfigTransformer // kind → transformer (optional)
 	eventGatewayHooks EventGatewayXDSHooks                // optional, set by an event-gateway-controller binary
+
+	// policyDefinitions is the same registry PolicyValidator and the
+	// transformers already hold — loaded once at controller startup and set
+	// via SetPolicyDefinitions, never reloaded per translation. It is read
+	// only for the cached x-wso2-retry-source/x-wso2-retry-trigger metadata
+	// that drives resolveRetryDeclarations; gateway-controller never imports
+	// or instantiates any policy implementation package.
+	policyDefinitions map[string]models.PolicyDefinition
+	// latestVersions indexes policyDefinitions by name → latest full semver,
+	// needed because a models.PolicyChain stores the MAJOR-only version.
+	latestVersions map[string]string
+	// missingPolicyDefinitionsWarnOnce guards a one-time warning, emitted the first time
+	// resolveRetryDeclarations sees a non-empty policy chain while policyDefinitions is nil —
+	// i.e. some controller binary embedding this translator forgot to call
+	// SetPolicyDefinitions. Without it the retry-source/retry-trigger mechanism silently
+	// becomes a no-op for every chain, with nothing surfaced (this happened once already, see
+	// Critical finding C1 in the 2026-08-14 final review).
+	missingPolicyDefinitionsWarnOnce sync.Once
 }
 
 // resolvedTimeout represents parsed timeout values for an upstream.
@@ -116,6 +144,7 @@ type resolvedTimeout struct {
 	Connect *time.Duration
 	Route   *time.Duration
 	Idle    *time.Duration
+	Retry   *api.Retry // nil when resilience.retry is not configured
 }
 
 // NewTranslator creates a new translator
@@ -241,6 +270,17 @@ func (t *Translator) SetTransformers(transformers map[string]models.ConfigTransf
 	t.transformers = transformers
 }
 
+// SetPolicyDefinitions wires the startup-loaded policy definition registry into
+// the translator, mirroring SetTransformers. Only the cached
+// x-wso2-retry-source/x-wso2-retry-trigger metadata is read from it (see
+// resolveRetryDeclarations); a translator without it simply discovers no retry
+// declarations, which is the correct behaviour for the legacy/test paths that
+// never load policies.
+func (t *Translator) SetPolicyDefinitions(policyDefinitions map[string]models.PolicyDefinition) {
+	t.policyDefinitions = policyDefinitions
+	t.latestVersions = config.BuildLatestVersionIndex(policyDefinitions)
+}
+
 // translateRuntimeConfig converts a RuntimeDeployConfig to Envoy routes and clusters.
 // Route metadata is delivered to the policy engine via the RouteConfig xDS resource type;
 // the route name is read directly from the route's name field via xds.route_name.
@@ -275,6 +315,53 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		clusters = append(clusters, c)
 	}
 
+	// Retry sources: for any route whose PolicyChain contains a policy DECLARING
+	// x-wso2-retry-source in its own policy-definition.yaml — discovered generically via
+	// cached metadata, never by policy name — build one aggregate cluster PER ROUTE + RETRY
+	// GROUP that has at least two ordered targets. A single-target group needs no aggregate
+	// at all, its own upstreamDefinition cluster (built above from rdc.UpstreamClusters) is
+	// enough. Each aggregate is registered under the SAME naming scheme real
+	// upstreamDefinition clusters use (RetrySourceAggregateClusterKey), NOT a bespoke name —
+	// so the kernel's EXISTING UpstreamName-resolution logic (built for plain
+	// upstreamDefinitions; see gateway-runtime/policy-engine's resolveUpstreamRedirect) finds
+	// it with zero changes on that side. The route key is part of the synthetic
+	// upstreamDefinition name because two operations on the same API can legally attach
+	// different chains for the same group key; an API+key-only aggregate name would make those
+	// routes overwrite each other's clusters. Mutual exclusivity with resilience.retry is
+	// already enforced at validation time, so a route reaching here with a retry source
+	// configured never also has rdc.Routes[key].Timeout.Retry set.
+	for routeKey, chain := range rdc.PolicyChains {
+		sourceDecl, _, _, _, err := t.resolveRetryDeclarations(chain)
+		if err != nil {
+			return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
+		}
+		// sourceCount is deliberately ignored: exclusivity is enforced at registration time
+		// by config.ValidateAtMostOneRetrySourcePerRoute. A route reaching translation with
+		// more than one retry source is a bug in that gate, not something to re-validate here.
+		if sourceDecl == nil || len(sourceDecl.Groups) == 0 {
+			// A trigger-only route (no retry source) needs no aggregate cluster at all — it
+			// gets a plain same-cluster RouteAction.RetryPolicy, built in createRouteFromRDC.
+			continue
+		}
+
+		var mainClusterName string
+		if rdcRoute, ok := rdc.Routes[routeKey]; ok {
+			mainClusterName = rdcRoute.Upstream.DefaultCluster
+		}
+		for _, group := range sourceDecl.Groups {
+			if len(group.OrderedTargets) < 2 {
+				continue // single-target group: no failover, no aggregate cluster needed
+			}
+			memberNames := retrySourceTargetClusterNames(group, rdc.Metadata.Kind, rdc.Metadata.UUID, mainClusterName)
+			aggName := RetrySourceAggregateClusterKey(rdc.Metadata.Kind, rdc.Metadata.UUID, routeKey, group.Key)
+			aggCluster, err := t.createAggregateCluster(aggName, memberNames)
+			if err != nil {
+				return nil, nil, fmt.Errorf("route %q, group %q: %w", routeKey, group.Key, err)
+			}
+			clusters = append(clusters, aggCluster)
+		}
+	}
+
 	// Build routes from Routes map. Iterate in a deterministic order — ascending
 	// Route.Order (the source operation/rule index), then route key — so the stable
 	// route sorter later resolves equal-precedence ties by Gateway-API rule order
@@ -296,6 +383,93 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 	}
 
 	return routes, clusters, nil
+}
+
+// resolveRetryDeclarations walks chain.Policies and, for each one, looks up its
+// ALREADY-LOADED policy-definition.yaml metadata (t.policyDefinitions, the same registry
+// PolicyValidator and the transformers hold, loaded once at controller startup) to decide
+// whether that policy contributes a retry-source or retry-trigger declaration.
+//
+// This NEVER instantiates policy Go code: gateway-controller has no dependency on any policy
+// implementation package. It reads cached YAML metadata plus the policy's raw Params map,
+// both of which gateway-controller already has for every policy in a chain today. The lookup
+// itself is config.LookupRetryMetadata — the identical primitive registration-time validation
+// uses — so translation and validation can never disagree about the same chain.
+//
+// sourceCount is returned for the caller's information only; at-most-one exclusivity is
+// enforced at registration time by config.ValidateAtMostOneRetrySourcePerRoute, so
+// sourceDecl is simply the last (in practice, only) declaration found.
+func (t *Translator) resolveRetryDeclarations(chain *models.PolicyChain) (
+	sourceDecl *policy.RetrySourceDeclaration,
+	sourceCount int,
+	triggerCodes map[int]struct{},
+	triggerMinAttempts int,
+	err error,
+) {
+	triggerCodes = map[int]struct{}{}
+	if chain == nil {
+		return nil, 0, triggerCodes, 0, nil
+	}
+
+	if len(chain.Policies) > 0 && t.policyDefinitions == nil {
+		t.missingPolicyDefinitionsWarnOnce.Do(func() {
+			t.logger.Warn("translator has no policy definitions loaded; retry-source and " +
+				"retry-trigger metadata cannot be resolved for any policy chain — the " +
+				"controller binary embedding this translator is missing a " +
+				"SetPolicyDefinitions call")
+		})
+	}
+
+	for _, p := range chain.Policies {
+		source, trigger, schema := config.LookupRetryMetadata(t.policyDefinitions, t.latestVersions, p.Name, p.Version)
+		if source != nil {
+			sourceCount++
+			decl, parseErr := config.ParseRetrySourceParams(p.Params, source.GroupKeyField)
+			if parseErr != nil {
+				return nil, 0, nil, 0, fmt.Errorf("policy %q: %w", p.Name, parseErr)
+			}
+			sourceDecl = decl
+		}
+		if trigger != nil {
+			decl, parseErr := config.ParseRetryTriggerParams(p.Params, trigger.StatusCodesField, trigger.MinAttempts, schema)
+			if parseErr != nil {
+				return nil, 0, nil, 0, fmt.Errorf("policy %q: %w", p.Name, parseErr)
+			}
+			for _, code := range decl.RetriableStatusCodes {
+				triggerCodes[code] = struct{}{}
+			}
+			if decl.MinAttempts > triggerMinAttempts {
+				triggerMinAttempts = decl.MinAttempts
+			}
+		}
+	}
+	return sourceDecl, sourceCount, triggerCodes, triggerMinAttempts, nil
+}
+
+// mergeRetriableStatusCodes folds every retry-trigger declaration's status codes into the
+// retry source's own list, de-duplicated and order-stable (source codes first, in their
+// declared order, then any additional trigger codes ascending). One Envoy retry policy with
+// richer trigger conditions — never a second, conflicting one.
+func mergeRetriableStatusCodes(sourceCodes []int, triggerCodes map[int]struct{}) []int {
+	merged := make([]int, 0, len(sourceCodes)+len(triggerCodes))
+	seen := make(map[int]struct{}, len(sourceCodes)+len(triggerCodes))
+	for _, code := range sourceCodes {
+		if _, dup := seen[code]; dup {
+			continue
+		}
+		seen[code] = struct{}{}
+		merged = append(merged, code)
+	}
+	extra := make([]int, 0, len(triggerCodes))
+	for code := range triggerCodes {
+		if _, dup := seen[code]; dup {
+			continue
+		}
+		seen[code] = struct{}{}
+		extra = append(extra, code)
+	}
+	sort.Ints(extra) // map iteration order is random; keep the emitted config deterministic
+	return append(merged, extra...)
 }
 
 // routeTimeoutOrDefault returns the per-route timeout when configured (including an
@@ -331,9 +505,11 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 	// Build route action with timeouts. Per-route resilience values (from the API/operation
 	// resilience block) take precedence; otherwise fall back to the global route defaults.
 	var routeResilienceTimeout, routeResilienceIdle *time.Duration
+	var routeResilienceRetry *api.Retry
 	if rdcRoute.Timeout != nil {
 		routeResilienceTimeout = rdcRoute.Timeout.Timeout
 		routeResilienceIdle = rdcRoute.Timeout.IdleTimeout
+		routeResilienceRetry = rdcRoute.Timeout.Retry
 	}
 	routeAction := &route.Route_Route{
 		Route: &route.RouteAction{
@@ -341,8 +517,16 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 			IdleTimeout: t.routeTimeoutOrDefault(routeResilienceIdle, t.routerConfig.Upstream.Timeouts.RouteIdleTimeoutMs),
 		},
 	}
+	if routeResilienceRetry != nil {
+		routeAction.Route.RetryPolicy = buildRetryPolicy(routeResilienceRetry)
+	}
 
-	// Set cluster specifier
+	// Set cluster specifier. A retry-source policy needs no special branch here at all: its
+	// targets resolve to ordinary upstreamDefinition clusters, so rdcRoute.Upstream
+	// .UseClusterHeader is already true via the generic path below, and the route's default
+	// cluster is already the plain main upstream — exactly the "nothing redirected this
+	// request, pass it through untouched" behavior such a policy wants. All it still needs,
+	// set below, is its own RetryPolicy (retry_priority + PerTryTimeout) instead of a plain one.
 	if rdcRoute.Upstream.UseClusterHeader {
 		routeAction.Route.ClusterSpecifier = &route.RouteAction_ClusterHeader{
 			ClusterHeader: constants.TargetUpstreamHeader,
@@ -350,6 +534,43 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 	} else {
 		routeAction.Route.ClusterSpecifier = &route.RouteAction_Cluster{
 			Cluster: rdcRoute.Upstream.ClusterKey,
+		}
+	}
+
+	// Retry declarations discovered from this route's chain (by policy-definition metadata,
+	// never by policy name) combine into RetryPolicy:
+	//
+	//   - A retry source gets retry_priority + PerTryTimeout, with NumRetries derived from the
+	//     LONGEST group chain, raised to cover a co-declared trigger's minAttempts when that
+	//     asks for more attempts than the chain alone provides (a zero-fallback source has
+	//     maxChain==0, which would otherwise leave a merged trigger status code permanently
+	//     inert — see buildRetrySourceRetryPolicy). Envoy has one shared retry budget per
+	//     route, not one per group, so whichever group a given request resolves to is retried
+	//     under the same budget. Any retry-trigger policy on the same route folds its status
+	//     codes into that SAME policy: one Envoy retry policy, richer trigger conditions, no
+	//     second aggregate. Mutual exclusivity between a retry SOURCE and resilience.retry is
+	//     enforced at validation time (ValidateAtMostOneRetrySourcePerRoute), so
+	//     routeResilienceRetry above is never also set when this branch applies.
+	//   - With no retry source, trigger declarations COMPOSE with an operator-configured
+	//     resilience.retry rather than replacing it — unlike retry sources, triggers are
+	//     designed to never conflict with anything (any number of trigger-declaring policies
+	//     compose by union). When resilience.retry set a plain RetryPolicy above, the trigger's
+	//     codes are unioned into it and NumRetries is only ever raised, never lowered, to cover
+	//     the trigger's minAttempts. With no resilience.retry either, triggers alone still
+	//     produce a plain, non-aggregate RetryPolicy (no retry_priority), i.e. ordinary
+	//     same-cluster Envoy retry — this is what lets a trigger-only policy get real retry
+	//     with no other policy present.
+	//
+	// An error here is impossible in practice (the same parse already succeeded during cluster
+	// construction, which fails the whole translation) — the route simply keeps its plain
+	// retry policy rather than aborting a translation that already got past that point.
+	if sourceDecl, _, triggerCodes, triggerMinAttempts, err := t.resolveRetryDeclarations(rdc.PolicyChains[routeKey]); err == nil {
+		switch {
+		case sourceDecl != nil:
+			sourceDecl.RetriableStatusCodes = mergeRetriableStatusCodes(sourceDecl.RetriableStatusCodes, triggerCodes)
+			routeAction.Route.RetryPolicy = buildRetrySourceRetryPolicy(sourceDecl, triggerMinAttempts)
+		case len(triggerCodes) > 0:
+			routeAction.Route.RetryPolicy = composeRetryTriggerPolicy(routeAction.Route.RetryPolicy, triggerCodes, triggerMinAttempts)
 		}
 	}
 
@@ -630,6 +851,68 @@ func (t *Translator) createWeightedCluster(
 	return c
 }
 
+// retrySourceTargetClusterNames resolves ONE RetryGroup's own ordered priority chain into
+// real upstreamDefinition cluster names — that group's aggregate-cluster member list. Each
+// name is the exact cluster RestAPITransformer already creates for that upstreamDefinition
+// (constants.UpstreamDefinitionClusterPrefix + kind + "_" + apiID + "_" +
+// sanitizeUpstreamDefinitionName(name)) — the SAME clusters upstreamDefinitions always
+// produce, never a new/parallel set. Every named UpstreamDefinition referenced here is
+// pre-validated to exist (config.ValidateRetrySourceUpstreamReferences), so this never needs
+// to fall back to any default. Order is preserved: index i corresponds to Envoy attempt i+1
+// — this function must never reorder or dedupe.
+//
+// mainClusterName is the route's own resolved main-upstream Envoy cluster name (rdc.Routes[
+// routeKey].Upstream.DefaultCluster — the same string used as both the rdc.UpstreamClusters
+// map key and the Envoy cluster's Name, see translateRuntimeConfig's cluster-building loop
+// above). An empty UpstreamDefinitionName means "this API's own main upstream", so it
+// resolves here instead of the UpstreamDefinitionClusterPrefix scheme named
+// upstreamDefinitions use.
+func retrySourceTargetClusterNames(group policy.RetryGroup, apiKind, apiID, mainClusterName string) []string {
+	resolve := func(upstreamDef string) string {
+		if upstreamDef == "" {
+			return mainClusterName
+		}
+		return constants.UpstreamDefinitionClusterPrefix + apiKind + "_" + apiID + "_" + sanitizeUpstreamDefinitionName(upstreamDef)
+	}
+	names := make([]string, 0, len(group.OrderedTargets))
+	for _, target := range group.OrderedTargets {
+		names = append(names, resolve(target.UpstreamDefinitionName))
+	}
+	return names
+}
+
+// createAggregateCluster builds an envoy.clusters.aggregate cluster composing
+// memberClusterNames in priority order (index 0 = highest priority — Envoy's
+// aggregate cluster assigns priorities by list position). lb_policy MUST be
+// CLUSTER_PROVIDED: the aggregate cluster type supplies its own load
+// balancing and rejects any other value. This cluster carries no endpoints
+// of its own — connections are always established through whichever member
+// cluster the aggregate's priority/retry logic selects.
+func (t *Translator) createAggregateCluster(name string, memberClusterNames []string) (*cluster.Cluster, error) {
+	cfg := &aggregatev3.ClusterConfig{Clusters: memberClusterNames}
+	cfgAny, err := anypb.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal aggregate cluster config for %q: %w", name, err)
+	}
+	return &cluster.Cluster{
+		Name:     name,
+		LbPolicy: cluster.Cluster_CLUSTER_PROVIDED,
+		ClusterDiscoveryType: &cluster.Cluster_ClusterType{
+			ClusterType: &cluster.Cluster_CustomClusterType{
+				Name:        "envoy.clusters.aggregate",
+				TypedConfig: cfgAny,
+			},
+		},
+	}, nil
+}
+
+// isRetrySourceAggregateCluster reports whether c is an envoy.clusters.aggregate cluster —
+// in this codebase, exclusively created by createAggregateCluster for retry-source routes.
+func isRetrySourceAggregateCluster(c *cluster.Cluster) bool {
+	ct, ok := c.GetClusterDiscoveryType().(*cluster.Cluster_ClusterType)
+	return ok && ct.ClusterType.GetName() == "envoy.clusters.aggregate"
+}
+
 // TranslateConfigs translates all API configurations to Envoy resources
 // The correlationID parameter is optional and used for request tracing in logs
 // buildGatewayHealthRoutes builds the gateway's own readiness/liveness
@@ -700,6 +983,36 @@ func (t *Translator) TranslateConfigs(
 	allRoutes := make([]*route.Route, 0)
 	clusterMap := make(map[string]*cluster.Cluster)
 
+	// clustersNeedingUpstreamFilter accumulates, across every deployed config, the name of
+	// any cluster backing at least one route with a native RetryPolicy (resilience.retry).
+	// A cluster is shared/deduped by name across operations and even across unrelated APIs
+	// (see clusterMap above), so this must be OR'd once across every sharer, not decided
+	// per-operation. It is populated generically from the already-built route.Route objects
+	// (see collectClustersNeedingUpstreamFilter) rather than re-deriving "does this route
+	// have retry" from source config, which automatically covers both the legacy
+	// (translateAPIConfig/createRoute) and RuntimeDeployConfig (translateRuntimeConfig/
+	// createRouteFromRDC) paths — both already emit RouteAction.RetryPolicy identically.
+	clustersNeedingUpstreamFilter := make(map[string]bool)
+
+	// clustersNeedingUpstreamBodyFilter is the model-failover-specific counterpart to
+	// clustersNeedingUpstreamFilter above — a strictly separate set (see
+	// collectClustersNeedingUpstreamBodyFilter), so a cluster is never marked in both and
+	// never receives two upstream ext_proc filters.
+	clustersNeedingUpstreamBodyFilter := make(map[string]bool)
+
+	// clustersNeedingUpstreamResponseObserver accumulates, across every deployed
+	// RuntimeDeployConfig, the name of any cluster backing at least one route whose policy
+	// chain includes a policy DECLARING x-wso2-upstream-response-observer: true in its own
+	// policy-definition.yaml — discovered generically via cached metadata (see
+	// collectClustersNeedingUpstreamResponseObserver), never by policy name. Unlike the two
+	// sets above, this one is populated straight from each RuntimeDeployConfig's
+	// PolicyChains rather than from the already-built route.Route objects: there is no
+	// Envoy RouteAction field this capability turns into (it is unrelated to retry
+	// semantics), so it can't be detected post-hoc the way RetryPolicy presence can. Legacy
+	// (non-RDC) configs carry no PolicyChains and so never populate this set — this
+	// capability, like retry-source/retry-trigger discovery, is RDC-only today.
+	clustersNeedingUpstreamResponseObserver := make(map[string]bool)
+
 	for _, cfg := range configs {
 		// Skip undeployed APIs - they should not appear in xDS routes
 		if cfg.DesiredState == models.StateUndeployed {
@@ -735,6 +1048,7 @@ func (t *Translator) TranslateConfigs(
 						slog.Any("error", err))
 					continue
 				}
+				collectClustersNeedingUpstreamResponseObserver(rdc, t.policyDefinitions, t.latestVersions, clustersNeedingUpstreamResponseObserver)
 			}
 		}
 
@@ -762,7 +1076,53 @@ func (t *Translator) TranslateConfigs(
 		// Add clusters (avoiding duplicates)
 		for _, c := range clusterList {
 			clusterMap[c.Name] = c
+			// model-failover's aggregate cluster is referenced by its route via
+			// ClusterHeader, not a static Cluster name (see createRouteFromRDC's
+			// model-failover branch) — collectClustersNeedingUpstreamBodyFilter's
+			// route-inspection (ra.GetCluster()) can never see it, since a
+			// header-resolved route has no cluster name at config-build time by
+			// design. Every aggregate cluster in this codebase exists ONLY for
+			// model-failover and ALWAYS needs the per-attempt body-mutation
+			// filter (attempt 2+ must rewrite "model" per target, same as any
+			// other retry-priority cluster) — so mark it directly here instead
+			// of trying to make the generic route-based detection see through
+			// a header indirection it isn't meant to.
+			if isRetrySourceAggregateCluster(c) {
+				clustersNeedingUpstreamBodyFilter[c.Name] = true
+			}
 		}
+		collectClustersNeedingUpstreamFilter(routesList, clustersNeedingUpstreamFilter)
+		collectClustersNeedingUpstreamBodyFilter(routesList, clustersNeedingUpstreamBodyFilter)
+	}
+
+	if err := t.attachUpstreamRefreshFilter(clusterMap, clustersNeedingUpstreamFilter); err != nil {
+		return nil, err
+	}
+
+	if err := t.attachUpstreamBodyFilter(clusterMap, clustersNeedingUpstreamBodyFilter); err != nil {
+		return nil, err
+	}
+
+	// A cluster must never receive two upstream ext_proc filters — Envoy's upstream
+	// http_filters chain is a single ordered list per cluster (see
+	// TypedExtensionProtocolOptions below), so a second attach would silently overwrite the
+	// first rather than combining with it. No policy in this plan (Tasks 10-11) sets
+	// x-wso2-upstream-response-observer on a chain that is also a retry source/trigger, so
+	// this exclusion is defensive only today — but a cluster already marked for the
+	// headers-only or body-buffering filter is dropped here rather than risking that
+	// silent overwrite. A route genuinely needing BOTH capabilities on the same cluster
+	// would need a single filter construction with both ProcessingMode fields set
+	// (RequestBodyMode: BUFFERED and ResponseHeaderMode: SEND together); that combination
+	// is not built — a future consumer needing it must extend this exclusion logic rather
+	// than relying on it silently doing the right thing.
+	for clusterName := range clustersNeedingUpstreamResponseObserver {
+		if clustersNeedingUpstreamFilter[clusterName] || clustersNeedingUpstreamBodyFilter[clusterName] {
+			delete(clustersNeedingUpstreamResponseObserver, clusterName)
+		}
+	}
+
+	if err := t.attachUpstreamResponseObserverFilter(clusterMap, clustersNeedingUpstreamResponseObserver); err != nil {
+		return nil, err
 	}
 
 	// Group routes by vhost. Pre-seed the wildcard vhost so no-api-found is
@@ -798,6 +1158,21 @@ func (t *Translator) TranslateConfigs(
 	for vhost, routes := range vhostMap {
 		// Sort routes by priority (highest priority first) before adding to vhost
 		routes = SortRoutesByPriority(routes)
+
+		// Scoped to THIS vhost's own routes only - clustersNeedingUpstreamFilter (above)
+		// is keyed by cluster name with no vhost affinity at all, so reusing it here
+		// would leak IncludeRequestAttemptCount onto every vhost the moment ANY vhost,
+		// anywhere, has a retry-configured route. Checked directly against
+		// RouteAction.RetryPolicy (the same field collectClustersNeedingUpstreamFilter
+		// already checks) rather than via the cluster map, since a cluster can be
+		// shared/deduped across vhosts but this flag must not be.
+		vhostHasRetryConfiguredRoute := false
+		for _, r := range routes {
+			if r.GetRoute().GetRetryPolicy() != nil {
+				vhostHasRetryConfiguredRoute = true
+				break
+			}
+		}
 
 		// Prepend the gateway health routes ahead of every API route and the
 		// catch-all 404 below. vhostMap always contains at least the "*" wildcard
@@ -850,6 +1225,31 @@ func (t *Translator) TranslateConfigs(
 			Name:    vhost,
 			Domains: t.getVHostDomains(vhost),
 			Routes:  routes,
+			// IncludeRequestAttemptCount makes Envoy set x-envoy-attempt-count on the
+			// upstream request, starting at 1 and incrementing per retry - this is the
+			// ONLY signal the upstream ext_proc filter (UpstreamExternalProcessorServer,
+			// see gateway-runtime/policy-engine/internal/kernel/upstream_extproc.go) has
+			// to tell a native retry attempt apart from the original one, since it has no
+			// other way to observe RouteAction.RetryPolicy at request-processing time.
+			// Scoped to whether THIS vhost has any retry-configured route
+			// (vhostHasRetryConfiguredRoute, computed above) - VirtualHost is the only
+			// level this flag exists at (there is no per-route equivalent), so it can't
+			// be scoped any tighter than per-vhost, but it must not be scoped any
+			// LOOSER either (e.g. globally across every vhost in this TranslateConfigs
+			// call) or an unrelated tenant's vhost would get x-envoy-attempt-count sent
+			// to its own backend for no reason.
+			IncludeRequestAttemptCount: vhostHasRetryConfiguredRoute,
+			// IncludeAttemptCountInResponse puts the SAME x-envoy-attempt-count value
+			// onto the response sent back to the downstream client, not just the
+			// upstream-bound request above - this is the only signal
+			// model-failover's OnResponseHeaders (gateway-controllers/policies/
+			// model-failover/model_failover.go) has to infer which targets failed
+			// on this request and suspend them. Reuses the identical
+			// vhostHasRetryConfiguredRoute scoping as the request-side flag: no
+			// tighter granularity is available (VirtualHost is the only level
+			// either flag exists at), and it's already accepted for the request
+			// side above.
+			IncludeAttemptCountInResponse: vhostHasRetryConfiguredRoute,
 			// Strip any client-supplied x-envoy-original-path so it cannot survive to
 			// the collector.ignore_path_prefixes access-log filter (buildIgnorePathsAccessLogFilter):
 			// on a route that performs a path rewrite, Envoy's router unconditionally
@@ -968,6 +1368,358 @@ func (t *Translator) TranslateConfigs(
 	return resources, nil
 }
 
+// collectClustersNeedingUpstreamFilter scans a set of already-built Envoy routes and marks,
+// in dest, the name of every statically-specified cluster (RouteAction_Cluster) backing at
+// least one route with a native RetryPolicy set. Routes using dynamic cluster_header
+// selection (RouteAction_ClusterHeader) are skipped: that cluster identity is resolved only
+// per-request, with no policy-chain/cluster access at xDS-build time, so it can never be
+// marked here — consistent with this feature's existing exclusion of upstream-definition
+// clusters reached the same way. dest is mutated in place so callers can accumulate across
+// every config translated in a single TranslateConfigs pass (a cluster can be shared/deduped
+// across unrelated APIs, so eligibility must be OR'd once across every sharer).
+func collectClustersNeedingUpstreamFilter(routes []*route.Route, dest map[string]bool) {
+	for _, r := range routes {
+		ra := r.GetRoute()
+		if ra == nil || ra.GetRetryPolicy() == nil {
+			continue
+		}
+		if clusterName := ra.GetCluster(); clusterName != "" {
+			dest[clusterName] = true
+		}
+	}
+}
+
+// collectClustersNeedingUpstreamBodyFilter is the model-failover-specific counterpart to
+// collectClustersNeedingUpstreamFilter above — deliberately a SEPARATE set, never merged
+// into it (a cluster must never receive two upstream ext_proc filters). A plain
+// resilience.retry route's cluster must never get RequestBodyMode: BUFFERED (unnecessary
+// buffering cost); only a route whose RetryPolicy carries RetryPriority — which only
+// model-failover routes ever set, via buildModelFailoverRetryPolicy — is marked here.
+func collectClustersNeedingUpstreamBodyFilter(routes []*route.Route, dest map[string]bool) {
+	for _, r := range routes {
+		ra := r.GetRoute()
+		if ra == nil || ra.GetRetryPolicy() == nil || ra.GetRetryPolicy().GetRetryPriority() == nil {
+			continue
+		}
+		if clusterName := ra.GetCluster(); clusterName != "" {
+			dest[clusterName] = true
+		}
+	}
+}
+
+// collectClustersNeedingUpstreamResponseObserver walks rdc.PolicyChains and marks, in dest,
+// the name of every statically-specified cluster (RouteAction_Cluster) backing at least one
+// route whose PolicyChain contains a policy DECLARING x-wso2-upstream-response-observer: true
+// in its own policy-definition.yaml — discovered generically via cached metadata
+// (config.LookupUpstreamResponseObserver, the same registry and "name|resolvedVersion"
+// lookup-key format resolveRetryDeclarations/config.LookupRetryMetadata use), never by policy
+// name. Routes using dynamic cluster_header selection (RouteUpstream.UseClusterHeader) are
+// skipped, consistent with collectClustersNeedingUpstreamFilter's existing exclusion of the
+// same case: that cluster identity is resolved only per-request, with no policy-chain/cluster
+// access at xDS-build time.
+//
+// Unlike collectClustersNeedingUpstreamFilter/collectClustersNeedingUpstreamBodyFilter, this
+// reads rdc.PolicyChains/rdc.Routes directly rather than the already-built route.Route
+// objects: RetryPolicy presence is an Envoy RouteAction field those two can inspect post-hoc,
+// but this capability has no such field to look for. dest is mutated in place so callers can
+// accumulate across every RuntimeDeployConfig translated in a single TranslateConfigs pass (a
+// cluster can be shared/deduped across unrelated APIs, so eligibility must be OR'd once across
+// every sharer).
+func collectClustersNeedingUpstreamResponseObserver(rdc *models.RuntimeDeployConfig, policyDefinitions map[string]models.PolicyDefinition, latestVersions map[string]string, dest map[string]bool) {
+	for routeKey, chain := range rdc.PolicyChains {
+		if chain == nil {
+			continue
+		}
+		rdcRoute, ok := rdc.Routes[routeKey]
+		if !ok || rdcRoute.Upstream.UseClusterHeader {
+			continue
+		}
+		for _, p := range chain.Policies {
+			if !config.LookupUpstreamResponseObserver(policyDefinitions, latestVersions, p.Name, p.Version) {
+				continue
+			}
+			if clusterName := rdcRoute.Upstream.ClusterKey; clusterName != "" {
+				dest[clusterName] = true
+			}
+			break
+		}
+	}
+}
+
+// attachUpstreamRefreshFilter attaches the per-cluster upstream ext_proc filter (chained with
+// the mandatory terminal envoy.filters.http.upstream_codec filter) to every cluster in
+// clusterMap named in clustersNeedingUpstreamFilter, and unconditionally registers the
+// internal cluster the filter targets. A cluster referenced by clustersNeedingUpstreamFilter
+// but absent from clusterMap (cluster resolution failed elsewhere) is silently skipped —
+// nothing to attach to. No-op when clustersNeedingUpstreamFilter is empty, so deployments
+// with no resilience.retry configured anywhere pay zero cost.
+func (t *Translator) attachUpstreamRefreshFilter(clusterMap map[string]*cluster.Cluster, clustersNeedingUpstreamFilter map[string]bool) error {
+	if len(clustersNeedingUpstreamFilter) == 0 {
+		return nil
+	}
+
+	upstreamFilter, err := t.createUpstreamRefreshExtProcFilter()
+	if err != nil {
+		return fmt.Errorf("failed to create upstream refresh ext_proc filter: %w", err)
+	}
+
+	// The upstream_codec filter is Envoy's built-in terminal filter: any non-empty upstream
+	// http_filters chain MUST end with it, or Envoy rejects the cluster config outright.
+	codecAny, err := anypb.New(&upstreamcodecv3.UpstreamCodec{})
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream codec filter: %w", err)
+	}
+	codecFilter := &hcm.HttpFilter{
+		Name:       constants.UpstreamCodecFilterName,
+		ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: codecAny},
+	}
+
+	// ExplicitHttpConfig with an explicit (empty-fields) Http1ProtocolOptions pins the
+	// upstream protocol to HTTP/1.1 — this repo's existing clusters never set explicit
+	// protocol options (createCluster/createWeightedCluster set none), so this preserves
+	// today's default behavior exactly rather than switching to UseDownstreamProtocolConfig,
+	// which would make the upstream protocol track whatever the downstream connection
+	// negotiated — a real behavior change, not a safe no-op, for any listener that can
+	// negotiate HTTP/2 with the client.
+	protocolOptions := &httpv3.HttpProtocolOptions{
+		UpstreamProtocolOptions: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{
+					HttpProtocolOptions: &core.Http1ProtocolOptions{},
+				},
+			},
+		},
+		HttpFilters: []*hcm.HttpFilter{upstreamFilter, codecFilter},
+	}
+	protocolOptionsAny, err := anypb.New(protocolOptions)
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream HttpProtocolOptions: %w", err)
+	}
+
+	for clusterName := range clustersNeedingUpstreamFilter {
+		c, ok := clusterMap[clusterName]
+		if !ok {
+			continue // cluster resolution failed elsewhere; nothing to attach to
+		}
+		if c.TypedExtensionProtocolOptions == nil {
+			c.TypedExtensionProtocolOptions = make(map[string]*anypb.Any)
+		}
+		c.TypedExtensionProtocolOptions[upstreamHTTPProtocolOptionsKey] = protocolOptionsAny
+	}
+
+	// Always register the internal cluster the filter targets, once, unconditionally — cheap,
+	// and only ever added when at least one real cluster needs the filter (the len==0 guard
+	// above).
+	if _, ok := clusterMap[constants.UpstreamRefreshPolicyEngineClusterName]; !ok {
+		clusterMap[constants.UpstreamRefreshPolicyEngineClusterName] = t.createUpstreamRefreshExtProcCluster()
+	}
+
+	return nil
+}
+
+// createUpstreamBodyExtProcFilter is the body-buffering counterpart to
+// createUpstreamRefreshExtProcFilter: it additionally requests the request-body phase
+// (RequestBodyMode: BUFFERED) so a model-failover retry attempt can have its request body
+// rewritten (e.g. the "model" field) before being resent to the next fallback priority. It
+// targets the same internal ext_proc cluster/server as the refresh filter — no new internal
+// cluster is needed.
+func (t *Translator) createUpstreamBodyExtProcFilter() (*hcm.HttpFilter, error) {
+	policyEngine := t.routerConfig.PolicyEngine
+	extProcConfig := &extproc.ExternalProcessor{
+		GrpcService: &core.GrpcService{
+			TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
+				EnvoyGrpc: &core.GrpcService_EnvoyGrpc{ClusterName: constants.UpstreamRefreshPolicyEngineClusterName},
+			},
+			Timeout: durationpb.New(time.Duration(policyEngine.TimeoutMs) * time.Millisecond),
+		},
+		FailureModeAllow: true, // fail open — a failure here must never block the retry
+		ProcessingMode: &extproc.ProcessingMode{
+			RequestHeaderMode: extproc.ProcessingMode_SEND,
+			RequestBodyMode:   extproc.ProcessingMode_BUFFERED,
+		},
+		MessageTimeout:    durationpb.New(time.Duration(policyEngine.MessageTimeoutMs) * time.Millisecond),
+		RequestAttributes: []string{constants.ExtProcRequestAttributeRouteName},
+	}
+	extProcAny, err := anypb.New(extProcConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal upstream body ext_proc config: %w", err)
+	}
+	return &hcm.HttpFilter{
+		Name:       constants.ExtProcFilterName + "_upstream_body",
+		ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: extProcAny},
+	}, nil
+}
+
+// attachUpstreamBodyFilter mirrors attachUpstreamRefreshFilter exactly (same
+// upstream_codec-terminated filter chain requirement, same ExplicitHttpConfig/
+// HTTP1ProtocolOptions choice) but with RequestBodyMode enabled and scoped to
+// clustersNeedingUpstreamBodyFilter — a route's cluster is never in both this set and
+// clustersNeedingUpstreamFilter (see collectClustersNeedingUpstreamBodyFilter), so no
+// cluster ever receives two upstream ext_proc filters. No-op when
+// clustersNeedingUpstreamBodyFilter is empty, so deployments with no model-failover
+// configured anywhere pay zero cost.
+func (t *Translator) attachUpstreamBodyFilter(clusterMap map[string]*cluster.Cluster, clustersNeedingUpstreamBodyFilter map[string]bool) error {
+	if len(clustersNeedingUpstreamBodyFilter) == 0 {
+		return nil
+	}
+
+	upstreamFilter, err := t.createUpstreamBodyExtProcFilter()
+	if err != nil {
+		return fmt.Errorf("failed to create upstream body ext_proc filter: %w", err)
+	}
+
+	// The upstream_codec filter is Envoy's built-in terminal filter: any non-empty upstream
+	// http_filters chain MUST end with it, or Envoy rejects the cluster config outright.
+	codecAny, err := anypb.New(&upstreamcodecv3.UpstreamCodec{})
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream codec filter: %w", err)
+	}
+	codecFilter := &hcm.HttpFilter{
+		Name:       constants.UpstreamCodecFilterName,
+		ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: codecAny},
+	}
+
+	protocolOptions := &httpv3.HttpProtocolOptions{
+		UpstreamProtocolOptions: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{
+					HttpProtocolOptions: &core.Http1ProtocolOptions{},
+				},
+			},
+		},
+		HttpFilters: []*hcm.HttpFilter{upstreamFilter, codecFilter},
+	}
+	protocolOptionsAny, err := anypb.New(protocolOptions)
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream HttpProtocolOptions for body filter: %w", err)
+	}
+
+	for clusterName := range clustersNeedingUpstreamBodyFilter {
+		c, ok := clusterMap[clusterName]
+		if !ok {
+			continue // cluster resolution failed elsewhere; nothing to attach to
+		}
+		if c.TypedExtensionProtocolOptions == nil {
+			c.TypedExtensionProtocolOptions = make(map[string]*anypb.Any)
+		}
+		c.TypedExtensionProtocolOptions[upstreamHTTPProtocolOptionsKey] = protocolOptionsAny
+	}
+
+	// Always register the internal cluster the filter targets, once, unconditionally — cheap,
+	// and only ever added when at least one real cluster needs the filter (the len==0 guard
+	// above). Shared with attachUpstreamRefreshFilter's registration (same internal
+	// cluster/server); the ok-check keeps this idempotent regardless of call order.
+	if _, ok := clusterMap[constants.UpstreamRefreshPolicyEngineClusterName]; !ok {
+		clusterMap[constants.UpstreamRefreshPolicyEngineClusterName] = t.createUpstreamRefreshExtProcCluster()
+	}
+
+	return nil
+}
+
+// createUpstreamResponseObserverExtProcFilter is the response-observation counterpart to
+// createUpstreamRefreshExtProcFilter/createUpstreamBodyExtProcFilter: it additionally
+// requests the response-headers phase (ResponseHeaderMode: SEND) so a policy implementing
+// UpstreamAttemptResponseObserver can see why a specific attempt failed, before Envoy decides
+// whether to retry. RequestHeaderMode stays SEND too, so attempt-request dispatch (the
+// mechanism createUpstreamRefreshExtProcFilter provides) keeps working alongside the new
+// response phase. Targets the same internal ext_proc cluster/server as the other two upstream
+// filters — no new internal cluster is needed.
+func (t *Translator) createUpstreamResponseObserverExtProcFilter() (*hcm.HttpFilter, error) {
+	policyEngine := t.routerConfig.PolicyEngine
+	extProcConfig := &extproc.ExternalProcessor{
+		GrpcService: &core.GrpcService{
+			TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
+				EnvoyGrpc: &core.GrpcService_EnvoyGrpc{ClusterName: constants.UpstreamRefreshPolicyEngineClusterName},
+			},
+			Timeout: durationpb.New(time.Duration(policyEngine.TimeoutMs) * time.Millisecond),
+		},
+		FailureModeAllow: true, // fail open — a failure here must never block the retry
+		ProcessingMode: &extproc.ProcessingMode{
+			RequestHeaderMode:  extproc.ProcessingMode_SEND,
+			ResponseHeaderMode: extproc.ProcessingMode_SEND,
+		},
+		MessageTimeout:    durationpb.New(time.Duration(policyEngine.MessageTimeoutMs) * time.Millisecond),
+		RequestAttributes: []string{constants.ExtProcRequestAttributeRouteName},
+	}
+	extProcAny, err := anypb.New(extProcConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal upstream response-observer ext_proc config: %w", err)
+	}
+	return &hcm.HttpFilter{
+		Name:       constants.ExtProcFilterName + "_upstream_response_observer",
+		ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: extProcAny},
+	}, nil
+}
+
+// attachUpstreamResponseObserverFilter mirrors attachUpstreamRefreshFilter/
+// attachUpstreamBodyFilter exactly (same upstream_codec-terminated filter chain requirement,
+// same ExplicitHttpConfig/HTTP1ProtocolOptions choice) but attaches
+// createUpstreamResponseObserverExtProcFilter's output, scoped to
+// clustersNeedingUpstreamResponseObserver. Callers are responsible for keeping that set
+// disjoint from clustersNeedingUpstreamFilter/clustersNeedingUpstreamBodyFilter (see
+// TranslateConfigs) — a cluster must never receive two upstream ext_proc filters. No-op when
+// clustersNeedingUpstreamResponseObserver is empty, so deployments with no policy declaring
+// x-wso2-upstream-response-observer pay zero cost — true for every deployment today, since no
+// policy in this plan sets the flag yet.
+func (t *Translator) attachUpstreamResponseObserverFilter(clusterMap map[string]*cluster.Cluster, clustersNeedingUpstreamResponseObserver map[string]bool) error {
+	if len(clustersNeedingUpstreamResponseObserver) == 0 {
+		return nil
+	}
+
+	upstreamFilter, err := t.createUpstreamResponseObserverExtProcFilter()
+	if err != nil {
+		return fmt.Errorf("failed to create upstream response-observer ext_proc filter: %w", err)
+	}
+
+	// The upstream_codec filter is Envoy's built-in terminal filter: any non-empty upstream
+	// http_filters chain MUST end with it, or Envoy rejects the cluster config outright.
+	codecAny, err := anypb.New(&upstreamcodecv3.UpstreamCodec{})
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream codec filter: %w", err)
+	}
+	codecFilter := &hcm.HttpFilter{
+		Name:       constants.UpstreamCodecFilterName,
+		ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: codecAny},
+	}
+
+	protocolOptions := &httpv3.HttpProtocolOptions{
+		UpstreamProtocolOptions: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{
+					HttpProtocolOptions: &core.Http1ProtocolOptions{},
+				},
+			},
+		},
+		HttpFilters: []*hcm.HttpFilter{upstreamFilter, codecFilter},
+	}
+	protocolOptionsAny, err := anypb.New(protocolOptions)
+	if err != nil {
+		return fmt.Errorf("failed to marshal upstream HttpProtocolOptions for response-observer filter: %w", err)
+	}
+
+	for clusterName := range clustersNeedingUpstreamResponseObserver {
+		c, ok := clusterMap[clusterName]
+		if !ok {
+			continue // cluster resolution failed elsewhere; nothing to attach to
+		}
+		if c.TypedExtensionProtocolOptions == nil {
+			c.TypedExtensionProtocolOptions = make(map[string]*anypb.Any)
+		}
+		c.TypedExtensionProtocolOptions[upstreamHTTPProtocolOptionsKey] = protocolOptionsAny
+	}
+
+	// Always register the internal cluster the filter targets, once, unconditionally — cheap,
+	// and only ever added when at least one real cluster needs the filter (the len==0 guard
+	// above). Shared with attachUpstreamRefreshFilter/attachUpstreamBodyFilter's registration
+	// (same internal cluster/server); the ok-check keeps this idempotent regardless of call
+	// order.
+	if _, ok := clusterMap[constants.UpstreamRefreshPolicyEngineClusterName]; !ok {
+		clusterMap[constants.UpstreamRefreshPolicyEngineClusterName] = t.createUpstreamRefreshExtProcCluster()
+	}
+
+	return nil
+}
+
 // getVHostDomains returns Envoy domain patterns for a resolved vhost.
 // If the vhost equals a configured default and that default has explicit domains,
 // all configured domains are used; otherwise it falls back to the vhost itself.
@@ -1023,8 +1775,16 @@ func (t *Translator) translateAPIConfig(cfg *models.StoredConfig, allConfigs []*
 
 	clusters := []*cluster.Cluster{}
 
+	// seenUpstreamDefinitionClusters memoizes every cluster built via
+	// resolveOrCreateUpstreamDefinitionCluster for this API resource, shared across the
+	// main/sandbox upstream resolution below and the UpstreamDefinitions loop further down —
+	// so a target referenced both as upstream.ref and as a standalone named
+	// upstreamDefinition resolves to exactly one Envoy cluster, not two. Merged into clusters
+	// once at the end of this function.
+	seenUpstreamDefinitionClusters := map[string]*cluster.Cluster{}
+
 	// -------- MAIN UPSTREAM --------
-	mainClusterName, parsedMainURL, mainTimeout, err := t.resolveUpstreamCluster("main", &apiData.Upstream.Main, apiData.UpstreamDefinitions)
+	mainClusterName, parsedMainURL, mainTimeout, err := t.resolveUpstreamCluster("main", &apiData.Upstream.Main, apiData.UpstreamDefinitions, cfg.Kind, cfg.UUID, seenUpstreamDefinitionClusters)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1035,8 +1795,11 @@ func (t *Translator) translateAPIConfig(cfg *models.StoredConfig, allConfigs []*
 		mainUpstreamClusterConnectTimeout = mainTimeout.Connect
 	}
 
-	mainCluster := t.createCluster(mainClusterName, parsedMainURL, nil, mainUpstreamClusterConnectTimeout)
-	clusters = append(clusters, mainCluster)
+	// A ref-based main upstream is already registered in seenUpstreamDefinitionClusters by
+	// resolveUpstreamCluster above; only a direct-URL main upstream needs building here.
+	if _, exists := seenUpstreamDefinitionClusters[mainClusterName]; !exists {
+		seenUpstreamDefinitionClusters[mainClusterName] = t.createCluster(mainClusterName, parsedMainURL, nil, mainUpstreamClusterConnectTimeout)
+	}
 
 	// Create routes for each operation (default to main cluster)
 	routesList := make([]*route.Route, 0)
@@ -1076,7 +1839,7 @@ func (t *Translator) translateAPIConfig(cfg *models.StoredConfig, allConfigs []*
 	}
 
 	// Resolve API-level resilience timeouts once; operation-level values override per field.
-	apiTimeout, apiIdleTimeout, err := ResolveResilience(apiData.Resilience)
+	apiTimeout, apiIdleTimeout, apiRetry, err := ResolveResilience(apiData.Resilience)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid API-level resilience: %w", err)
 	}
@@ -1093,11 +1856,11 @@ func (t *Translator) translateAPIConfig(cfg *models.StoredConfig, allConfigs []*
 	useClusterHeader := hasUpstreamDefinitions || hasSandboxForClusterHeader
 
 	for _, op := range apiData.Operations {
-		opTimeout, opIdleTimeout, err := ResolveResilience(op.Resilience)
+		opTimeout, opIdleTimeout, opRetry, err := ResolveResilience(op.Resilience)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid resilience for operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
 		}
-		opTimeoutCfg := combineRouteResilience(mainTimeout, apiTimeout, apiIdleTimeout, opTimeout, opIdleTimeout)
+		opTimeoutCfg := combineRouteResilience(mainTimeout, apiTimeout, apiIdleTimeout, opTimeout, opIdleTimeout, apiRetry, opRetry)
 
 		r := t.createRoute(cfg.UUID, apiData.DisplayName, apiData.Version, apiData.Context, op.EffectiveMethod(), op.EffectivePath(),
 			mainClusterName, parsedMainURL.Path, effectiveMainVHost, cfg.Kind, templateHandle, providerName, apiData.Upstream.Main.HostRewrite, apiProjectID, opTimeoutCfg, useClusterHeader, upstreamDefPaths)
@@ -1107,7 +1870,7 @@ func (t *Translator) translateAPIConfig(cfg *models.StoredConfig, allConfigs []*
 
 	// -------- SANDBOX UPSTREAM --------
 	if apiData.Upstream.Sandbox != nil {
-		sbClusterName, parsedSbURL, sbTimeout, err := t.resolveUpstreamCluster("sandbox", apiData.Upstream.Sandbox, apiData.UpstreamDefinitions)
+		sbClusterName, parsedSbURL, sbTimeout, err := t.resolveUpstreamCluster("sandbox", apiData.Upstream.Sandbox, apiData.UpstreamDefinitions, cfg.Kind, cfg.UUID, seenUpstreamDefinitionClusters)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1118,18 +1881,21 @@ func (t *Translator) translateAPIConfig(cfg *models.StoredConfig, allConfigs []*
 			sbUpstreamClusterConnectTimeout = sbTimeout.Connect
 		}
 
-		sandboxCluster := t.createCluster(sbClusterName, parsedSbURL, nil, sbUpstreamClusterConnectTimeout)
-		clusters = append(clusters, sandboxCluster)
+		// A ref-based sandbox upstream is already registered in seenUpstreamDefinitionClusters
+		// by resolveUpstreamCluster above; only a direct-URL sandbox upstream needs building here.
+		if _, exists := seenUpstreamDefinitionClusters[sbClusterName]; !exists {
+			seenUpstreamDefinitionClusters[sbClusterName] = t.createCluster(sbClusterName, parsedSbURL, nil, sbUpstreamClusterConnectTimeout)
+		}
 
 		// Create sandbox routes. Mirrors main's useClusterHeader (dynamic cluster selection
 		// is on whenever upstreamDefinitions exist or a sandbox upstream is configured).
 		sbRoutesList := make([]*route.Route, 0)
 		for _, op := range apiData.Operations {
-			opTimeout, opIdleTimeout, err := ResolveResilience(op.Resilience)
+			opTimeout, opIdleTimeout, opRetry, err := ResolveResilience(op.Resilience)
 			if err != nil {
 				return nil, nil, fmt.Errorf("invalid resilience for operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
 			}
-			opTimeoutCfg := combineRouteResilience(sbTimeout, apiTimeout, apiIdleTimeout, opTimeout, opIdleTimeout)
+			opTimeoutCfg := combineRouteResilience(sbTimeout, apiTimeout, apiIdleTimeout, opTimeout, opIdleTimeout, apiRetry, opRetry)
 
 			r := t.createRoute(cfg.UUID, apiData.DisplayName, apiData.Version, apiData.Context, op.EffectiveMethod(), op.EffectivePath(),
 				sbClusterName, parsedSbURL.Path, effectiveSandboxVHost, cfg.Kind, templateHandle, providerName, apiData.Upstream.Sandbox.HostRewrite, apiProjectID, opTimeoutCfg, useClusterHeader, upstreamDefPaths)
@@ -1139,66 +1905,42 @@ func (t *Translator) translateAPIConfig(cfg *models.StoredConfig, allConfigs []*
 	}
 
 	// -------- UPSTREAM DEFINITIONS (for dynamic cluster selection via UpstreamName) --------
-	// Create clusters for all upstreamDefinitions so policies can route to them dynamically
+	// Create clusters for all upstreamDefinitions so policies can route to them dynamically.
+	// Shares seenUpstreamDefinitionClusters with the main/sandbox resolution above, so a
+	// definition already registered there (referenced via upstream.ref) is reused here
+	// instead of getting a second, duplicate cluster.
 	if apiData.UpstreamDefinitions != nil {
 		for _, def := range *apiData.UpstreamDefinitions {
-			// Validate upstreams are configured
-			if len(def.Upstreams) == 0 || def.Upstreams[0].Url == "" {
-				return nil, nil, fmt.Errorf("upstream definition '%s' has no URLs configured", def.Name)
-			}
-
-			// Sanitize definition name for use in Envoy cluster name
-			// Envoy cluster names must not contain dots or colons
-			sanitizedDefName := sanitizeUpstreamDefinitionName(def.Name)
-
-			// Use the definition name as cluster name, scoped by kind and API ID to avoid conflicts
-			// Format: upstream_<kind>_<apiId>_<sanitizedDefName>
-			defClusterName := constants.UpstreamDefinitionClusterPrefix + cfg.Kind + "_" + cfg.UUID + "_" + sanitizedDefName
-
-			// Parse the first URL from the definition
-			rawURL := def.Upstreams[0].Url
-			parsedURL, err := url.Parse(rawURL)
+			defClusterName, err := t.resolveOrCreateUpstreamDefinitionCluster(def.Name, def, cfg.Kind, cfg.UUID, seenUpstreamDefinitionClusters)
 			if err != nil {
-				return nil, nil, fmt.Errorf("invalid URL in upstream definition '%s': %w", def.Name, err)
+				return nil, nil, err
 			}
-
-			// Validate URL scheme
-			if parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
-				return nil, nil, fmt.Errorf("invalid upstream definition '%s' URL: must include host and http/https scheme", def.Name)
-			}
-
-			// Extract timeout if specified
-			var defConnectTimeout *time.Duration
-			if def.Timeout != nil {
-				resolved, err := resolveTimeoutFromDefinition(&def)
-				if err != nil {
-					return nil, nil, fmt.Errorf("invalid timeout in upstream definition '%s': %w", def.Name, err)
-				}
-				if resolved != nil {
-					defConnectTimeout = resolved.Connect
-				}
-			}
-
-			// Create the cluster for this upstream definition
-			defCluster := t.createCluster(defClusterName, parsedURL, nil, defConnectTimeout)
-			clusters = append(clusters, defCluster)
 
 			t.logger.Debug("Created cluster for upstream definition",
 				slog.String("definition_name", def.Name),
-				slog.String("cluster_name", defClusterName),
-				slog.String("url", rawURL))
+				slog.String("cluster_name", defClusterName))
 		}
+	}
+
+	for _, c := range seenUpstreamDefinitionClusters {
+		clusters = append(clusters, c)
 	}
 
 	return routesList, clusters, nil
 }
 
-// resolveUpstreamCluster validates an upstream (main or sandbox) and creates its cluster.
-// Returns clusterName, parsedURL, timeout (can be nil), and error.
-func (t *Translator) resolveUpstreamCluster(upstreamName string, up *api.Upstream, upstreamDefinitions *[]api.UpstreamDefinition) (string, *url.URL, *resolvedTimeout, error) {
+// resolveUpstreamCluster validates an upstream (main or sandbox) and resolves its cluster
+// name. Returns clusterName, parsedURL, timeout (can be nil), and error. When up.Ref points
+// at a named upstreamDefinition, cluster naming/registration is delegated to
+// resolveOrCreateUpstreamDefinitionCluster (seen, keyed by apiKind+apiID) so a target
+// reachable both as this upstream's ref AND as a standalone named upstreamDefinition
+// resolves to the exact same cluster, never two — see resolveOrCreateUpstreamDefinitionCluster.
+func (t *Translator) resolveUpstreamCluster(upstreamName string, up *api.Upstream, upstreamDefinitions *[]api.UpstreamDefinition, apiKind, apiID string, seen map[string]*cluster.Cluster) (string, *url.URL, *resolvedTimeout, error) {
 	var rawURL string
 	var timeout *resolvedTimeout
 	var refBasePath *string
+	var refName string
+	var refDefinition *api.UpstreamDefinition
 
 	// Resolve URL and timeout
 	if up.Url != nil && strings.TrimSpace(*up.Url) != "" {
@@ -1208,11 +1950,12 @@ func (t *Translator) resolveUpstreamCluster(upstreamName string, up *api.Upstrea
 		timeout = nil
 	} else if up.Ref != nil && strings.TrimSpace(*up.Ref) != "" {
 		// Reference to upstream definition
-		refName := strings.TrimSpace(*up.Ref)
+		refName = strings.TrimSpace(*up.Ref)
 		definition, err := resolveUpstreamDefinition(refName, upstreamDefinitions)
 		if err != nil {
 			return "", nil, nil, fmt.Errorf("failed to resolve %s upstream ref: %w", upstreamName, err)
 		}
+		refDefinition = definition
 
 		// Extract URL from the first upstream target in the definition
 		// TODO: Support multiple upstream targets
@@ -1255,10 +1998,63 @@ func (t *Translator) resolveUpstreamCluster(upstreamName string, up *api.Upstrea
 		parsedURL.Path = *refBasePath
 	}
 
-	// Generate cluster name
-	clusterName := t.sanitizeClusterName(parsedURL.Host, parsedURL.Scheme)
+	// Generate cluster name. A ref-based upstream reuses/registers the SAME named-definition
+	// cluster the UpstreamDefinitions loop below would build for it (deduped via seen); a
+	// direct-URL upstream keeps the existing host+scheme-based name, unaffected by dedup.
+	var clusterName string
+	if refDefinition != nil {
+		clusterName, err = t.resolveOrCreateUpstreamDefinitionCluster(refName, *refDefinition, apiKind, apiID, seen)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("failed to resolve %s upstream ref: %w", upstreamName, err)
+		}
+	} else {
+		clusterName = t.sanitizeClusterName(parsedURL.Host, parsedURL.Scheme)
+	}
 
 	return clusterName, parsedURL, timeout, nil
+}
+
+// resolveOrCreateUpstreamDefinitionCluster returns the Envoy cluster name for the named
+// upstreamDefinition def, creating and registering the cluster in seen on first use and
+// reusing the SAME cluster on every subsequent call for the same name within one
+// API-resource's translation pass. seen is keyed by the final cluster name and shared across
+// both the main/sandbox upstream resolution (resolveUpstreamCluster, when it resolves a
+// `ref`) and the UpstreamDefinitions loop — previously two independent code paths that each
+// built their own cluster for the same target when a name was referenced both as
+// upstream.ref and standalone in upstreamDefinitions (confirmed live: a target used both ways
+// produced two separate Envoy clusters pointing at the identical backend, doubling
+// connection-pool and health-check overhead for no reason).
+func (t *Translator) resolveOrCreateUpstreamDefinitionCluster(name string, def api.UpstreamDefinition, apiKind, apiID string, seen map[string]*cluster.Cluster) (string, error) {
+	sanitizedName := sanitizeUpstreamDefinitionName(name)
+	clusterName := constants.UpstreamDefinitionClusterPrefix + apiKind + "_" + apiID + "_" + sanitizedName
+	if _, ok := seen[clusterName]; ok {
+		return clusterName, nil
+	}
+	if len(def.Upstreams) == 0 || def.Upstreams[0].Url == "" {
+		return "", fmt.Errorf("upstream definition '%s' has no URLs configured", name)
+	}
+	parsedURL, err := url.Parse(def.Upstreams[0].Url)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL in upstream definition '%s': %w", name, err)
+	}
+	if parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return "", fmt.Errorf("invalid upstream definition '%s' URL: must include host and http/https scheme", name)
+	}
+	if def.BasePath != nil {
+		parsedURL.Path = *def.BasePath
+	}
+	var connectTimeout *time.Duration
+	if def.Timeout != nil {
+		resolved, err := resolveTimeoutFromDefinition(&def)
+		if err != nil {
+			return "", fmt.Errorf("invalid timeout in upstream definition '%s': %w", name, err)
+		}
+		if resolved != nil {
+			connectTimeout = resolved.Connect
+		}
+	}
+	seen[clusterName] = t.createCluster(clusterName, parsedURL, nil, connectTimeout)
+	return clusterName, nil
 }
 
 // SharedRouteConfigName is the name of the shared route configuration used by both HTTP and HTTPS listeners
@@ -1703,6 +2499,9 @@ func (t *Translator) createRoute(apiId, apiName, apiVersion, context, method, pa
 			IdleTimeout: t.routeTimeoutOrDefault(routeIdleTimeout, t.routerConfig.Upstream.Timeouts.RouteIdleTimeoutMs),
 		},
 	}
+	if timeoutCfg != nil && timeoutCfg.Retry != nil {
+		routeAction.Route.RetryPolicy = buildRetryPolicy(timeoutCfg.Retry)
+	}
 
 	// Set cluster specifier based on whether dynamic cluster selection is enabled
 	if useClusterHeader {
@@ -2071,6 +2870,64 @@ func (t *Translator) createPolicyEngineCluster() *cluster.Cluster {
 		c.DnsLookupFamily = cluster.Cluster_V4_PREFERRED
 	}
 
+	return c
+}
+
+// createUpstreamRefreshExtProcCluster creates the internal Envoy cluster pointing at
+// policy-engine's second, upstream-attempt ext_proc endpoint (see
+// gateway-runtime/policy-engine/internal/kernel/upstream_extproc.go). Mirrors
+// createPolicyEngineCluster's addressing (UDS by default, TCP via
+// t.routerConfig.PolicyEngine.Mode) — this is a DIFFERENT socket/port on the same
+// policy-engine process, not a different service. Unlike createPolicyEngineCluster, this
+// intentionally has no TLS branch: policy-engine's upstream ext_proc server
+// (cmd/policy-engine/main.go) is a bare grpc.NewServer() with no transport credentials,
+// so mirroring the downstream cluster's full TLS complexity here would be dead code.
+func (t *Translator) createUpstreamRefreshExtProcCluster() *cluster.Cluster {
+	policyEngine := t.routerConfig.PolicyEngine
+
+	var address *core.Address
+	if policyEngine.Mode == "tcp" {
+		address = &core.Address{
+			Address: &core.Address_SocketAddress{
+				SocketAddress: &core.SocketAddress{
+					Protocol: core.SocketAddress_TCP,
+					Address:  policyEngine.Host,
+					PortSpecifier: &core.SocketAddress_PortValue{
+						PortValue: policyEngine.UpstreamRefreshPort,
+					},
+				},
+			},
+		}
+	} else {
+		address = &core.Address{
+			Address: &core.Address_Pipe{
+				Pipe: &core.Pipe{Path: constants.DefaultUpstreamExtProcSocketPath},
+			},
+		}
+	}
+
+	lbEndpoint := &endpoint.LbEndpoint{
+		HostIdentifier: &endpoint.LbEndpoint_Endpoint{Endpoint: &endpoint.Endpoint{Address: address}},
+	}
+	clusterType := cluster.Cluster_STATIC
+	if policyEngine.Mode == "tcp" {
+		clusterType = cluster.Cluster_STRICT_DNS
+	}
+
+	c := &cluster.Cluster{
+		Name:                 constants.UpstreamRefreshPolicyEngineClusterName,
+		ConnectTimeout:       durationpb.New(5 * time.Second),
+		ClusterDiscoveryType: &cluster.Cluster_Type{Type: clusterType},
+		LbPolicy:             cluster.Cluster_ROUND_ROBIN,
+		LoadAssignment: &endpoint.ClusterLoadAssignment{
+			ClusterName: constants.UpstreamRefreshPolicyEngineClusterName,
+			Endpoints:   []*endpoint.LocalityLbEndpoints{{LbEndpoints: []*endpoint.LbEndpoint{lbEndpoint}}},
+		},
+		Http2ProtocolOptions: &core.Http2ProtocolOptions{},
+	}
+	if policyEngine.Mode == "tcp" {
+		c.DnsLookupFamily = cluster.Cluster_V4_PREFERRED
+	}
 	return c
 }
 
@@ -2607,6 +3464,23 @@ func sanitizeUpstreamDefinitionName(name string) string {
 	sanitized := strings.ReplaceAll(name, ".", "_")
 	sanitized = strings.ReplaceAll(sanitized, ":", "_")
 	return sanitized
+}
+
+// RetrySourceAggregateClusterKey is the deterministic naming formula for the aggregate
+// cluster built for one route-scoped RetryGroup — registered under the SAME
+// constants.UpstreamDefinitionClusterPrefix + kind + "_" + apiID + "_" + <name> scheme real
+// upstreamDefinition clusters use, so the kernel's EXISTING UpstreamName-resolution logic
+// (built for plain upstreamDefinitions; see gateway-runtime/policy-engine's
+// resolveUpstreamRedirect) finds it with zero changes on that side.
+//
+// The logical-name half of the formula lives in the SDK (policy.RetrySourceUpstreamName) so
+// it is no longer duplicated between this repo and any out-of-repo retry-source-capable
+// policy's own runtime code: a policy setting UpstreamName at runtime calls the identical
+// function and therefore resolves to exactly this cluster. This function only adds the
+// kind/uuid cluster-naming prefix, exactly mirroring how a plain upstreamDefinition's
+// cluster name is built.
+func RetrySourceAggregateClusterKey(kind, uuid, routeKey, groupKey string) string {
+	return constants.UpstreamDefinitionClusterPrefix + kind + "_" + uuid + "_" + sanitizeUpstreamDefinitionName(policy.RetrySourceUpstreamName(routeKey, groupKey))
 }
 
 // createAccessLogConfig creates access log configuration based on format (JSON or text) to stdout
@@ -3191,6 +4065,38 @@ func (t *Translator) createExtProcFilter() (*hcm.HttpFilter, error) {
 	}, nil
 }
 
+// createUpstreamRefreshExtProcFilter creates the per-cluster upstream ext_proc filter that
+// lets any UpstreamAttemptPolicy-implementing policy attach fresh per-attempt state to a
+// native Envoy retry. Unlike the main downstream filter, this one only ever needs the
+// request-headers phase, and it fails OPEN (FailureModeAllow: true) rather than closed: a
+// failure here must never block the retry itself, whereas the downstream filter gates
+// auth/access-control and must fail closed. This asymmetry is intentional.
+func (t *Translator) createUpstreamRefreshExtProcFilter() (*hcm.HttpFilter, error) {
+	policyEngine := t.routerConfig.PolicyEngine
+	extProcConfig := &extproc.ExternalProcessor{
+		GrpcService: &core.GrpcService{
+			TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
+				EnvoyGrpc: &core.GrpcService_EnvoyGrpc{ClusterName: constants.UpstreamRefreshPolicyEngineClusterName},
+			},
+			Timeout: durationpb.New(time.Duration(policyEngine.TimeoutMs) * time.Millisecond),
+		},
+		FailureModeAllow: true, // fail open — a failure here must never block the retry
+		ProcessingMode: &extproc.ProcessingMode{
+			RequestHeaderMode: extproc.ProcessingMode_SEND,
+		},
+		MessageTimeout:    durationpb.New(time.Duration(policyEngine.MessageTimeoutMs) * time.Millisecond),
+		RequestAttributes: []string{constants.ExtProcRequestAttributeRouteName},
+	}
+	extProcAny, err := anypb.New(extProcConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal upstream ext_proc config: %w", err)
+	}
+	return &hcm.HttpFilter{
+		Name:       constants.ExtProcFilterName + "_upstream_refresh",
+		ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: extProcAny},
+	}, nil
+}
+
 // resolveUpstreamDefinition finds an upstream definition by its reference name
 // Returns the upstream definition and error if not found
 func resolveUpstreamDefinition(ref string, definitions *[]api.UpstreamDefinition) (*api.UpstreamDefinition, error) {
@@ -3249,27 +4155,159 @@ func parseDurationAllowZero(timeoutStr *string) (*time.Duration, error) {
 	return &duration, nil
 }
 
-// ResolveResilience parses a resilience block into route timeout and idle-timeout durations.
+// buildRetryPolicy converts a resolved api.Retry into a native Envoy RouteAction.RetryPolicy
+// that retries on the configured response status codes. NumRetries defaults to 1 attempt
+// when not explicitly configured.
+func buildRetryPolicy(retry *api.Retry) *route.RetryPolicy {
+	numRetries := uint32(1)
+	if retry.NumRetries != nil {
+		numRetries = uint32(*retry.NumRetries)
+	}
+	statusCodes := make([]uint32, len(retry.StatusCodes))
+	for i, code := range retry.StatusCodes {
+		statusCodes[i] = uint32(code)
+	}
+	return &route.RetryPolicy{
+		RetryOn:              "retriable-status-codes",
+		RetriableStatusCodes: statusCodes,
+		NumRetries:           wrapperspb.UInt32(numRetries),
+	}
+}
+
+// buildRetrySourceRetryPolicy mirrors buildRetryPolicy but derives NumRetries from the
+// LONGEST group chain (never a separately configured knob — see the design spec), raised to
+// triggerMinAttempts-1 when a co-declared retry-trigger policy asks for more attempts than the
+// chain alone would provide (see Important finding I2 in the final review: a zero-fallback
+// retry source has maxChain==0, which would otherwise make a merged trigger status code
+// permanently inert). Also adds RetryPriority so Envoy prefers a not-yet-attempted priority
+// (i.e. the next target in the group's aggregate cluster) on each retry, plus PerTryTimeout from
+// PerAttemptTimeout when declared. Generalized from buildModelFailoverRetryPolicy — identical
+// Envoy output, now driven by any policy's declared RetrySourceDeclaration rather than one
+// policy's own params.
+func buildRetrySourceRetryPolicy(decl *policy.RetrySourceDeclaration, triggerMinAttempts int) *route.RetryPolicy {
+	statusCodes := make([]uint32, len(decl.RetriableStatusCodes))
+	for i, code := range decl.RetriableStatusCodes {
+		statusCodes[i] = uint32(code)
+	}
+
+	// Envoy has ONE retry budget per route, shared by every group's resolved cluster, so it
+	// must cover the longest chain; a shorter group simply never exhausts its share.
+	maxChain := 0
+	for _, group := range decl.Groups {
+		if n := len(group.OrderedTargets) - 1; n > maxChain {
+			maxChain = n
+		}
+	}
+
+	numRetries := maxChain
+	if want := triggerMinAttempts - 1; want > numRetries {
+		numRetries = want
+	}
+
+	priorityCfgAny, err := anypb.New(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
+	if err != nil {
+		// anypb.New only fails on a marshal error for a well-formed proto message, which
+		// PreviousPrioritiesConfig{UpdateFrequency: 1} can never produce — treated as
+		// unreachable, matching this file's existing convention of not threading an error
+		// return through every proto-marshal call site (see createUpstreamRefreshExtProcFilter
+		// for the same pattern).
+		priorityCfgAny = nil
+	}
+
+	rp := &route.RetryPolicy{
+		RetryOn:              "retriable-status-codes",
+		RetriableStatusCodes: statusCodes,
+		NumRetries:           wrapperspb.UInt32(uint32(numRetries)),
+		RetryPriority: &route.RetryPolicy_RetryPriority{
+			Name:       "envoy.retry_priorities.previous_priorities",
+			ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: priorityCfgAny},
+		},
+	}
+	if decl.PerAttemptTimeout != nil {
+		rp.PerTryTimeout = durationpb.New(*decl.PerAttemptTimeout)
+	}
+	return rp
+}
+
+// buildRetryTriggerRetryPolicy builds the plain, non-aggregate RetryPolicy for a route whose
+// chain declares retry TRIGGERS but no retry SOURCE. Deliberately no RetryPriority: there is
+// no aggregate cluster to step through, so Envoy performs ordinary same-cluster retry — the
+// same destination, retried, which is exactly what a trigger-only policy (e.g. one that
+// refreshes a credential between attempts) needs. Returns nil when no codes were declared,
+// since a RetryPolicy with an empty RetriableStatusCodes list would never fire.
+func buildRetryTriggerRetryPolicy(triggerCodes map[int]struct{}, minAttempts int) *route.RetryPolicy {
+	if len(triggerCodes) == 0 {
+		return nil
+	}
+	codes := mergeRetriableStatusCodes(nil, triggerCodes)
+	statusCodes := make([]uint32, len(codes))
+	for i, code := range codes {
+		statusCodes[i] = uint32(code)
+	}
+	numRetries := minAttempts - 1
+	if numRetries < 1 {
+		numRetries = 1
+	}
+	return &route.RetryPolicy{
+		RetryOn:              "retriable-status-codes",
+		RetriableStatusCodes: statusCodes,
+		NumRetries:           wrapperspb.UInt32(uint32(numRetries)),
+	}
+}
+
+// composeRetryTriggerPolicy applies retry-trigger conditions on top of an existing RetryPolicy
+// (built from an operator's resilience.retry) when one is present, rather than replacing it —
+// unlike a retry source, a retry trigger is designed to compose by union with everything,
+// including resilience.retry (see Important finding I1 in the 2026-08-14 final review: a
+// trigger such as oauth2-generator was silently clobbering an operator's configured
+// resilience.retry, dropping both its status codes and its NumRetries). The trigger's codes are
+// unioned into RetriableStatusCodes and NumRetries is only ever raised, never lowered, to cover
+// triggerMinAttempts. When existing is nil (no resilience.retry configured), this falls back to
+// building a fresh plain trigger-only policy.
+func composeRetryTriggerPolicy(existing *route.RetryPolicy, triggerCodes map[int]struct{}, triggerMinAttempts int) *route.RetryPolicy {
+	if existing == nil {
+		return buildRetryTriggerRetryPolicy(triggerCodes, triggerMinAttempts)
+	}
+	existingCodes := make([]int, len(existing.RetriableStatusCodes))
+	for i, code := range existing.RetriableStatusCodes {
+		existingCodes[i] = int(code)
+	}
+	merged := mergeRetriableStatusCodes(existingCodes, triggerCodes)
+	statusCodes := make([]uint32, len(merged))
+	for i, code := range merged {
+		statusCodes[i] = uint32(code)
+	}
+	numRetries := int(existing.GetNumRetries().GetValue())
+	if want := triggerMinAttempts - 1; want > numRetries {
+		numRetries = want
+	}
+	existing.RetriableStatusCodes = statusCodes
+	existing.NumRetries = wrapperspb.UInt32(uint32(numRetries))
+	return existing
+}
+
+// ResolveResilience parses a resilience block into route timeout and idle-timeout durations,
+// plus the retry configuration (surfaced as-is; validation happens elsewhere).
 // A nil block, or unset fields, yield nil durations (meaning "use the global default").
 // "0s" yields a non-nil zero duration (meaning "explicitly disabled").
-func ResolveResilience(r *api.Resilience) (timeout *time.Duration, idleTimeout *time.Duration, err error) {
+func ResolveResilience(r *api.Resilience) (timeout *time.Duration, idleTimeout *time.Duration, retry *api.Retry, err error) {
 	if r == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if timeout, err = parseDurationAllowZero(r.Timeout); err != nil {
-		return nil, nil, fmt.Errorf("invalid resilience.timeout: %w", err)
+		return nil, nil, nil, fmt.Errorf("invalid resilience.timeout: %w", err)
 	}
 	if idleTimeout, err = parseDurationAllowZero(r.IdleTimeout); err != nil {
-		return nil, nil, fmt.Errorf("invalid resilience.idleTimeout: %w", err)
+		return nil, nil, nil, fmt.Errorf("invalid resilience.idleTimeout: %w", err)
 	}
-	return timeout, idleTimeout, nil
+	return timeout, idleTimeout, r.Retry, nil
 }
 
 // combineRouteResilience returns a resolvedTimeout for a single route, preserving the
-// upstream connect timeout from base and applying the effective route/idle timeouts
-// (operation-level overriding API-level, per field). It returns base unchanged when no
-// resilience is configured at either level.
-func combineRouteResilience(base *resolvedTimeout, apiTimeout, apiIdle, opTimeout, opIdle *time.Duration) *resolvedTimeout {
+// upstream connect timeout from base and applying the effective route/idle timeouts and
+// retry config (operation-level overriding API-level, per field). It returns base unchanged
+// when no resilience is configured at either level.
+func combineRouteResilience(base *resolvedTimeout, apiTimeout, apiIdle, opTimeout, opIdle *time.Duration, apiRetry, opRetry *api.Retry) *resolvedTimeout {
 	effTimeout := opTimeout
 	if effTimeout == nil {
 		effTimeout = apiTimeout
@@ -3278,10 +4316,14 @@ func combineRouteResilience(base *resolvedTimeout, apiTimeout, apiIdle, opTimeou
 	if effIdle == nil {
 		effIdle = apiIdle
 	}
-	if effTimeout == nil && effIdle == nil {
+	effRetry := opRetry
+	if effRetry == nil {
+		effRetry = apiRetry
+	}
+	if effTimeout == nil && effIdle == nil && effRetry == nil {
 		return base
 	}
-	rt := resolvedTimeout{Route: effTimeout, Idle: effIdle}
+	rt := resolvedTimeout{Route: effTimeout, Idle: effIdle, Retry: effRetry}
 	if base != nil {
 		rt.Connect = base.Connect
 	}

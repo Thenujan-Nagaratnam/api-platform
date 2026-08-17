@@ -87,3 +87,5 @@ replace github.com/wso2/api-platform/common => ../../common
 replace github.com/wso2/go-httpkit => ../../httpkit
 
 replace github.com/wso2/api-platform/gateway/gateway-controller => ../../gateway/gateway-controller
+
+replace github.com/wso2/api-platform/sdk/core => ../../sdk/core

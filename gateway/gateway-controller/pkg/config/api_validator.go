@@ -55,6 +55,13 @@ func (v *APIValidator) SetPolicyValidator(policyValidator *PolicyValidator) {
 	v.policyValidator = policyValidator
 }
 
+// PolicyValidator exposes the configured policy validator so a caller holding
+// only the config.Validator interface can reach the loaded policy definitions
+// (see RetrySourceResolver). Returns nil when none was set.
+func (v *APIValidator) PolicyValidator() *PolicyValidator {
+	return v.policyValidator
+}
+
 // Validate performs comprehensive validation on a configuration
 // It uses type switching to handle APIConfiguration specifically
 func (v *APIValidator) Validate(config interface{}) []ValidationError {
@@ -471,12 +478,16 @@ func (v *APIValidator) validateRestData(spec *api.APIConfigData) []ValidationErr
 	return errors
 }
 
-// validateResilience validates a resilience block (timeout / idleTimeout). Both fields
+// validateResilience validates a resilience block (timeout / idleTimeout / retry). Both fields
 // are optional duration strings; "0s" is allowed (disables the timeout), negative and
 // malformed values are rejected. fieldPrefix is the path to the block (e.g.
 // "spec.resilience" or "spec.operations[2].resilience").
 func (v *APIValidator) validateResilience(fieldPrefix string, r *api.Resilience) []ValidationError {
-	return validateResilienceTimeouts(fieldPrefix, r)
+	errs := validateResilienceTimeouts(fieldPrefix, r)
+	if r != nil {
+		errs = append(errs, validateResilienceRetry(fieldPrefix, r.Retry)...)
+	}
+	return errs
 }
 
 // validateResilienceTimeouts validates the timeout fields of a resilience block.
@@ -517,6 +528,39 @@ func validateResilienceTimeouts(fieldPrefix string, r *api.Resilience) []Validat
 	validate(fieldPrefix+".timeout", r.Timeout)
 	validate(fieldPrefix+".idleTimeout", r.IdleTimeout)
 	return errors
+}
+
+// validateResilienceRetry validates a resilience.retry block: statusCodes
+// must be non-empty (each in the valid HTTP status range, already enforced
+// by the OpenAPI schema's minimum/maximum — this is a defense-in-depth check
+// for configs that bypass schema validation, e.g. direct DB rows), and
+// numRetries (if set) must be >= 1.
+func validateResilienceRetry(fieldPrefix string, r *api.Retry) []ValidationError {
+	if r == nil {
+		return nil
+	}
+	var errs []ValidationError
+	if len(r.StatusCodes) == 0 {
+		errs = append(errs, ValidationError{
+			Field:   fieldPrefix + ".retry.statusCodes",
+			Message: "must be non-empty when resilience.retry is configured",
+		})
+	}
+	for _, code := range r.StatusCodes {
+		if code < 400 || code > 599 {
+			errs = append(errs, ValidationError{
+				Field:   fieldPrefix + ".retry.statusCodes",
+				Message: fmt.Sprintf("status code %d is not a valid HTTP status code (400-599)", code),
+			})
+		}
+	}
+	if r.NumRetries != nil && *r.NumRetries < 1 {
+		errs = append(errs, ValidationError{
+			Field:   fieldPrefix + ".retry.numRetries",
+			Message: "must be at least 1 when set",
+		})
+	}
+	return errs
 }
 
 // validateContext validates the context path

@@ -547,6 +547,209 @@ func TestRestAPITransformer_DefaultClusterReferencesRealCluster(t *testing.T) {
 	}
 }
 
+// TestRestAPITransformer_MainRefAndNamedDefinitionShareOneUpstreamCluster is Task 7's
+// regression test against the REAL production path (the RDC path every RestApi/Mcp/
+// LlmProvider/LlmProxy deployment actually uses via the registered transformer — unlike
+// pkg/xds/translator.go's translateAPIConfig, which is unreachable for those kinds once a
+// transformer is registered in cmd/controller/main.go). Before this fix, a target named BOTH
+// as the API's main upstream.ref AND standalone in upstreamDefinitions produced two separate
+// rdc.UpstreamClusters entries for the identical backend
+// ("upstream_main_<host>_<port>" from addUpstreamCluster's ref branch, and
+// "upstream_<kind>_<id>_<name>" from the UpstreamDefinitions loop) — confirmed live during
+// this plan's design phase. Both call sites now share resolveOrCreateUpstreamDefinitionCluster,
+// so the same name resolves to exactly one cluster regardless of which path reaches it first.
+func TestRestAPITransformer_MainRefAndNamedDefinitionShareOneUpstreamCluster(t *testing.T) {
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, map[string]models.PolicyDefinition{})
+
+	const refName = "azure-eastus"
+	upDefs := []api.UpstreamDefinition{
+		{
+			Name: refName,
+			Upstreams: []struct {
+				Url    string `json:"url" yaml:"url"`
+				Weight *int   `json:"weight,omitempty" yaml:"weight,omitempty"`
+			}{{Url: "http://sample-backend:5000"}},
+		},
+	}
+	apiData := api.APIConfigData{
+		DisplayName:         "dedup-api",
+		Context:             "/dedup",
+		Version:             "1.0.0",
+		UpstreamDefinitions: &upDefs,
+		Operations:          []api.Operation{{Method: api.Ptr(api.OperationMethod("GET")), Path: api.Ptr("/hello")}},
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{
+			Main: api.Upstream{Ref: ptrStr(refName)},
+		},
+	}
+	cfg := &models.StoredConfig{
+		UUID:          "dedup-uuid",
+		Kind:          string(api.RestAPIKindRestApi),
+		Configuration: api.RestAPI{Kind: api.RestAPIKindRestApi, Metadata: api.Metadata{Name: "dedup-api"}, Spec: apiData},
+	}
+
+	rdc, err := transformer.Transform(cfg)
+	require.NoError(t, err)
+
+	require.Len(t, rdc.UpstreamClusters, 1,
+		"expected the ref-based main upstream and the standalone upstreamDefinition to dedupe onto one cluster, got keys %v",
+		upstreamClusterKeys(rdc))
+
+	const expectedClusterKey = "upstream_RestApi_dedup-uuid_azure-eastus"
+	require.Contains(t, rdc.UpstreamClusters, expectedClusterKey)
+
+	for key, r := range rdc.Routes {
+		assert.True(t, r.Upstream.UseClusterHeader, "route %q should use cluster_header when upstreamDefinitions are present", key)
+		assert.Equal(t, expectedClusterKey, r.Upstream.DefaultCluster,
+			"route %q must default to the deduped shared cluster", key)
+	}
+}
+
+// TestRestAPITransformer_ModelFailoverRejectsResilienceRetry is the regression test for a
+// confirmed-dead validator: config.ValidateModelFailoverPolicy existed to reject model-failover
+// combined with resilience.retry on the same operation (both drive RouteAction.RetryPolicy
+// independently — whichever translates last in createRouteFromRDC would otherwise silently win),
+// but was never actually called from any code path until this test's own fix wired it into
+// Transform. Covers both directions: op-level retry, and API-level retry inherited by an
+// operation with no op-level override.
+// modelFailoverPolicy builds an api.Policy attaching model-failover with a minimal, valid
+// single-target-group config (one fallback) — the shared fixture every test below starts
+// from, since ParseModelFailoverParams now genuinely parses/validates these params (it used
+// to be bypassed entirely via a dummy empty struct — see this test's own regression note).
+func modelFailoverPolicy() api.Policy {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o", "upstreamDefinition": "primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "fallback-1"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	}
+	return api.Policy{Name: "model-failover", Version: "", Params: &params}
+}
+
+func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
+	defs := map[string]models.PolicyDefinition{
+		"model-failover|v0.1.0": {
+			Name:    "model-failover",
+			Version: "v0.1.0",
+			// Declaring x-wso2-retry-source is what makes the generic discovery loop
+			// treat this policy as a retry source — it is never matched by name.
+			RetrySource: &models.RetrySourceMetadata{GroupKeyField: "model"},
+		},
+	}
+
+	t.Run("operation-level retry", func(t *testing.T) {
+		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
+		restAPI := cfg.Configuration.(api.RestAPI)
+		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
+		restAPI.Spec.UpstreamDefinitions = &upDefs
+		numRetries := 1
+		restAPI.Spec.Operations[0].Resilience = &api.Resilience{Retry: &api.Retry{StatusCodes: []int{500}, NumRetries: &numRetries}}
+		cfg.Configuration = restAPI
+
+		_, err := transformer.Transform(cfg)
+		require.Error(t, err, "model-failover + operation-level resilience.retry must be rejected")
+	})
+
+	t.Run("API-level retry inherited by the operation", func(t *testing.T) {
+		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
+		restAPI := cfg.Configuration.(api.RestAPI)
+		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
+		restAPI.Spec.UpstreamDefinitions = &upDefs
+		numRetries := 1
+		restAPI.Spec.Resilience = &api.Resilience{Retry: &api.Retry{StatusCodes: []int{500}, NumRetries: &numRetries}}
+		cfg.Configuration = restAPI
+
+		_, err := transformer.Transform(cfg)
+		require.Error(t, err, "model-failover + API-level resilience.retry (inherited) must be rejected")
+	})
+
+	t.Run("model-failover alone is accepted", func(t *testing.T) {
+		transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+		cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
+		restAPI := cfg.Configuration.(api.RestAPI)
+		upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
+		restAPI.Spec.UpstreamDefinitions = &upDefs
+		cfg.Configuration = restAPI
+
+		_, err := transformer.Transform(cfg)
+		require.NoError(t, err, "model-failover with no resilience.retry configured must be accepted")
+	})
+}
+
+// TestRestAPITransformer_ModelFailoverRejectsUndeclaredUpstreamReference is the regression
+// test for a real gap: a target/fallback referencing an UpstreamDefinition name that isn't
+// actually declared on the API used to deploy "successfully" and only fail at REQUEST time
+// with an opaque Envoy "no such cluster" error — config.ValidateModelFailoverUpstreamReferences
+// exists specifically to catch this at registration time instead.
+func TestRestAPITransformer_ModelFailoverRejectsUndeclaredUpstreamReference(t *testing.T) {
+	defs := map[string]models.PolicyDefinition{
+		"model-failover|v0.1.0": {
+			Name:    "model-failover",
+			Version: "v0.1.0",
+			// Declaring x-wso2-retry-source is what makes the generic discovery loop
+			// treat this policy as a retry source — it is never matched by name.
+			RetrySource: &models.RetrySourceMetadata{GroupKeyField: "model"},
+		},
+	}
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+	cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
+	restAPI := cfg.Configuration.(api.RestAPI)
+	// Only "primary" declared - modelFailoverPolicy() also references "fallback-1", which
+	// isn't declared here.
+	upDefs := []api.UpstreamDefinition{{Name: "primary"}}
+	restAPI.Spec.UpstreamDefinitions = &upDefs
+	cfg.Configuration = restAPI
+
+	_, err := transformer.Transform(cfg)
+	require.Error(t, err, "model-failover referencing an undeclared upstreamDefinition must be rejected at registration time")
+}
+
+// TestRestAPITransformer_ModelFailoverRouteDefaultsToPlainMainUpstream verifies the redesign's
+// core routing property: a model-failover route needs no special DefaultCluster override at
+// all anymore — since every target/fallback requires an explicit upstreamDefinition, the
+// route already gets UseClusterHeader=true via the ordinary hasUpstreamDefinitions path, and
+// its default stays the plain main upstream. That plain default is exactly what makes an
+// unmatched client model pass through completely untouched instead of being forced through
+// any group's own chain.
+func TestRestAPITransformer_ModelFailoverRouteDefaultsToPlainMainUpstream(t *testing.T) {
+	defs := map[string]models.PolicyDefinition{
+		"model-failover|v0.1.0": {
+			Name:    "model-failover",
+			Version: "v0.1.0",
+			// Declaring x-wso2-retry-source is what makes the generic discovery loop
+			// treat this policy as a retry source — it is never matched by name.
+			RetrySource: &models.RetrySourceMetadata{GroupKeyField: "model"},
+		},
+	}
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+
+	upDefs := []api.UpstreamDefinition{{Name: "primary"}, {Name: "fallback-1"}}
+	cfg := makeRestAPIStoredConfig(nil, []api.Policy{modelFailoverPolicy()})
+	restAPI := cfg.Configuration.(api.RestAPI)
+	restAPI.Spec.UpstreamDefinitions = &upDefs
+	cfg.Configuration = restAPI
+
+	rdc, err := transformer.Transform(cfg)
+	require.NoError(t, err)
+
+	routeKey := "GET|/test/hello|main.local"
+	rdcRoute, ok := rdc.Routes[routeKey]
+	require.True(t, ok, "expected route %q to exist", routeKey)
+
+	assert.True(t, rdcRoute.Upstream.UseClusterHeader, "model-failover route must use cluster_header, or OnRequestBody's UpstreamName redirect has no effect")
+	_, isMainCluster := rdc.UpstreamClusters[rdcRoute.Upstream.DefaultCluster]
+	assert.True(t, isMainCluster, "default cluster must be a real UpstreamClusters entry (the plain main upstream), not a model-failover-specific override")
+}
+
 func upstreamClusterKeys(rdc *models.RuntimeDeployConfig) []string {
 	keys := make([]string, 0, len(rdc.UpstreamClusters))
 	for k := range rdc.UpstreamClusters {
@@ -894,9 +1097,11 @@ func TestRestAPITransformer_OperationFormCombinations(t *testing.T) {
 
 // TestRestAPITransformer_ConnectTimeoutFromDefinition is the transformer half of the
 // connect-timeout regression guard: an upstreamDefinition's timeout.connect must be carried
-// onto the RuntimeDeployConfig clusters (both the definition cluster and an API-level cluster
-// that references it) so the RDC->Envoy translation can apply it instead of dropping it.
-// A definition without a timeout leaves ConnectTimeout nil (the global default applies later).
+// onto the RuntimeDeployConfig cluster built for it — including when the API's main upstream
+// also references it by `ref`, which (post cluster-dedup fix) reuses that SAME cluster entry
+// rather than building a second one — so the RDC->Envoy translation can apply the timeout
+// instead of dropping it. A definition without a timeout leaves ConnectTimeout nil (the
+// global default applies later).
 func TestRestAPITransformer_ConnectTimeoutFromDefinition(t *testing.T) {
 	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, map[string]models.PolicyDefinition{})
 
@@ -931,9 +1136,10 @@ func TestRestAPITransformer_ConnectTimeoutFromDefinition(t *testing.T) {
 	t.Run("definition timeout maps onto every referencing cluster", func(t *testing.T) {
 		rdc, err := build(ptrStr("8s"))
 		require.NoError(t, err)
-		// Both the API-level ref cluster and the definition cluster reference timed-svc.
-		require.GreaterOrEqual(t, len(rdc.UpstreamClusters), 2,
-			"expected the API-level ref cluster and the definition cluster")
+		// The main upstream's `ref` and the standalone upstreamDefinitions entry both name
+		// timed-svc, so cluster-dedup collapses them into exactly ONE UpstreamClusters entry
+		// (previously two — the bug this fix eliminates).
+		require.Len(t, rdc.UpstreamClusters, 1, "expected the ref and the definition to dedupe onto one cluster")
 		for name, uc := range rdc.UpstreamClusters {
 			require.NotNil(t, uc.ConnectTimeout, "cluster %q must carry the definition connect timeout", name)
 			assert.Equal(t, 8*time.Second, *uc.ConnectTimeout, "cluster %q connect timeout", name)

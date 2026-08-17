@@ -319,6 +319,13 @@ func (s *LLMDeploymentService) DeployLLMProviderConfiguration(params LLMDeployme
 		}
 	}
 
+	// Retry-source registration-time validation — see the identical call in
+	// DeployLLMProxyConfiguration for the full rationale (closes the same synchronous-
+	// enforcement gap for the LlmProvider registration path).
+	if err := config.ValidateRetrySourcesForOperations(&apiConfig.Spec, s.policyValidator.RetrySourceResolver()); err != nil {
+		return nil, fmt.Errorf("provider validation failed: %w", err)
+	}
+
 	// Generate API ID if not provided
 	apiID := params.ID
 	if apiID == "" {
@@ -503,6 +510,20 @@ func (s *LLMDeploymentService) DeployLLMProxyConfiguration(params LLMDeploymentP
 			}
 			return nil, fmt.Errorf("%w: %d policy error(s): %s", ErrLLMProxyValidation, len(policyErrors), strings.Join(errs, "; "))
 		}
+	}
+
+	// Retry-source registration-time validation (target upstreamDefinition references exist,
+	// no resilience.retry conflict, no basePath-carrying upstream used as an
+	// aggregate-cluster member). Runs on apiConfig.Spec — already the fully-resolved
+	// RestAPI, including any additionalProviders-synthesized upstreamDefinitions with their
+	// BasePath set — so this catches an unsafe LlmProxy alias+fallback combination exactly
+	// as pkg/transform.RestAPITransformer.Transform would, but SYNCHRONOUSLY here, before the
+	// config is ever persisted. Without this call the only enforcement was the async xDS
+	// transform, which runs off the request thread and returns nothing to this caller —
+	// confirmed live as an HTTP 201 registration that silently persisted a route which then
+	// 500'd on every real invocation.
+	if err := config.ValidateRetrySourcesForOperations(&apiConfig.Spec, s.policyValidator.RetrySourceResolver()); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrLLMProxyValidation, err)
 	}
 
 	// Generate API ID if not provided

@@ -124,7 +124,7 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 	}
 
 	// Build main upstream cluster
-	mainUpstream, err := t.addUpstreamCluster(rdc, "main", &apiData.Upstream.Main, apiData.UpstreamDefinitions)
+	mainUpstream, err := t.addUpstreamCluster(rdc, "main", &apiData.Upstream.Main, apiData.UpstreamDefinitions, cfg.Kind, cfg.UUID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve main upstream: %w", err)
 	}
@@ -172,20 +172,40 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 	}
 
 	// Resolve API-level resilience timeouts once; operation-level values override these.
-	apiTimeout, apiIdleTimeout, err := xds.ResolveResilience(apiData.Resilience)
+	apiTimeout, apiIdleTimeout, apiRetry, err := xds.ResolveResilience(apiData.Resilience)
 	if err != nil {
 		return nil, fmt.Errorf("invalid API-level resilience: %w", err)
+	}
+
+	// Belt-and-suspenders re-check: config.ValidateRetrySourcesForOperations already ran
+	// synchronously at registration time (pkg/utils/llm_deployment.go,
+	// pkg/utils/api_deployment.go — before this config was ever persisted), so reaching an
+	// invalid config here should not normally happen. Kept here too since this transform is
+	// also the only thing standing between a config and a built route for any path that
+	// bypasses those deploy-time callers (e.g. a config loaded directly from storage at
+	// startup, see cmd/controller/runtime_bootstrap.go) — parse errors and the "no such
+	// cluster" failure mode this guards against are exactly the kind of thing that must
+	// never reach createRouteFromRDC. Runs once for the whole API (it already iterates every
+	// operation internally) rather than per-operation, since nothing else in the loop below
+	// depends on its parsed result.
+	if err := config.ValidateRetrySourcesForOperations(&apiData, config.NewRetrySourceResolver(t.policyDefinitions, t.latestVersions)); err != nil {
+		return nil, err
 	}
 
 	// Build routes and policy chains for each operation
 	for i, op := range apiData.Operations {
 		// Operation-level resilience overrides API-level (per field); nil leaves the
 		// global route timeout default in effect.
-		opTimeout, opIdleTimeout, err := xds.ResolveResilience(op.Resilience)
+		opTimeout, opIdleTimeout, opRetry, err := xds.ResolveResilience(op.Resilience)
 		if err != nil {
 			return nil, fmt.Errorf("invalid resilience for operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
 		}
-		routeTimeout := buildRouteTimeout(opTimeout, apiTimeout, opIdleTimeout, apiIdleTimeout)
+		routeTimeout := buildRouteTimeout(opTimeout, apiTimeout, opIdleTimeout, apiIdleTimeout, opRetry, apiRetry)
+
+		// Build policy chain: API-level + operation-level + system policies. Computed once
+		// here (not per-vhost below) since it doesn't depend on vhost at all.
+		chain := t.buildPolicyChain(apiPolicies, op.Policies)
+		injected := utils.InjectSystemPolicies(chain, t.systemConfig, nil)
 
 		vhosts := append([]string{}, mainVhosts...)
 		if hasSandbox {
@@ -228,72 +248,28 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 				},
 			}
 			rdc.Routes[routeKey] = rdcRoute
-
-			// Build policy chain: API-level + operation-level + system policies
-			chain := t.buildPolicyChain(apiPolicies, op.Policies)
-			injected := utils.InjectSystemPolicies(chain, t.systemConfig, nil)
 			rdc.PolicyChains[routeKey] = sdkChainToModel(injected)
 		}
 	}
 
-	// Add upstream definition clusters for dynamic routing
+	// Add upstream definition clusters for dynamic routing. Shared with addUpstreamCluster's
+	// `up.Ref` branch above/below (via resolveOrCreateUpstreamDefinitionCluster) so a
+	// definition already registered there (main/sandbox referencing it by name) is reused
+	// here instead of building a second, duplicate cluster for the identical backend.
 	if apiData.UpstreamDefinitions != nil {
 		for _, def := range *apiData.UpstreamDefinitions {
 			if len(def.Upstreams) == 0 || def.Upstreams[0].Url == "" {
 				continue
 			}
-			defClusterKey := "upstream_" + cfg.Kind + "_" + cfg.UUID + "_" + SanitizeUpstreamDefinitionName(def.Name)
-			basePath := "/"
-			if def.BasePath != nil && *def.BasePath != "" {
-				basePath = *def.BasePath
-			}
-			defConnectTimeout, err := definitionConnectTimeout(&def)
-			if err != nil {
+			if _, err := t.resolveOrCreateUpstreamDefinitionCluster(rdc, cfg.Kind, cfg.UUID, def.Name, def); err != nil {
 				return nil, fmt.Errorf("upstream definition '%s': %w", def.Name, err)
-			}
-			endpoints := make([]models.Endpoint, 0, len(def.Upstreams))
-			tlsExists := false
-			plaintextExists := false
-			for _, up := range def.Upstreams {
-				parsedURL, err := url.Parse(up.Url)
-				if err != nil {
-					return nil, fmt.Errorf("invalid URL in upstream definition '%s': %w", def.Name, err)
-				}
-				port := ResolvePort(parsedURL)
-				ep := models.Endpoint{Host: parsedURL.Hostname(), Port: port}
-				if up.Weight != nil {
-					ep.Weight = up.Weight
-				}
-				endpoints = append(endpoints, ep)
-				if parsedURL.Scheme == "https" {
-					tlsExists = true
-				} else {
-					plaintextExists = true
-				}
-			}
-			// A single Envoy cluster has one transport socket, and the model carries one TLS bit
-			// for the whole cluster (createWeightedCluster applies it to every endpoint). A weighted
-			// definition that mixes https and non-https endpoints therefore cannot be represented —
-			// the plaintext endpoints would be silently dialed over TLS. Reject it with a clear error
-			// instead of collapsing to an ambiguous single flag. Uniform definitions (all https or all
-			// plaintext) are unaffected: Enabled = tlsExists matches the previous "any https" result.
-			if tlsExists && plaintextExists {
-				return nil, fmt.Errorf("upstream definition '%s' mixes https and non-https endpoints; "+
-					"all endpoints in a definition must use the same scheme", def.Name)
-			}
-			rdc.UpstreamClusters[defClusterKey] = &models.UpstreamCluster{
-				Name:           def.Name,
-				BasePath:       basePath,
-				Endpoints:      endpoints,
-				TLS:            &models.UpstreamTLS{Enabled: tlsExists},
-				ConnectTimeout: defConnectTimeout,
 			}
 		}
 	}
 
 	// Add sandbox upstream and update sandbox routes if present
 	if hasSandbox {
-		sbUpstream, err := t.addUpstreamCluster(rdc, "sandbox", apiData.Upstream.Sandbox, apiData.UpstreamDefinitions)
+		sbUpstream, err := t.addUpstreamCluster(rdc, "sandbox", apiData.Upstream.Sandbox, apiData.UpstreamDefinitions, cfg.Kind, cfg.UUID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve sandbox upstream: %w", err)
 		}
@@ -381,9 +357,9 @@ func routeHeaderMatches(op api.Operation) []models.RouteHeaderMatch {
 
 // collectAPIPolicies validates and collects API-level policies into SDK format.
 // buildRouteTimeout applies operation-over-API precedence (per field) and returns a
-// *models.RouteTimeout, or nil when neither level configured any timeout (so the global
-// route timeout default applies).
-func buildRouteTimeout(opTimeout, apiTimeout, opIdle, apiIdle *time.Duration) *models.RouteTimeout {
+// *models.RouteTimeout, or nil when neither level configured any timeout/retry (so the
+// global route timeout default applies and no RetryPolicy is emitted).
+func buildRouteTimeout(opTimeout, apiTimeout, opIdle, apiIdle *time.Duration, opRetry, apiRetry *api.Retry) *models.RouteTimeout {
 	timeout := opTimeout
 	if timeout == nil {
 		timeout = apiTimeout
@@ -392,10 +368,14 @@ func buildRouteTimeout(opTimeout, apiTimeout, opIdle, apiIdle *time.Duration) *m
 	if idle == nil {
 		idle = apiIdle
 	}
-	if timeout == nil && idle == nil {
+	retry := opRetry
+	if retry == nil {
+		retry = apiRetry
+	}
+	if timeout == nil && idle == nil && retry == nil {
 		return nil
 	}
-	return &models.RouteTimeout{Timeout: timeout, IdleTimeout: idle}
+	return &models.RouteTimeout{Timeout: timeout, IdleTimeout: idle, Retry: retry}
 }
 
 // collectAPIPolicies returns the resolved API-level policies as a slice in spec order.
@@ -467,12 +447,15 @@ func (r *upstreamClusterResult) UpstreamInfo() policyenginev1.UpstreamInfo {
 	}
 }
 
-// addUpstreamCluster resolves an upstream and adds it to the RuntimeDeployConfig.
+// addUpstreamCluster resolves an upstream and adds it to the RuntimeDeployConfig. kind/apiID
+// are only needed for a `ref`-based upstream, to build the shared named-definition cluster
+// key (see resolveOrCreateUpstreamDefinitionCluster).
 func (t *RestAPITransformer) addUpstreamCluster(
 	rdc *models.RuntimeDeployConfig,
 	upstreamName string,
 	up *api.Upstream,
 	upstreamDefinitions *[]api.UpstreamDefinition,
+	kind, apiID string,
 ) (*upstreamClusterResult, error) {
 	rawURL, refBasePath, err := resolveUpstreamURL(upstreamName, up, upstreamDefinitions)
 	if err != nil {
@@ -498,28 +481,56 @@ func (t *RestAPITransformer) addUpstreamCluster(
 		basePath = "/"
 	}
 
+	// A ref-based upstream resolves its definition once here, reused below both for the
+	// connect timeout (as before) and for cluster registration.
+	var refDefinition *api.UpstreamDefinition
+	if up != nil && up.Ref != nil && strings.TrimSpace(*up.Ref) != "" {
+		refName := strings.TrimSpace(*up.Ref)
+		refDefinition = lookupUpstreamDefinition(refName, upstreamDefinitions)
+		if refDefinition == nil {
+			// resolveUpstreamURL above already validated this ref resolves to a real
+			// definition with URLs, so this should be unreachable — kept as a fail-closed
+			// guard rather than silently falling through to a direct-URL-shaped cluster.
+			return nil, fmt.Errorf("%s upstream: upstream definition '%s' not found", upstreamName, refName)
+		}
+	}
+
 	// The connect timeout can only come from a referenced upstreamDefinition
 	// (direct-URL upstreams have no timeout field). Resolve it here so the RDC->Envoy
 	// translation applies it to this cluster instead of falling back to the global default.
 	var connectTimeout *time.Duration
-	if up != nil && up.Ref != nil && strings.TrimSpace(*up.Ref) != "" {
-		ct, terr := definitionConnectTimeout(lookupUpstreamDefinition(*up.Ref, upstreamDefinitions))
+	if refDefinition != nil {
+		ct, terr := definitionConnectTimeout(refDefinition)
 		if terr != nil {
 			return nil, fmt.Errorf("%s upstream: %w", upstreamName, terr)
 		}
 		connectTimeout = ct
 	}
 
-	clusterKey := fmt.Sprintf("upstream_%s_%s_%d", upstreamName, parsedURL.Hostname(), port)
-
-	rdc.UpstreamClusters[clusterKey] = &models.UpstreamCluster{
-		BasePath: basePath,
-		Endpoints: []models.Endpoint{{
-			Host: parsedURL.Hostname(),
-			Port: port,
-		}},
-		TLS:            &models.UpstreamTLS{Enabled: parsedURL.Scheme == "https"},
-		ConnectTimeout: connectTimeout,
+	// A ref-based upstream reuses/registers the SAME named-definition cluster the
+	// UpstreamDefinitions loop in Transform builds for it (constants.UpstreamDefinitionClusterPrefix-
+	// style key: "upstream_" + kind + "_" + apiID + "_" + sanitizedName), instead of a separate
+	// "upstream_<upstreamName>_<host>_<port>"-keyed cluster — see
+	// resolveOrCreateUpstreamDefinitionCluster. A direct-URL upstream is unaffected: it keeps
+	// the existing per-upstream-slot key exactly as before.
+	var clusterKey string
+	if refDefinition != nil {
+		refName := strings.TrimSpace(*up.Ref)
+		clusterKey, err = t.resolveOrCreateUpstreamDefinitionCluster(rdc, kind, apiID, refName, *refDefinition)
+		if err != nil {
+			return nil, fmt.Errorf("%s upstream: %w", upstreamName, err)
+		}
+	} else {
+		clusterKey = fmt.Sprintf("upstream_%s_%s_%d", upstreamName, parsedURL.Hostname(), port)
+		rdc.UpstreamClusters[clusterKey] = &models.UpstreamCluster{
+			BasePath: basePath,
+			Endpoints: []models.Endpoint{{
+				Host: parsedURL.Hostname(),
+				Port: port,
+			}},
+			TLS:            &models.UpstreamTLS{Enabled: parsedURL.Scheme == "https"},
+			ConnectTimeout: connectTimeout,
+		}
 	}
 
 	return &upstreamClusterResult{
@@ -528,6 +539,77 @@ func (t *RestAPITransformer) addUpstreamCluster(
 		BasePath:         basePath,
 		URL:              fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host),
 	}, nil
+}
+
+// resolveOrCreateUpstreamDefinitionCluster returns the rdc.UpstreamClusters key for the named
+// upstream definition def, creating and registering the cluster on first use and reusing the
+// SAME entry on every subsequent call for the same name within one Transform() pass. Shared
+// between addUpstreamCluster's `up.Ref` branch (main/sandbox referencing a named definition)
+// and Transform's UpstreamDefinitions loop — previously two independent code paths that each
+// built their own models.UpstreamCluster entry for the same target when a name was referenced
+// both as upstream.ref and standalone in upstreamDefinitions (confirmed live: two separate
+// Envoy clusters for the identical backend). Mirrors pkg/xds/translator.go's
+// resolveOrCreateUpstreamDefinitionCluster — the equivalent fix for the legacy/dead
+// translateAPIConfig path — but operates on rdc.UpstreamClusters (the real production RDC
+// path's cluster registry) instead of *cluster.Cluster.
+func (t *RestAPITransformer) resolveOrCreateUpstreamDefinitionCluster(
+	rdc *models.RuntimeDeployConfig,
+	kind, apiID, name string,
+	def api.UpstreamDefinition,
+) (string, error) {
+	clusterKey := "upstream_" + kind + "_" + apiID + "_" + SanitizeUpstreamDefinitionName(name)
+	if _, ok := rdc.UpstreamClusters[clusterKey]; ok {
+		return clusterKey, nil
+	}
+	if len(def.Upstreams) == 0 || def.Upstreams[0].Url == "" {
+		return "", fmt.Errorf("upstream definition '%s' has no URLs configured", name)
+	}
+	basePath := "/"
+	if def.BasePath != nil && *def.BasePath != "" {
+		basePath = *def.BasePath
+	}
+	connectTimeout, err := definitionConnectTimeout(&def)
+	if err != nil {
+		return "", err
+	}
+	endpoints := make([]models.Endpoint, 0, len(def.Upstreams))
+	tlsExists := false
+	plaintextExists := false
+	for _, up := range def.Upstreams {
+		parsedURL, err := url.Parse(up.Url)
+		if err != nil {
+			return "", fmt.Errorf("invalid URL in upstream definition '%s': %w", name, err)
+		}
+		port := ResolvePort(parsedURL)
+		ep := models.Endpoint{Host: parsedURL.Hostname(), Port: port}
+		if up.Weight != nil {
+			ep.Weight = up.Weight
+		}
+		endpoints = append(endpoints, ep)
+		if parsedURL.Scheme == "https" {
+			tlsExists = true
+		} else {
+			plaintextExists = true
+		}
+	}
+	// A single Envoy cluster has one transport socket, and the model carries one TLS bit
+	// for the whole cluster (createWeightedCluster applies it to every endpoint). A weighted
+	// definition that mixes https and non-https endpoints therefore cannot be represented —
+	// the plaintext endpoints would be silently dialed over TLS. Reject it with a clear error
+	// instead of collapsing to an ambiguous single flag. Uniform definitions (all https or all
+	// plaintext) are unaffected: Enabled = tlsExists matches the previous "any https" result.
+	if tlsExists && plaintextExists {
+		return "", fmt.Errorf("upstream definition '%s' mixes https and non-https endpoints; "+
+			"all endpoints in a definition must use the same scheme", name)
+	}
+	rdc.UpstreamClusters[clusterKey] = &models.UpstreamCluster{
+		Name:           name,
+		BasePath:       basePath,
+		Endpoints:      endpoints,
+		TLS:            &models.UpstreamTLS{Enabled: tlsExists},
+		ConnectTimeout: connectTimeout,
+	}
+	return clusterKey, nil
 }
 
 // sanitizeEnvoyClusterName computes the Envoy cluster name from a URL host and scheme,

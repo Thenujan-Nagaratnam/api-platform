@@ -448,6 +448,12 @@ func main() {
 		"LlmProxy":    transformerRegistry,
 	})
 
+	// Wire the same startup-loaded policy definitions the transformers and PolicyValidator
+	// hold, so the translator can read each policy's declared x-wso2-retry-source /
+	// x-wso2-retry-trigger metadata when building retry config. Without this the translator
+	// discovers no retry declarations and every retry-capable policy silently becomes inert.
+	translator.SetPolicyDefinitions(policyDefinitions)
+
 	// Load runtime configs from existing API configurations on startup.
 	// We write directly to runtimeStore to avoid triggering N separate snapshot updates;
 	// the single UpdateSnapshot call below covers all of them.

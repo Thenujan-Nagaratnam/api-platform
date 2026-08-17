@@ -307,3 +307,35 @@ type ResponseStreamContext struct {
 	// mutation.
 	Upstream *UpstreamResponseContext
 }
+
+// ─── Upstream-attempt context (per-dial-attempt, not per-client-request) ─────
+
+// UpstreamAttemptContext is passed to UpstreamAttemptPolicy.OnUpstreamAttemptRequest.
+// Unlike every other context in this package, it is NOT scoped to one client
+// request — it fires once per individual upstream dial attempt, including
+// Envoy-native retries, because it runs in Envoy's per-cluster upstream HTTP
+// filter chain rather than the per-route listener chain every other policy
+// phase in this package uses.
+type UpstreamAttemptContext struct {
+	*SharedContext
+
+	// AttemptCount is Envoy's x-envoy-attempt-count for this specific dial,
+	// starting at 1. A missing/unparseable header is treated as 1 (fail
+	// toward "behave like the first attempt", never toward unconditional
+	// refresh) — see the kernel-side parsing in Task 3.
+	AttemptCount int
+
+	// Headers are this specific attempt's outgoing request headers, mutable
+	// via the returned UpstreamAttemptAction.
+	Headers *Headers
+
+	// Body is this specific attempt's outgoing request body — the ORIGINAL
+	// client-sent bytes, replayed fresh by Envoy on every attempt (verified:
+	// Envoy does not carry forward a previous attempt's mutation). Nil
+	// unless the backing cluster's ext_proc filter has RequestBodyMode:
+	// BUFFERED enabled (only clusters backing a model-failover route need
+	// this — see go-network-service-hardening.md on not widening buffering
+	// unnecessarily). A header-only consumer (oauth2-generator) never reads
+	// this field and is unaffected by its addition.
+	Body *Body
+}
