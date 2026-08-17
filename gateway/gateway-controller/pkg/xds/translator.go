@@ -122,17 +122,17 @@ type Translator struct {
 	// policyDefinitions is the same registry PolicyValidator and the
 	// transformers already hold — loaded once at controller startup and set
 	// via SetPolicyDefinitions, never reloaded per translation. It is read
-	// only for the cached x-wso2-retry-source/x-wso2-retry-trigger metadata
-	// that drives resolveRetryDeclarations; gateway-controller never imports
+	// only for the cached x-wso2-retry-source/x-wso2-retry-conditions metadata
+	// that drives collectRetryContributions; gateway-controller never imports
 	// or instantiates any policy implementation package.
 	policyDefinitions map[string]models.PolicyDefinition
 	// latestVersions indexes policyDefinitions by name → latest full semver,
 	// needed because a models.PolicyChain stores the MAJOR-only version.
 	latestVersions map[string]string
 	// missingPolicyDefinitionsWarnOnce guards a one-time warning, emitted the first time
-	// resolveRetryDeclarations sees a non-empty policy chain while policyDefinitions is nil —
+	// collectRetryContributions sees a non-empty policy chain while policyDefinitions is nil —
 	// i.e. some controller binary embedding this translator forgot to call
-	// SetPolicyDefinitions. Without it the retry-source/retry-trigger mechanism silently
+	// SetPolicyDefinitions. Without it the retry-source/retry-conditions mechanism silently
 	// becomes a no-op for every chain, with nothing surfaced (this happened once already, see
 	// Critical finding C1 in the 2026-08-14 final review).
 	missingPolicyDefinitionsWarnOnce sync.Once
@@ -272,8 +272,8 @@ func (t *Translator) SetTransformers(transformers map[string]models.ConfigTransf
 
 // SetPolicyDefinitions wires the startup-loaded policy definition registry into
 // the translator, mirroring SetTransformers. Only the cached
-// x-wso2-retry-source/x-wso2-retry-trigger metadata is read from it (see
-// resolveRetryDeclarations); a translator without it simply discovers no retry
+// x-wso2-retry-source/x-wso2-retry-conditions metadata is read from it (see
+// collectRetryContributions); a translator without it simply discovers no retry
 // declarations, which is the correct behaviour for the legacy/test paths that
 // never load policies.
 func (t *Translator) SetPolicyDefinitions(policyDefinitions map[string]models.PolicyDefinition) {
@@ -331,7 +331,7 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 	// with a retry source: the two compose field-by-field into one RetryPolicy in
 	// createRouteFromRDC, which changes nothing about the aggregate clusters built here.
 	for routeKey, chain := range rdc.PolicyChains {
-		sourceDecl, _, err := t.resolveRetryDeclarations(chain)
+		sourceDecl, _, err := t.collectRetryContributions(chain)
 		if err != nil {
 			return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
 		}
@@ -385,17 +385,12 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 	return routes, clusters, nil
 }
 
-// resolveRetryDeclarations walks chain.Policies and, for each one, looks up its
-// ALREADY-LOADED policy-definition.yaml metadata (t.policyDefinitions, the same registry
-// PolicyValidator and the transformers hold, loaded once at controller startup) to decide
-// whether that policy contributes a retry-source declaration (x-wso2-retry-source) and/or
-// retry conditions (x-wso2-retry-conditions).
-//
-// This NEVER instantiates policy Go code: gateway-controller has no dependency on any policy
-// implementation package. It reads cached YAML metadata plus the policy's raw Params map,
-// both of which gateway-controller already has for every policy in a chain today. The lookup
-// itself is config.LookupRetryMetadata — the identical primitive registration-time validation
-// uses — so translation and validation can never disagree about the same chain.
+// resolveRetryDeclarations is a TEST-ONLY convenience wrapper around
+// collectRetryContributions plus one config.MergeRetryConditions call. No production code path
+// calls it: translateRuntimeConfig and createRouteFromRDC both call collectRetryContributions
+// directly, since each has its own reason to see contributions before they're merged (see
+// collectRetryContributions' doc comment). It's kept because several existing tests exercise
+// the merge-then-inspect shape directly and it remains a reasonable, harmless test seam.
 //
 // sourceDecl is simply the last (in practice, only) declaration found: at-most-one
 // exclusivity is enforced at registration time by
@@ -406,10 +401,6 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 // travels through its OWN separate x-wso2-retry-conditions block and is parsed here in
 // exactly the same pass as any other chain member's. RetrySourceDeclaration carries no
 // conditions of its own; it only ever describes WHERE to retry to, never WHAT to retry on.
-//
-// A caller that has a FURTHER contributor to add (createRouteFromRDC, which also folds in
-// the operator's own resilience.retry) must use collectRetryContributions and merge once,
-// rather than merging on top of this already-merged value — see that function's note.
 func (t *Translator) resolveRetryDeclarations(chain *models.PolicyChain) (
 	sourceDecl *policy.RetrySourceDeclaration,
 	merged policy.RetryConditions,
@@ -426,9 +417,10 @@ func (t *Translator) resolveRetryDeclarations(chain *models.PolicyChain) (
 	return sourceDecl, merged, nil
 }
 
-// collectRetryContributions is resolveRetryDeclarations' discovery half: it returns the
-// route's retry-source declaration plus every chain member's parsed, still-UNMERGED
-// RetryConditions.
+// collectRetryContributions is the production entry point for retry discovery (called
+// directly by both translateRuntimeConfig and createRouteFromRDC); resolveRetryDeclarations
+// is a test-only wrapper built on top of it. It returns the route's retry-source declaration
+// plus every chain member's parsed, still-UNMERGED RetryConditions.
 //
 // Keeping the unmerged list available matters because merging is not associative over
 // MergeRetryConditions' single-owner rules: that function DERIVES NumRetries from the
@@ -576,8 +568,8 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 	}
 	if merged, mergeErr := config.MergeRetryConditions(contributions); mergeErr != nil {
 		// A genuine ownership conflict (two contributors demanding different NumRetries, or
-		// two declaring BackOff). Registration-time validation is the intended gate for this;
-		// leave the route with no retry policy rather than silently picking a winner.
+		// two declaring BackOff). Detected here, at translation time — leave the route with no
+		// retry policy rather than silently picking a winner.
 		t.logger.Warn("route retry conditions conflict; emitting no retry policy for this route",
 			"route", routeKey, "error", mergeErr)
 	} else if sourceDecl != nil || retryCanFire(merged) {
@@ -1020,7 +1012,7 @@ func (t *Translator) TranslateConfigs(
 	// Envoy RouteAction field this capability turns into (it is unrelated to retry
 	// semantics), so it can't be detected post-hoc the way RetryPolicy presence can. Legacy
 	// (non-RDC) configs carry no PolicyChains and so never populate this set — this
-	// capability, like retry-source/retry-trigger discovery, is RDC-only today.
+	// capability, like retry-source/retry-conditions discovery, is RDC-only today.
 	clustersNeedingUpstreamResponseObserver := make(map[string]bool)
 
 	for _, cfg := range configs {

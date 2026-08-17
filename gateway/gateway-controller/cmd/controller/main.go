@@ -450,7 +450,7 @@ func main() {
 
 	// Wire the same startup-loaded policy definitions the transformers and PolicyValidator
 	// hold, so the translator can read each policy's declared x-wso2-retry-source /
-	// x-wso2-retry-trigger metadata when building retry config. Without this the translator
+	// x-wso2-retry-conditions metadata when building retry config. Without this the translator
 	// discovers no retry declarations and every retry-capable policy silently becomes inert.
 	translator.SetPolicyDefinitions(policyDefinitions)
 

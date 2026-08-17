@@ -51,6 +51,5 @@ func TestRetrySourceDeclaration_IsUpstreamAttemptActionFree(t *testing.T) {
 		Groups: []RetryGroup{
 			{Key: "gpt-4o", OrderedTargets: []RetryTarget{{UpstreamDefinitionName: "primary"}}},
 		},
-		RetriableStatusCodes: []int{429, 500},
 	}
 }

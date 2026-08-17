@@ -22,8 +22,11 @@ package models
 // declaration: this policy's params describe one or more
 // independently-selectable failover chains, in the fixed structural shape
 // ParseRetrySourceParams understands (targets: [{<GroupKeyField>: string,
-// upstreamDefinition: string, fallbacks: [{upstreamDefinition: string}]}],
-// statusCodes: [int]).
+// upstreamDefinition: string, fallbacks: [{upstreamDefinition: string}]}]).
+// The target-list field name defaults to "targets" but is overridable via
+// TargetsField below. WHAT to retry on (status codes, etc.) is a separate
+// concern, declared via this policy's own x-wso2-retry-conditions block —
+// RetrySourceMetadata never describes retry conditions itself.
 type RetrySourceMetadata struct {
 	// GroupKeyField names which field in each targets[] entry
 	// gateway-controller treats as the group's opaque discriminator (e.g.

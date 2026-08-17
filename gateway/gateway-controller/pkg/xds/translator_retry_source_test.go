@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
@@ -205,10 +206,88 @@ func TestResolveRetryDeclarations_IgnoresPolicyWithNoRetryMetadata(t *testing.T)
 	}
 }
 
+// I1 regression test (2026-08-17 final review): a chain-vs-chain NumRetries ownership
+// conflict on ONE route must degrade gracefully — that route loses its retry policy, every
+// other route on the same API still translates — never abort translateRuntimeConfig for the
+// whole API. Before the fix, translateRuntimeConfig called resolveRetryDeclarations (which
+// merges eagerly, purely to decide whether a retry-source aggregate cluster is needed) and
+// propagated that merge's conflict error, failing translation of every route and cluster.
+// createRouteFromRDC already handles the identical conflict class (including the operator's
+// resilience.retry as a contributor) by warning and leaving just that one route with no
+// RetryPolicy — this test pins translateRuntimeConfig to the same graceful behavior.
+func TestTranslateRuntimeConfig_ChainConflictDegradesOnlyThatRoute(t *testing.T) {
+	tr := NewTranslator(createTestLogger(), testRouterConfig(), nil, testConfig())
+	tr.SetPolicyDefinitions(map[string]models.PolicyDefinition{
+		"conflict-a-policy|v1.0.0": {
+			Name:            "conflict-a-policy",
+			Version:         "v1.0.0",
+			RetryConditions: &map[string]interface{}{"statusCodes": []interface{}{500}, "numRetries": 2},
+		},
+		"conflict-b-policy|v1.0.0": {
+			Name:            "conflict-b-policy",
+			Version:         "v1.0.0",
+			RetryConditions: &map[string]interface{}{"statusCodes": []interface{}{501}, "numRetries": 5},
+		},
+	})
+
+	conflictRouteKey := "GET|/conflict|"
+	otherRouteKey := "GET|/other|"
+	rdc := &models.RuntimeDeployConfig{
+		Metadata: models.Metadata{Kind: "RestApi", UUID: "api-conflict"},
+		Routes: map[string]*models.Route{
+			conflictRouteKey: {
+				Method: "GET", Path: "/conflict", OperationPath: "/conflict",
+				Upstream: models.RouteUpstream{ClusterKey: "main"},
+			},
+			otherRouteKey: {
+				Method: "GET", Path: "/other", OperationPath: "/other",
+				Upstream: models.RouteUpstream{ClusterKey: "main"},
+			},
+		},
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"main": {Endpoints: []models.Endpoint{{Host: "echo", Port: 80}}},
+		},
+		PolicyChains: map[string]*models.PolicyChain{
+			// Two chain members, each demanding a different explicit NumRetries —
+			// a genuine ownership conflict per MergeRetryConditions.
+			conflictRouteKey: {Policies: []models.Policy{
+				{Name: "conflict-a-policy", Version: "v1"},
+				{Name: "conflict-b-policy", Version: "v1"},
+			}},
+			// otherRouteKey deliberately has no PolicyChains entry at all — an
+			// unrelated route on the same API that must be unaffected.
+		},
+	}
+
+	routes, _, err := tr.translateRuntimeConfig(rdc)
+	if err != nil {
+		t.Fatalf("expected translateRuntimeConfig to succeed with the conflicting route gracefully degraded, got error: %v", err)
+	}
+
+	var conflictRoute, otherRoute *route.Route
+	for _, r := range routes {
+		switch r.Name {
+		case conflictRouteKey:
+			conflictRoute = r
+		case otherRouteKey:
+			otherRoute = r
+		}
+	}
+	if conflictRoute == nil {
+		t.Fatal("expected the conflicting route to still be translated")
+	}
+	if rp := conflictRoute.GetRoute().GetRetryPolicy(); rp != nil {
+		t.Errorf("expected no RetryPolicy on the conflicting route, got %+v", rp)
+	}
+	if otherRoute == nil {
+		t.Fatal("expected the unrelated route to still be translated")
+	}
+}
+
 // Composition: a conditions-only policy's codes fold into the SAME merged conditions the
 // retry-source policy's own block contributed to, rather than producing a second,
 // conflicting RetryPolicy.
-func TestResolveRetryDeclarations_SourceAndTriggerCompose(t *testing.T) {
+func TestResolveRetryDeclarations_SourceAndConditionsCompose(t *testing.T) {
 	tr := newRetryTestTranslator()
 	chain := &models.PolicyChain{Policies: []models.Policy{
 		{
@@ -320,11 +399,11 @@ func TestCreateRouteFromRDC_EmptyConditionsYieldNoRetryPolicy(t *testing.T) {
 	}
 }
 
-// TestCreateRouteFromRDC_TriggerComposesWithResilienceRetry is the I1 regression test (see the
-// 2026-08-14 final review): a retry-trigger policy must UNION its status codes and NumRetries
-// floor into an operator's configured resilience.retry, never replace it — unlike a retry
-// source, a retry trigger is designed to never conflict with anything.
-func TestCreateRouteFromRDC_TriggerComposesWithResilienceRetry(t *testing.T) {
+// TestCreateRouteFromRDC_PolicyConditionsComposeWithResilienceRetry is the I1 regression test
+// (see the 2026-08-14 final review): a conditions-only policy must UNION its status codes and
+// NumRetries floor into an operator's configured resilience.retry, never replace it — unlike a
+// retry source, a conditions-only contribution is designed to never conflict with anything.
+func TestCreateRouteFromRDC_PolicyConditionsComposeWithResilienceRetry(t *testing.T) {
 	tr := newRetryTestTranslator()
 
 	routeKey := "GET|/api/v1.0/items|"
@@ -365,18 +444,18 @@ func TestCreateRouteFromRDC_TriggerComposesWithResilienceRetry(t *testing.T) {
 			t.Errorf("unexpected status code %d in merged RetryPolicy", code)
 		}
 	}
-	// NumRetries must stay at the operator's configured 3 — the trigger's minAttempts-1 (1)
-	// is only ever a floor, never a ceiling on the operator's own value.
+	// NumRetries must stay at the operator's configured 3 — the conditions-only policy's
+	// minAttempts-1 (1) is only ever a floor, never a ceiling on the operator's own value.
 	if got := rp.GetNumRetries().GetValue(); got != 3 {
-		t.Errorf("NumRetries = %d, want 3 (operator's resilience.retry, not clobbered by the trigger)", got)
+		t.Errorf("NumRetries = %d, want 3 (operator's resilience.retry, not clobbered by the policy's conditions)", got)
 	}
 }
 
-// TestCreateRouteFromRDC_ZeroFallbackSourcePlusTriggerGetsNonZeroNumRetries is the I2
+// TestCreateRouteFromRDC_ZeroFallbackSourcePlusConditionsGetsNonZeroNumRetries is the I2
 // regression test: a retry-source declaration whose every group is single-target (legal — no
-// fallbacks at all, maxChain==0) combined with a retry-trigger must still get a non-zero retry
-// budget, or the merged trigger status code can never actually fire.
-func TestCreateRouteFromRDC_ZeroFallbackSourcePlusTriggerGetsNonZeroNumRetries(t *testing.T) {
+// fallbacks at all, maxChain==0) combined with a conditions-only policy must still get a
+// non-zero retry budget, or the merged conditions-only status code can never actually fire.
+func TestCreateRouteFromRDC_ZeroFallbackSourcePlusConditionsGetsNonZeroNumRetries(t *testing.T) {
 	tr := newRetryTestTranslator()
 
 	routeKey := "POST|/mf-test/latest/chat/completions|"

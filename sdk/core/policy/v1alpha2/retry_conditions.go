@@ -45,9 +45,11 @@ type RetryConditions struct {
 
 	// NumRetries is an exact retry-count request. At most one DISTINCT
 	// value may be set across all contributors on a route — a second
-	// contributor setting a different explicit value is a
-	// registration-time conflict, never silently resolved. Identical
-	// values from multiple contributors are fine.
+	// contributor setting a different explicit value is a conflict,
+	// detected at translation time — the affected route is left with no
+	// retry policy rather than silently picking a winner (see
+	// MergeRetryConditions). Identical values from multiple contributors
+	// are fine.
 	NumRetries *int
 
 	// MinAttempts is "I need at least N total attempts to get value from
@@ -60,8 +62,10 @@ type RetryConditions struct {
 	PerTryTimeout *time.Duration
 
 	// BackOff configures retry pacing. At most one contributor on a route
-	// may set this — a second contributor also setting it is a
-	// registration-time conflict, even with identical values.
+	// may set this — a second contributor also setting it is a conflict,
+	// detected at translation time, even with identical values — the
+	// affected route is left with no retry policy rather than silently
+	// picking a winner (see MergeRetryConditions).
 	BackOff *RetryBackOff
 
 	// AvoidPreviousHosts maps to Envoy's "previous_hosts" RetryHostPredicate.
