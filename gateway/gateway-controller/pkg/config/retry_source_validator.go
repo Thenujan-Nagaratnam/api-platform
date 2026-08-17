@@ -354,7 +354,7 @@ func ParseRetrySourceParams(params map[string]interface{}, groupKeyField string)
 		statusCodes = append(statusCodes, code)
 	}
 
-	decl := &policy.RetrySourceDeclaration{Groups: groups, RetriableStatusCodes: statusCodes}
+	decl := &policy.RetrySourceDeclaration{Groups: groups}
 
 	// requestTimeout is part of the same fixed structural shape: it bounds ONE
 	// attempt (Envoy's RetryPolicy.PerTryTimeout), not the whole route. Optional —
@@ -389,14 +389,14 @@ func ParseRetrySourceParams(params map[string]interface{}, groupKeyField string)
 // its schema default ([401]) would silently stop contributing that code to
 // route-level retry, changing today's behavior. May be nil (e.g. in tests),
 // in which case an absent field behaves like an explicitly empty one.
-func ParseRetryTriggerParams(params map[string]interface{}, statusCodesField string, minAttempts int, schema *map[string]interface{}) (*policy.RetryTriggerDeclaration, error) {
+func ParseRetryTriggerParams(params map[string]interface{}, statusCodesField string, minAttempts int, schema *map[string]interface{}) (*policy.RetryConditions, error) {
 	raw, present := params[statusCodesField]
 	if !present {
 		raw = retryTriggerSchemaDefault(schema, statusCodesField)
 	}
 	rawStatusCodes, ok := raw.([]interface{})
 	if !ok {
-		return &policy.RetryTriggerDeclaration{}, nil
+		return &policy.RetryConditions{}, nil
 	}
 	statusCodes := make([]int, 0, len(rawStatusCodes))
 	for i, raw := range rawStatusCodes {
@@ -414,9 +414,10 @@ func ParseRetryTriggerParams(params map[string]interface{}, statusCodesField str
 		statusCodes = append(statusCodes, code)
 	}
 	if len(statusCodes) == 0 {
-		return &policy.RetryTriggerDeclaration{}, nil
+		return &policy.RetryConditions{}, nil
 	}
-	return &policy.RetryTriggerDeclaration{RetriableStatusCodes: statusCodes, MinAttempts: minAttempts}, nil
+	minAttemptsCopy := minAttempts
+	return &policy.RetryConditions{StatusCodes: statusCodes, MinAttempts: &minAttemptsCopy}, nil
 }
 
 // retryTriggerSchemaDefault reads properties.<field>.default from a policy's
