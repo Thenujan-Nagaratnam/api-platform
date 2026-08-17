@@ -23,6 +23,7 @@ import (
 	"time"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
@@ -697,5 +698,54 @@ func TestBuildRoutePolicyFromConditions_BackOffHeadersAndHostPredicate(t *testin
 	}
 	if got := rp.RetriableHeaders[0].GetStringMatch().GetExact(); got != "true" {
 		t.Errorf("RetriableHeaders[0] exact match = %q, want %q", got, "true")
+	}
+}
+
+// api.Retry's BackOff regenerates as an anonymous nested struct (oapi-codegen
+// does not name it RetryBackOff) — this literal's field tags must match
+// generated.go's Retry.BackOff exactly for the composite literal's type to
+// be identical to the field's type.
+func TestOperatorRetryToRawConditions_FullShape(t *testing.T) {
+	five := 5
+	baseInterval := "100ms"
+	avoidHosts := true
+	on := []api.RetryOn{"5xx", "connect-failure"}
+	r := &api.Retry{
+		StatusCodes:        []int{500},
+		NumRetries:         &five,
+		On:                 &on,
+		PerTryTimeout:      strPtr("5s"),
+		AvoidPreviousHosts: &avoidHosts,
+		BackOff: &struct {
+			// BaseInterval Go-duration-formatted base retry backoff interval (e.g. "100ms").
+			BaseInterval string `json:"baseInterval" yaml:"baseInterval"`
+
+			// MaxInterval Go-duration-formatted max retry backoff interval.
+			MaxInterval *string `json:"maxInterval,omitempty" yaml:"maxInterval,omitempty"`
+		}{BaseInterval: baseInterval},
+	}
+
+	raw := operatorRetryToRawConditions(r)
+	rc, err := config.ParseRetryConditions(raw, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rc.NumRetries == nil || *rc.NumRetries != 5 {
+		t.Errorf("unexpected NumRetries: %v", rc.NumRetries)
+	}
+	if rc.BackOff == nil || rc.BackOff.BaseInterval != 100*time.Millisecond {
+		t.Errorf("unexpected BackOff: %v", rc.BackOff)
+	}
+	if !rc.AvoidPreviousHosts {
+		t.Error("expected AvoidPreviousHosts to survive the round trip")
+	}
+	if len(rc.On) != 2 || rc.On[0] != "5xx" || rc.On[1] != "connect-failure" {
+		t.Errorf("unexpected On: %v", rc.On)
+	}
+	if rc.PerTryTimeout == nil || *rc.PerTryTimeout != 5*time.Second {
+		t.Errorf("unexpected PerTryTimeout: %v", rc.PerTryTimeout)
+	}
+	if len(rc.StatusCodes) != 1 || rc.StatusCodes[0] != 500 {
+		t.Errorf("unexpected StatusCodes: %v", rc.StatusCodes)
 	}
 }

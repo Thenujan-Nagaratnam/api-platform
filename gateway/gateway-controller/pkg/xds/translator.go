@@ -4327,9 +4327,9 @@ func buildOperatorRetryPolicy(retry *api.Retry) *route.RetryPolicy {
 // operatorRetryToRawConditions adapts the operator-facing api.Retry into
 // the same raw-block shape ParseRetryConditions expects, so an operator's
 // resilience.retry funnels through the identical parse+merge path as a
-// policy's own x-wso2-retry-conditions declaration. Extended in Task 7 once
-// api.Retry gains the richer fields (On, PerTryTimeout, BackOff,
-// AvoidPreviousHosts) — this version wires NumRetries/StatusCodes only.
+// policy's own x-wso2-retry-conditions declaration. Handles the full
+// operator-facing vocabulary (Task 7): On, PerTryTimeout, BackOff,
+// AvoidPreviousHosts, alongside Task 6's NumRetries/StatusCodes.
 //
 // An omitted numRetries becomes minAttempts: 2 rather than numRetries: 1.
 // Both express the management API's documented `numRetries` default of 1
@@ -4344,6 +4344,26 @@ func operatorRetryToRawConditions(r *api.Retry) map[string]interface{} {
 		raw["numRetries"] = *r.NumRetries
 	} else {
 		raw["minAttempts"] = 2
+	}
+	if r.On != nil {
+		on := make([]interface{}, len(*r.On))
+		for i, o := range *r.On {
+			on[i] = string(o)
+		}
+		raw["on"] = on
+	}
+	if r.PerTryTimeout != nil {
+		raw["perTryTimeout"] = *r.PerTryTimeout
+	}
+	if r.AvoidPreviousHosts != nil {
+		raw["avoidPreviousHosts"] = *r.AvoidPreviousHosts
+	}
+	if r.BackOff != nil {
+		bo := map[string]interface{}{"baseInterval": r.BackOff.BaseInterval}
+		if r.BackOff.MaxInterval != nil {
+			bo["maxInterval"] = *r.BackOff.MaxInterval
+		}
+		raw["backOff"] = bo
 	}
 	return raw
 }

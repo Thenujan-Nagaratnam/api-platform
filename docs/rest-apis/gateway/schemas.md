@@ -312,7 +312,22 @@ and
   ],
   "resilience": {
     "timeout": "15s",
-    "idleTimeout": "0s"
+    "idleTimeout": "0s",
+    "retry": {
+      "statusCodes": [
+        401
+      ],
+      "numRetries": 1,
+      "on": [
+        "5xx"
+      ],
+      "perTryTimeout": "string",
+      "backOff": {
+        "baseInterval": "string",
+        "maxInterval": "string"
+      },
+      "avoidPreviousHosts": false
+    }
   },
   "operations": [
     {
@@ -342,7 +357,22 @@ and
       ],
       "resilience": {
         "timeout": "15s",
-        "idleTimeout": "0s"
+        "idleTimeout": "0s",
+        "retry": {
+          "statusCodes": [
+            401
+          ],
+          "numRetries": 1,
+          "on": [
+            "5xx"
+          ],
+          "perTryTimeout": "string",
+          "backOff": {
+            "baseInterval": "string",
+            "maxInterval": "string"
+          },
+          "avoidPreviousHosts": false
+        }
       }
     }
   ],
@@ -367,7 +397,7 @@ and
 |» sandbox|string|false|none|Custom virtual host/domain for sandbox traffic|
 |subscriptionPlans|[string]|false|none|List of subscription plan names available for this API|
 |policies|[[Policy](#schemapolicy)]|false|none|List of API-level policies applied to all operations unless overridden|
-|resilience|[Resilience](#schemaresilience)|false|none|Backend/route timeout configuration. Maps to Envoy RouteAction timeouts. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence. When unset, the gateway's global route timeout defaults apply.|
+|resilience|[Resilience](#schemaresilience)|false|none|Backend/route timeout and retry configuration. Maps to Envoy RouteAction timeouts and RetryPolicy. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence.|
 |operations|[[Operation](#schemaoperation)]|true|none|List of HTTP operations/routes|
 |deploymentState|string|false|none|Desired deployment state - 'deployed' (default) or 'undeployed'. When set to 'undeployed', the API is removed from router traffic but configuration, API keys, and policies are preserved for potential redeployment.|
 
@@ -447,12 +477,27 @@ Timeout configuration for upstream requests
 ```json
 {
   "timeout": "15s",
-  "idleTimeout": "0s"
+  "idleTimeout": "0s",
+  "retry": {
+    "statusCodes": [
+      401
+    ],
+    "numRetries": 1,
+    "on": [
+      "5xx"
+    ],
+    "perTryTimeout": "string",
+    "backOff": {
+      "baseInterval": "string",
+      "maxInterval": "string"
+    },
+    "avoidPreviousHosts": false
+  }
 }
 
 ```
 
-Backend/route timeout configuration. Maps to Envoy RouteAction timeouts. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence. When unset, the gateway's global route timeout defaults apply.
+Backend/route timeout and retry configuration. Maps to Envoy RouteAction timeouts and RetryPolicy. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence.
 
 ### Properties
 
@@ -460,6 +505,48 @@ Backend/route timeout configuration. Maps to Envoy RouteAction timeouts. Can be 
 |---|---|---|---|---|
 |timeout|string|false|none|Maximum time for the entire route (request to upstream response). "0s" disables the timeout.|
 |idleTimeout|string|false|none|Per-route stream idle timeout (overrides the listener stream idle timeout for this route). "0s" disables the timeout.|
+|retry|[Retry](#schemaretry)|false|none|Native Envoy retry on the listed response status codes. When set, any policy on this route implementing the upstream-attempt refresh mechanism (see UpstreamAttemptPolicy in the policy SDK) gets a chance to attach fresh per-attempt state (e.g. a refreshed credential) before each retried attempt goes out.|
+
+<h2 id="tocS_Retry">Retry</h2>
+
+<a id="schemaretry"></a>
+<a id="schema_Retry"></a>
+<a id="tocSretry"></a>
+<a id="tocsretry"></a>
+
+```json
+{
+  "statusCodes": [
+    401
+  ],
+  "numRetries": 1,
+  "on": [
+    "5xx"
+  ],
+  "perTryTimeout": "string",
+  "backOff": {
+    "baseInterval": "string",
+    "maxInterval": "string"
+  },
+  "avoidPreviousHosts": false
+}
+
+```
+
+Native Envoy retry on the listed response status codes. When set, any policy on this route implementing the upstream-attempt refresh mechanism (see UpstreamAttemptPolicy in the policy SDK) gets a chance to attach fresh per-attempt state (e.g. a refreshed credential) before each retried attempt goes out.
+
+### Properties
+
+|Name|Type|Required|Restrictions|Description|
+|---|---|---|---|---|
+|statusCodes|[integer]|true|none|Response status codes that trigger a retry.|
+|numRetries|integer|false|none|Maximum number of retry attempts.|
+|on|[string]|false|none|Envoy retry conditions. Defaults to [retriable-status-codes] when omitted and statusCodes is set.|
+|perTryTimeout|string|false|none|Go-duration-formatted bound on a single retry attempt (e.g. "5s").|
+|backOff|object|false|none|none|
+|» baseInterval|string|true|none|Go-duration-formatted base retry backoff interval (e.g. "100ms").|
+|» maxInterval|string|false|none|Go-duration-formatted max retry backoff interval.|
+|avoidPreviousHosts|boolean|false|none|Avoid retrying against the same host a previous attempt already used.|
 
 <h2 id="tocS_Upstream">Upstream</h2>
 
@@ -541,7 +628,22 @@ xor
   ],
   "resilience": {
     "timeout": "15s",
-    "idleTimeout": "0s"
+    "idleTimeout": "0s",
+    "retry": {
+      "statusCodes": [
+        401
+      ],
+      "numRetries": 1,
+      "on": [
+        "5xx"
+      ],
+      "perTryTimeout": "string",
+      "backOff": {
+        "baseInterval": "string",
+        "maxInterval": "string"
+      },
+      "avoidPreviousHosts": false
+    }
   }
 }
 
@@ -557,7 +659,7 @@ An operation is matched either by the simple top-level method+path form, or by t
 |path|string|false|none|Route path with optional {param} placeholders (simple form; ignored when 'match' is set)|
 |match|[OperationMatch](#schemaoperationmatch)|false|none|Request matching criteria for an operation. Extensible with query params, cookies, etc.|
 |policies|[[Policy](#schemapolicy)]|false|none|List of policies applied only to this operation (overrides or adds to API-level policies)|
-|resilience|[Resilience](#schemaresilience)|false|none|Backend/route timeout configuration. Maps to Envoy RouteAction timeouts. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence. When unset, the gateway's global route timeout defaults apply.|
+|resilience|[Resilience](#schemaresilience)|false|none|Backend/route timeout and retry configuration. Maps to Envoy RouteAction timeouts and RetryPolicy. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence.|
 
 <h2 id="tocS_OperationMethod">OperationMethod</h2>
 
@@ -1401,6 +1503,9 @@ and
     "hostRewrite": "auto",
     "auth": {
       "type": "api-key",
+      "policyName": "string",
+      "policyVersion": "string",
+      "policyParams": {},
       "header": "string",
       "value": "string"
     }
@@ -1450,7 +1555,22 @@ and
   "deploymentState": "deployed",
   "resilience": {
     "timeout": "15s",
-    "idleTimeout": "0s"
+    "idleTimeout": "0s",
+    "retry": {
+      "statusCodes": [
+        401
+      ],
+      "numRetries": 1,
+      "on": [
+        "5xx"
+      ],
+      "perTryTimeout": "string",
+      "backOff": {
+        "baseInterval": "string",
+        "maxInterval": "string"
+      },
+      "avoidPreviousHosts": false
+    }
   }
 }
 
@@ -2081,8 +2201,7 @@ and
       "url": "https://api.openai.com/v1",
       "auth": {
         "type": "api-key",
-        "header": "Authorization",
-        "value": "Bearer sk-your-api-key"
+        "header": "Authorization"
       }
     },
     "accessControl": {
@@ -2170,6 +2289,9 @@ and
     "hostRewrite": "auto",
     "auth": {
       "type": "api-key",
+      "policyName": "string",
+      "policyVersion": "string",
+      "policyParams": {},
       "header": "string",
       "value": "string"
     }
@@ -2227,7 +2349,22 @@ and
   "deploymentState": "deployed",
   "resilience": {
     "timeout": "15s",
-    "idleTimeout": "0s"
+    "idleTimeout": "0s",
+    "retry": {
+      "statusCodes": [
+        401
+      ],
+      "numRetries": 1,
+      "on": [
+        "5xx"
+      ],
+      "perTryTimeout": "string",
+      "backOff": {
+        "baseInterval": "string",
+        "maxInterval": "string"
+      },
+      "avoidPreviousHosts": false
+    }
   }
 }
 
@@ -2286,6 +2423,9 @@ continued
 {
   "auth": {
     "type": "api-key",
+    "policyName": "string",
+    "policyVersion": "string",
+    "policyParams": {},
     "header": "string",
     "value": "string"
   }
@@ -2298,15 +2438,19 @@ continued
 |Name|Type|Required|Restrictions|Description|
 |---|---|---|---|---|
 |auth|object|false|none|none|
-|» type|string|true|none|none|
-|» header|string|false|none|none|
-|» value|string|false|none|none|
+|» type|string|true|none|"api-key" attaches the built-in set-headers policy by default (overridable via policyName) and accepts either the generic policyParams bucket or its own deprecated header/value fields below. "oauth2" attaches the built-in oauth2-generator policy by default (overridable via policyName) and always requires policyParams - there is no typed-field fallback for it. "other" attaches any policy by name - policyName and policyParams are both required in that case, since there is no built-in default or typed-field fallback for a non-built-in auth scheme. "none": no upstream authentication - the gateway attaches no auth policy of its own; auth (if any) is handled entirely by user-attached policies elsewhere.|
+|» policyName|string|false|none|Name of the policy that implements this upstream auth. Optional for "api-key"/"oauth2" (defaults to the built-in policy for that type - api-key -> set-headers, oauth2 -> oauth2-generator); set it to point at your own fork or a newer major version's replacement instead. Required when type is "other".|
+|» policyVersion|string|false|none|Major version of policyName to attach (e.g. "v1"), same format and resolution rules as Policy.version. Optional - defaults to the highest version available in the gateway image when omitted. If set, it must match a version actually loaded in this gateway build, or config validation fails.|
+|» policyParams|object|false|none|Parameters passed verbatim to policyName (or the built-in default for type). Required when type is "oauth2" or "other" - oauth2 has no typed fields at all, only this bucket (e.g. {tokenEndpoint: ..., clientId: ..., clientSecret: ...} for the token-endpoint path, or {bearerToken: ...} for a directly-supplied credential). For "api-key", optional: replaces the deprecated header/value fields below when set; do not set both at once.|
+|» header|string|false|none|Deprecated: use policyParams (e.g. {request: {headers: [{name: ..., value: ...}]}} - the set-headers policy's own param shape) instead. HTTP header to set on outbound requests. Applies when type is api-key. Still honored when policyParams is omitted, for backward compatibility.|
+|» value|string|false|write-only|Deprecated: use policyParams instead. Upstream credential. Applies when type is api-key. Still honored when policyParams is omitted, for backward compatibility. Write-only: accepted on create/update and never returned by the management API on a read, for any role. Supply either a literal value or a secret reference (e.g. a `secret` template expression); either way the field is omitted from management API response bodies. An update that omits it inherits the stored value; set `type: none` to remove auth.|
 
 #### Enumerated Values
 
 |Property|Value|
 |---|---|
 |type|api-key|
+|type|oauth2|
 |type|other|
 |type|none|
 
@@ -2320,6 +2464,9 @@ continued
 ```json
 {
   "type": "api-key",
+  "policyName": "string",
+  "policyVersion": "string",
+  "policyParams": {},
   "header": "string",
   "value": "string"
 }
@@ -2330,15 +2477,19 @@ continued
 
 |Name|Type|Required|Restrictions|Description|
 |---|---|---|---|---|
-|type|string|true|none|none|
-|header|string|false|none|none|
-|value|string|false|none|none|
+|type|string|true|none|"api-key" attaches the built-in set-headers policy by default (overridable via policyName) and accepts either the generic policyParams bucket or its own deprecated header/value fields below. "oauth2" attaches the built-in oauth2-generator policy by default (overridable via policyName) and always requires policyParams - there is no typed-field fallback for it. "other" attaches any policy by name - policyName and policyParams are both required in that case, since there is no built-in default or typed-field fallback for a non-built-in auth scheme. "none": no upstream authentication - the gateway attaches no auth policy of its own; auth (if any) is handled entirely by user-attached policies elsewhere.|
+|policyName|string|false|none|Name of the policy that implements this upstream auth. Optional for "api-key"/"oauth2" (defaults to the built-in policy for that type - api-key -> set-headers, oauth2 -> oauth2-generator); set it to point at your own fork or a newer major version's replacement instead. Required when type is "other".|
+|policyVersion|string|false|none|Major version of policyName to attach (e.g. "v1"), same format and resolution rules as Policy.version. Optional - defaults to the highest version available in the gateway image when omitted. If set, it must match a version actually loaded in this gateway build, or config validation fails.|
+|policyParams|object|false|none|Parameters passed verbatim to policyName (or the built-in default for type). Required when type is "oauth2" or "other" - oauth2 has no typed fields at all, only this bucket (e.g. {tokenEndpoint: ..., clientId: ..., clientSecret: ...} for the token-endpoint path, or {bearerToken: ...} for a directly-supplied credential). For "api-key", optional: replaces the deprecated header/value fields below when set; do not set both at once.|
+|header|string|false|none|Deprecated: use policyParams (e.g. {request: {headers: [{name: ..., value: ...}]}} - the set-headers policy's own param shape) instead. HTTP header to set on outbound requests. Applies when type is api-key. Still honored when policyParams is omitted, for backward compatibility.|
+|value|string|false|write-only|Deprecated: use policyParams instead. Upstream credential. Applies when type is api-key. Still honored when policyParams is omitted, for backward compatibility. Write-only: accepted on create/update and never returned by the management API on a read, for any role. An update that omits it inherits the stored value; set `type: none` to remove auth.|
 
 #### Enumerated Values
 
 |Property|Value|
 |---|---|
 |type|api-key|
+|type|oauth2|
 |type|other|
 |type|none|
 
@@ -2354,6 +2505,9 @@ continued
   "id": "wso2-openai-provider",
   "auth": {
     "type": "api-key",
+    "policyName": "string",
+    "policyVersion": "string",
+    "policyParams": {},
     "header": "string",
     "value": "string"
   }
@@ -2381,6 +2535,9 @@ continued
   "as": "anthropic-upstream",
   "auth": {
     "type": "api-key",
+    "policyName": "string",
+    "policyVersion": "string",
+    "policyParams": {},
     "header": "string",
     "value": "string"
   },
@@ -2717,6 +2874,9 @@ and
     "id": "wso2-openai-provider",
     "auth": {
       "type": "api-key",
+      "policyName": "string",
+      "policyVersion": "string",
+      "policyParams": {},
       "header": "string",
       "value": "string"
     }
@@ -2751,6 +2911,9 @@ and
       "as": "anthropic-upstream",
       "auth": {
         "type": "api-key",
+        "policyName": "string",
+        "policyVersion": "string",
+        "policyParams": {},
         "header": "string",
         "value": "string"
       },
@@ -2779,7 +2942,22 @@ and
   "deploymentState": "deployed",
   "resilience": {
     "timeout": "15s",
-    "idleTimeout": "0s"
+    "idleTimeout": "0s",
+    "retry": {
+      "statusCodes": [
+        401
+      ],
+      "numRetries": 1,
+      "on": [
+        "5xx"
+      ],
+      "perTryTimeout": "string",
+      "backOff": {
+        "baseInterval": "string",
+        "maxInterval": "string"
+      },
+      "avoidPreviousHosts": false
+    }
   }
 }
 

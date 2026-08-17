@@ -106,7 +106,7 @@ Required roles: `admin`, `developer`
 |body|body|[RestAPIRequest](schemas.md#schemarestapirequest)|true|none|
 
 > Example responses
-
+>
 > 201 Response
 
 ```json
@@ -235,7 +235,7 @@ Required roles: `admin`, `developer`
 |status|undeployed|
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -391,9 +391,18 @@ Status Code **200**
 |»»»»» version|string|true|none|Version of the policy. Only major-only version is allowed (e.g., v0, v1). Full semantic version (e.g., v1.0.0) is not accepted and will be rejected. The Gateway Controller resolves the major version to the single matching full version installed in the gateway image.|
 |»»»»» executionCondition|string|false|none|Expression controlling conditional execution of the policy|
 |»»»»» params|object|false|none|Arbitrary parameters for the policy (free-form key/value structure)|
-|»»»» resilience|[Resilience](schemas.md#schemaresilience)|false|none|Backend/route timeout configuration. Maps to Envoy RouteAction timeouts. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence. When unset, the gateway's global route timeout defaults apply.|
+|»»»» resilience|[Resilience](schemas.md#schemaresilience)|false|none|Backend/route timeout and retry configuration. Maps to Envoy RouteAction timeouts and RetryPolicy. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence.|
 |»»»»» timeout|string|false|none|Maximum time for the entire route (request to upstream response). "0s" disables the timeout.|
 |»»»»» idleTimeout|string|false|none|Per-route stream idle timeout (overrides the listener stream idle timeout for this route). "0s" disables the timeout.|
+|»»»»» retry|[Retry](schemas.md#schemaretry)|false|none|Native Envoy retry on the listed response status codes. When set, any policy on this route implementing the upstream-attempt refresh mechanism (see UpstreamAttemptPolicy in the policy SDK) gets a chance to attach fresh per-attempt state (e.g. a refreshed credential) before each retried attempt goes out.|
+|»»»»»» statusCodes|[integer]|true|none|Response status codes that trigger a retry.|
+|»»»»»» numRetries|integer|false|none|Maximum number of retry attempts.|
+|»»»»»» on|[string]|false|none|Envoy retry conditions. Defaults to [retriable-status-codes] when omitted and statusCodes is set.|
+|»»»»»» perTryTimeout|string|false|none|Go-duration-formatted bound on a single retry attempt (e.g. "5s").|
+|»»»»»» backOff|object|false|none|none|
+|»»»»»»» baseInterval|string|true|none|Go-duration-formatted base retry backoff interval (e.g. "100ms").|
+|»»»»»»» maxInterval|string|false|none|Go-duration-formatted max retry backoff interval.|
+|»»»»»» avoidPreviousHosts|boolean|false|none|Avoid retrying against the same host a previous attempt already used.|
 |»»»» operations|[[Operation](schemas.md#schemaoperation)]|true|none|List of HTTP operations/routes|
 |»»»»» method|[OperationMethod](schemas.md#schemaoperationmethod)|false|none|HTTP method (simple form; ignored when 'match' is set)|
 |»»»»» path|string|false|none|Route path with optional {param} placeholders (simple form; ignored when 'match' is set)|
@@ -407,7 +416,7 @@ Status Code **200**
 |»»»»»»» value|string|true|none|Header value to match|
 |»»»»»»» type|string|false|none|Header match type|
 |»»»»» policies|[[Policy](schemas.md#schemapolicy)]|false|none|List of policies applied only to this operation (overrides or adds to API-level policies)|
-|»»»»» resilience|[Resilience](schemas.md#schemaresilience)|false|none|Backend/route timeout configuration. Maps to Envoy RouteAction timeouts. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence. When unset, the gateway's global route timeout defaults apply.|
+|»»»»» resilience|[Resilience](schemas.md#schemaresilience)|false|none|Backend/route timeout and retry configuration. Maps to Envoy RouteAction timeouts and RetryPolicy. Can be set at the API level (applies to all routes) and/or the operation level (applies to that operation's route). When set at both levels, the operation-level value takes precedence.|
 |»»»» deploymentState|string|false|none|Desired deployment state - 'deployed' (default) or 'undeployed'. When set to 'undeployed', the API is removed from router traffic but configuration, API keys, and policies are preserved for potential redeployment.|
 
 *and*
@@ -491,7 +500,7 @@ Required roles: `admin`, `developer`
 **id**: Unique public identifier for the API.
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -684,7 +693,7 @@ Required roles: `admin`, `developer`
 **id**: Unique public identifier of the API to update.
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -807,7 +816,7 @@ Required roles: `admin`, `developer`
 **id**: Unique public identifier of the API to delete.
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -885,7 +894,7 @@ Required roles: `admin`, `consumer`
 **id**: Unique public identifier of the API to generate the key for
 
 > Example responses
-
+>
 > 201 Response
 
 ```json
@@ -954,7 +963,7 @@ Required roles: `admin`, `consumer`
 **id**: Unique public identifier of the API to retrieve the keys for
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1035,7 +1044,7 @@ Required roles: `admin`, `consumer`
 **apiKeyName**: Name of the API key to regenerate
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1118,7 +1127,7 @@ Required roles: `admin`, `consumer`
 **apiKeyName**: Name of the API key to update
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1190,7 +1199,7 @@ Required roles: `admin`, `consumer`
 **apiKeyName**: Name of the API key to revoke
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1248,7 +1257,7 @@ Create a subscription plan that defines rate limits and access tiers for API sub
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1259,7 +1268,7 @@ Required roles: `admin`, `developer`
 |body|body|[SubscriptionPlanCreateRequest](schemas.md#schemasubscriptionplancreaterequest)|true|none|
 
 > Example responses
-
+>
 > 201 Response
 
 ```json
@@ -1310,12 +1319,12 @@ List all subscription plans available in the Gateway.
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1369,7 +1378,7 @@ Get the details of a subscription plan by its ID.
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1380,7 +1389,7 @@ Required roles: `admin`, `developer`
 |planId|path|string|true|none|
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1446,7 +1455,7 @@ Update an existing subscription plan in the Gateway.
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1458,7 +1467,7 @@ Required roles: `admin`, `developer`
 |body|body|[SubscriptionPlanUpdateRequest](schemas.md#schemasubscriptionplanupdaterequest)|false|none|
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1508,7 +1517,7 @@ Delete a subscription plan from the Gateway.
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1519,7 +1528,7 @@ Required roles: `admin`, `developer`
 |planId|path|string|true|none|
 
 > Example responses
-
+>
 > 404 Response
 
 ```json
@@ -1582,7 +1591,7 @@ Subscribe an application to a RestAPI in the Gateway.
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1593,7 +1602,7 @@ Required roles: `admin`, `developer`
 |body|body|[SubscriptionCreateRequest](schemas.md#schemasubscriptioncreaterequest)|true|none|
 
 > Example responses
-
+>
 > 201 Response
 
 ```json
@@ -1644,7 +1653,7 @@ List subscriptions in the Gateway, optionally filtered by API, application, or s
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1665,7 +1674,7 @@ Required roles: `admin`, `developer`
 |status|REVOKED|
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1719,7 +1728,7 @@ Get the details of a subscription by its ID.
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1730,7 +1739,7 @@ Required roles: `admin`, `developer`
 |subscriptionId|path|string|true|none|
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1790,7 +1799,7 @@ Update an existing subscription in the Gateway.
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1802,7 +1811,7 @@ Required roles: `admin`, `developer`
 |body|body|[SubscriptionUpdateRequest](schemas.md#schemasubscriptionupdaterequest)|false|none|
 
 > Example responses
-
+>
 > 200 Response
 
 ```json
@@ -1852,7 +1861,7 @@ Delete a subscription from the Gateway.
 <aside class="warning">
 This operation requires <strong>Basic Auth</strong> authentication.
 
-Required roles: `admin`, `developer`
+Required roles: `admin`
 
 </aside>
 
@@ -1863,7 +1872,7 @@ Required roles: `admin`, `developer`
 |subscriptionId|path|string|true|none|
 
 > Example responses
-
+>
 > 404 Response
 
 ```json

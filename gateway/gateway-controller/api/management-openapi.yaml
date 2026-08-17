@@ -3114,6 +3114,31 @@ components:
           minimum: 1
           default: 1
           description: Maximum number of retry attempts.
+        on:
+          type: array
+          items:
+            type: string
+            enum: [5xx, gateway-error, reset, connect-failure, refused-stream, envoy-ratelimited, retriable-4xx, retriable-status-codes, retriable-headers]
+          description: >
+            Envoy retry conditions. Defaults to [retriable-status-codes]
+            when omitted and statusCodes is set.
+        perTryTimeout:
+          type: string
+          description: Go-duration-formatted bound on a single retry attempt (e.g. "5s").
+        backOff:
+          type: object
+          properties:
+            baseInterval:
+              type: string
+              description: Go-duration-formatted base retry backoff interval (e.g. "100ms").
+            maxInterval:
+              type: string
+              description: Go-duration-formatted max retry backoff interval.
+          required: [baseInterval]
+        avoidPreviousHosts:
+          type: boolean
+          default: false
+          description: Avoid retrying against the same host a previous attempt already used.
 
     Upstream:
       type: object
