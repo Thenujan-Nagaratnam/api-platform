@@ -595,28 +595,76 @@ func TestBuildRoutePolicyFromConditions_EmitsDeterministicSortedOutput(t *testin
 }
 
 // PerAttemptTimeout on the retry-source declaration must reach Envoy as
-// PerTryTimeout, and must win over a merged contributor's own perTryTimeout
-// (it is the retry source's own per-attempt bound on its own failover chain).
-func TestBuildRoutePolicyFromConditions_PerAttemptTimeoutWinsForRetrySource(t *testing.T) {
-	perAttempt := 10 * time.Second
-	contributed := 30 * time.Second
-	merged := policy.RetryConditions{StatusCodes: []int{500}, PerTryTimeout: &contributed}
-	source := &policy.RetrySourceDeclaration{
-		Groups: []policy.RetryGroup{
-			// two groups: NumRetries must come from the LONGEST chain, not the first
-			{Key: "a", OrderedTargets: []policy.RetryTarget{{}, {UpstreamDefinitionName: "b"}}},
-			{Key: "c", OrderedTargets: []policy.RetryTarget{{}, {UpstreamDefinitionName: "d"}, {UpstreamDefinitionName: "e"}}},
+// PerTryTimeout, but it is only ONE MORE CONTRIBUTOR to the single per-try bound
+// this route has: the TIGHTEST value across the source and every merged
+// contributor wins, and a retry source can never WIDEN a bound another policy in
+// the chain already declared. The "contributed is tighter" case below is the one
+// that discriminates min-wins from a source-always-wins implementation — with
+// only the source-tighter case, both behaviors emit the same value.
+func TestBuildRoutePolicyFromConditions_PerTryTimeoutTightestWinsForRetrySource(t *testing.T) {
+	dur := func(d time.Duration) *time.Duration { return &d }
+
+	tests := []struct {
+		name        string
+		perAttempt  *time.Duration // source.PerAttemptTimeout
+		contributed *time.Duration // merged.PerTryTimeout
+		wantPerTry  *time.Duration // nil == PerTryTimeout must be unset
+	}{
+		{
+			name:        "source tighter than contributed",
+			perAttempt:  dur(10 * time.Second),
+			contributed: dur(30 * time.Second),
+			wantPerTry:  dur(10 * time.Second),
 		},
-		PerAttemptTimeout: &perAttempt,
+		{
+			// The discriminating case: a looser source must NOT discard the
+			// tighter contributed bound.
+			name:        "contributed tighter than source",
+			perAttempt:  dur(30 * time.Second),
+			contributed: dur(5 * time.Second),
+			wantPerTry:  dur(5 * time.Second),
+		},
+		{
+			name:       "only the source declares one",
+			perAttempt: dur(10 * time.Second),
+			wantPerTry: dur(10 * time.Second),
+		},
+		{
+			name:        "only a contributor declares one",
+			contributed: dur(7 * time.Second),
+			wantPerTry:  dur(7 * time.Second),
+		},
+		{
+			name:       "neither declares one leaves it unset",
+			wantPerTry: nil,
+		},
 	}
 
-	rp := buildRoutePolicyFromConditions(merged, source)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			merged := policy.RetryConditions{StatusCodes: []int{500}, PerTryTimeout: tt.contributed}
+			source := &policy.RetrySourceDeclaration{
+				Groups: []policy.RetryGroup{
+					// two groups: NumRetries must come from the LONGEST chain, not the first
+					{Key: "a", OrderedTargets: []policy.RetryTarget{{}, {UpstreamDefinitionName: "b"}}},
+					{Key: "c", OrderedTargets: []policy.RetryTarget{{}, {UpstreamDefinitionName: "d"}, {UpstreamDefinitionName: "e"}}},
+				},
+				PerAttemptTimeout: tt.perAttempt,
+			}
 
-	if rp.GetPerTryTimeout().AsDuration() != 10*time.Second {
-		t.Errorf("PerTryTimeout = %v, want 10s from the declaration's PerAttemptTimeout", rp.GetPerTryTimeout())
-	}
-	if rp.GetNumRetries().GetValue() != 2 {
-		t.Errorf("NumRetries = %d, want 2 (longest chain 3 targets - 1)", rp.GetNumRetries().GetValue())
+			rp := buildRoutePolicyFromConditions(merged, source)
+
+			if tt.wantPerTry == nil {
+				if rp.GetPerTryTimeout() != nil {
+					t.Errorf("PerTryTimeout = %v, want unset", rp.GetPerTryTimeout())
+				}
+			} else if rp.GetPerTryTimeout().AsDuration() != *tt.wantPerTry {
+				t.Errorf("PerTryTimeout = %v, want the tightest bound %v", rp.GetPerTryTimeout().AsDuration(), *tt.wantPerTry)
+			}
+			if rp.GetNumRetries().GetValue() != 2 {
+				t.Errorf("NumRetries = %d, want 2 (longest chain 3 targets - 1)", rp.GetNumRetries().GetValue())
+			}
+		})
 	}
 }
 

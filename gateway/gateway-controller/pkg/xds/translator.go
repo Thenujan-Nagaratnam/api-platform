@@ -4170,8 +4170,9 @@ func parseDurationAllowZero(timeoutStr *string) (*time.Duration, error) {
 // route.RetryPolicy. source is nil for a route with no retry-source policy
 // (plain operator/conditions-only retry); when non-nil, NumRetries is floored
 // at the longest group chain length regardless of what merged.NumRetries
-// derived to, and RetryPriority/PerTryTimeout (from source.PerAttemptTimeout)
-// are set.
+// derived to, RetryPriority is set, and source.PerAttemptTimeout joins
+// merged.PerTryTimeout as one more contributor to the same per-try bound under
+// the same tightest-wins rule (never widening it).
 //
 // Every repeated field is emitted in a stable sorted order. config
 // .MergeRetryConditions unions On/StatusCodes/Headers through Go maps, whose
@@ -4228,12 +4229,18 @@ func buildRoutePolicyFromConditions(merged policy.RetryConditions, source *polic
 				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: priorityCfgAny},
 			}
 		}
-		// The retry source's own per-attempt bound governs its own failover chain, so it wins
-		// over a merged contributor's perTryTimeout when both are present.
-		if source.PerAttemptTimeout != nil {
-			rp.PerTryTimeout = durationpb.New(*source.PerAttemptTimeout)
-		} else if merged.PerTryTimeout != nil {
-			rp.PerTryTimeout = durationpb.New(*merged.PerTryTimeout)
+		// The retry source's own PerAttemptTimeout is just one more contributor to the same
+		// single per-try bound, so the TIGHTEST value wins — exactly the min-wins rule
+		// config.MergeRetryConditions applies when composing contributions with each other.
+		// A retry source must never be able to WIDEN a bound some other contributor on this
+		// route already declared: were source-wins used here, a 30s PerAttemptTimeout would
+		// silently discard a 5s perTryTimeout contributed elsewhere in the chain.
+		perTry := merged.PerTryTimeout
+		if source.PerAttemptTimeout != nil && (perTry == nil || *source.PerAttemptTimeout < *perTry) {
+			perTry = source.PerAttemptTimeout
+		}
+		if perTry != nil {
+			rp.PerTryTimeout = durationpb.New(*perTry)
 		}
 	} else if merged.PerTryTimeout != nil {
 		rp.PerTryTimeout = durationpb.New(*merged.PerTryTimeout)
