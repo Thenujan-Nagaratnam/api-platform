@@ -29,20 +29,11 @@ type RetrySourceMetadata struct {
 	// gateway-controller treats as the group's opaque discriminator (e.g.
 	// "model" for model-failover). Required when RetrySource is non-nil.
 	GroupKeyField string `json:"groupKeyField" yaml:"groupKeyField"`
-}
 
-// RetryTriggerMetadata is a policy-definition.yaml's x-wso2-retry-trigger
-// declaration: this policy's params contribute retry conditions without
-// owning destination selection.
-type RetryTriggerMetadata struct {
-	// StatusCodesField names which top-level field in this policy's params
-	// holds the array of retriable status codes (e.g.
-	// "tokenPurgeStatusCodes" for oauth2-generator).
-	StatusCodesField string `json:"statusCodesField" yaml:"statusCodesField"`
-
-	// MinAttempts is a fixed constant (not read from params) — the minimum
-	// total attempts this policy needs to get value from retrying.
-	MinAttempts int `json:"minAttempts" yaml:"minAttempts"`
+	// TargetsField names which top-level field in this policy's params
+	// holds the ordered target list. Defaults to "targets" when empty —
+	// see ParseRetrySourceParams.
+	TargetsField string `json:"targetsField,omitempty" yaml:"targetsField,omitempty"`
 }
 
 // PolicyDefinition represents the definition/schema of a policy
@@ -59,9 +50,12 @@ type PolicyDefinition struct {
 	// declares x-wso2-retry-source.
 	RetrySource *RetrySourceMetadata `json:"x-wso2-retry-source,omitempty" yaml:"x-wso2-retry-source,omitempty"`
 
-	// RetryTrigger is non-nil when this policy's policy-definition.yaml
-	// declares x-wso2-retry-trigger.
-	RetryTrigger *RetryTriggerMetadata `json:"x-wso2-retry-trigger,omitempty" yaml:"x-wso2-retry-trigger,omitempty"`
+	// RetryConditions is this policy's x-wso2-retry-conditions declaration
+	// (see docs/superpowers/specs/2026-08-17-generalized-retry-conditions-design.md) —
+	// a raw map because its values are heterogeneous: each key is either a
+	// literal or a {fromParam: "<name>"} pointer, resolved generically by
+	// config.ParseRetryConditions, never unmarshaled into a typed struct.
+	RetryConditions *map[string]interface{} `json:"x-wso2-retry-conditions,omitempty" yaml:"x-wso2-retry-conditions,omitempty"`
 
 	// UpstreamResponseObserver is true when this policy's
 	// policy-definition.yaml declares x-wso2-upstream-response-observer:

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
@@ -200,5 +201,25 @@ func TestParseRetryTriggerParams_OmittedFieldWithNilSchemaIsNotAnError(t *testin
 	}
 	if len(decl.StatusCodes) != 0 {
 		t.Errorf("StatusCodes = %v, want empty", decl.StatusCodes)
+	}
+}
+
+func TestLookupRetryMetadata_ReturnsRetryConditionsBlock(t *testing.T) {
+	conditions := map[string]interface{}{"statusCodes": []interface{}{401}}
+	definitions := map[string]models.PolicyDefinition{
+		"test-policy|v1.0.0": {
+			Name:            "test-policy",
+			Version:         "v1.0.0",
+			RetryConditions: &conditions,
+		},
+	}
+	latestVersions := map[string]string{"test-policy": "v1.0.0"}
+
+	_, _, gotConditions := LookupRetryMetadata(definitions, latestVersions, "test-policy", "v1")
+	if gotConditions == nil {
+		t.Fatal("expected the retry-conditions block to be returned")
+	}
+	if len(*gotConditions) != 1 {
+		t.Errorf("expected one key in the retry-conditions block, got %v", *gotConditions)
 	}
 }

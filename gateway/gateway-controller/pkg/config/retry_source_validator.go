@@ -46,18 +46,21 @@ import (
 // reads cached YAML metadata only; gateway-controller never imports or
 // instantiates any policy implementation package.
 //
-// The third return value is the policy's own parameters JSON-schema
+// The second return value is the policy's own parameters JSON-schema
 // (def.Parameters), needed by callers that go on to call
 // ParseRetryTriggerParams — that generic parser reads a policy's AS-DEPLOYED
 // params map, which never received schema-declared defaults for an omitted
 // field (gateway-controller's own coerceParamsBySchema only coerces types
 // for keys already present; it never materializes a missing key), so the
 // schema itself must travel alongside the metadata for that fallback to work.
+//
+// The third return value is the policy's raw x-wso2-retry-conditions block
+// (def.RetryConditions), resolved generically by config.ParseRetryConditions.
 func LookupRetryMetadata(
 	definitions map[string]models.PolicyDefinition,
 	latestVersions map[string]string,
 	name, version string,
-) (*models.RetrySourceMetadata, *models.RetryTriggerMetadata, *map[string]interface{}) {
+) (*models.RetrySourceMetadata, *map[string]interface{}, *map[string]interface{}) {
 	if len(definitions) == 0 {
 		return nil, nil, nil
 	}
@@ -71,7 +74,7 @@ func LookupRetryMetadata(
 	if !ok {
 		return nil, nil, nil
 	}
-	return def.RetrySource, def.RetryTrigger, def.Parameters
+	return def.RetrySource, def.Parameters, def.RetryConditions
 }
 
 // RetrySourceResolver resolves an operation's effective policy list (API-level
