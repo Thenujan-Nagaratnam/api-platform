@@ -62,15 +62,15 @@ type RetrySourceDeclaration struct {
 	// Groups must be non-empty.
 	Groups []RetryGroup
 
-	// RetriableStatusCodes triggers moving to the next target within
-	// whichever group matched. Must be non-empty. Route-wide, not
-	// per-group — Envoy has one RetryPolicy per route, shared by every
-	// group's resolved cluster regardless of which one a given request
-	// actually used.
-	RetriableStatusCodes []int
-
 	// PerAttemptTimeout bounds a single attempt; nil uses the route's
-	// existing default.
+	// existing default. A retry-source policy's own status-code/On/etc.
+	// contribution is NOT a field here — it flows through the exact same
+	// x-wso2-retry-conditions declaration path every other policy uses
+	// (see gateway-controller's resolveRetryDeclarations, which parses a
+	// chain member's retry-source metadata and its retry-conditions
+	// metadata independently, in the same loop pass). A dedicated
+	// Conditions field on this type would just be a second, redundant path
+	// to the same merged result.
 	PerAttemptTimeout *time.Duration
 }
 
