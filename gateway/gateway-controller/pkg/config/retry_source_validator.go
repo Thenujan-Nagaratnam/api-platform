@@ -48,9 +48,10 @@ import (
 //
 // The second return value is the policy's own parameters JSON-schema
 // (def.Parameters), needed by callers that go on to call
-// ParseRetryTriggerParams — that generic parser reads a policy's AS-DEPLOYED
-// params map, which never received schema-declared defaults for an omitted
-// field (gateway-controller's own coerceParamsBySchema only coerces types
+// ParseRetryConditions — that generic parser resolves a
+// {fromParam: "<name>"} pointer against a policy's AS-DEPLOYED params map,
+// which never received schema-declared defaults for an omitted field
+// (gateway-controller's own coerceParamsBySchema only coerces types
 // for keys already present; it never materializes a missing key), so the
 // schema itself must travel alongside the metadata for that fallback to work.
 //
@@ -106,7 +107,7 @@ func NewRetrySourceResolver(
 			if p.Params != nil {
 				params = *p.Params
 			}
-			decl, err := ParseRetrySourceParams(params, source.GroupKeyField)
+			decl, err := ParseRetrySourceParams(params, source.GroupKeyField, source.TargetsField)
 			if err != nil {
 				return fmt.Errorf("policy %q: %w", p.Name, err)
 			}
@@ -173,29 +174,24 @@ func ValidateRetrySourceTargetsHaveNoBasePath(decl *policy.RetrySourceDeclaratio
 	return nil
 }
 
-// ValidateAtMostOneRetrySourcePerRoute rejects a route where retry
-// ownership is ambiguous: more than one policy declaring
-// x-wso2-retry-source, OR exactly one such policy combined with
-// resilience.retry also configured. Both are real conflicts — Envoy has
-// exactly one RouteAction.RetryPolicy (and one RetryPriority extension
-// slot) per route, so two independent owners can never be reconciled.
+// ValidateAtMostOneRetrySourcePerRoute rejects only the genuine Envoy hard
+// limit: more than one policy declaring x-wso2-retry-source on the same
+// route (RetryPriority is a singular field on the real Envoy RetryPolicy
+// proto — confirmed against the vendored go-control-plane proto during the
+// 2026-08-17 audit — so two retry-source policies can never coexist).
 // retrySourceCount is the number of policies in this route's chain whose
 // policy-definition.yaml declares x-wso2-retry-source (computed by the
-// caller via the declarative metadata lookup — see
-// xds/translator.go's resolveRetryDeclarations, Task 6 Step 6a — never a
-// Go type assertion, since gateway-controller never instantiates policy
-// Go code) — this function only enforces the counting rule, generic to
-// whichever policies happen to be present. Generalized from
-// ValidateModelFailoverPolicy.
-func ValidateAtMostOneRetrySourcePerRoute(retrySourceCount int, retry *api.Retry) error {
-	if retrySourceCount == 0 {
-		return nil
-	}
+// caller via the declarative metadata lookup — see xds/translator.go's
+// resolveRetryDeclarations — never a Go type assertion, since
+// gateway-controller never instantiates policy Go code).
+//
+// A retry-source policy combined with an operator's resilience.retry is no
+// longer rejected here: field-level composition (config.MergeRetryConditions)
+// reconciles them safely, only rejecting an actual NumRetries/BackOff
+// ownership conflict, not the mere presence of both.
+func ValidateAtMostOneRetrySourcePerRoute(retrySourceCount int) error {
 	if retrySourceCount > 1 {
 		return fmt.Errorf("this route has %d policies each declaring retry-source ownership — at most one is allowed per route, since Envoy has a single RouteAction.RetryPolicy slot", retrySourceCount)
-	}
-	if retry != nil {
-		return fmt.Errorf("a retry-source policy on this route cannot be combined with resilience.retry — both would drive RouteAction.RetryPolicy")
 	}
 	return nil
 }
@@ -262,7 +258,6 @@ func ValidateRetrySourcesForOperations(spec *api.APIConfigData, resolveDeclarati
 		}
 	}
 	mainBasePath := mainUpstreamBasePath(spec.Upstream.Main, spec.UpstreamDefinitions)
-	apiRetry := effectiveResilienceRetry(spec.Resilience)
 
 	for _, op := range spec.Operations {
 		decls, count, err := resolveDeclarations(spec.Policies, op.Policies)
@@ -272,11 +267,7 @@ func ValidateRetrySourcesForOperations(spec *api.APIConfigData, resolveDeclarati
 		if count == 0 {
 			continue
 		}
-		effectiveRetry := effectiveResilienceRetry(op.Resilience)
-		if effectiveRetry == nil {
-			effectiveRetry = apiRetry
-		}
-		if err := ValidateAtMostOneRetrySourcePerRoute(count, effectiveRetry); err != nil {
+		if err := ValidateAtMostOneRetrySourcePerRoute(count); err != nil {
 			return fmt.Errorf("operation %s %s: %w", op.EffectiveMethod(), op.EffectivePath(), err)
 		}
 		for _, decl := range decls {
@@ -294,21 +285,30 @@ func ValidateRetrySourcesForOperations(spec *api.APIConfigData, resolveDeclarati
 // ParseRetrySourceParams generically parses a policy's params into a
 // RetrySourceDeclaration, for ANY policy whose policy-definition.yaml
 // declares x-wso2-retry-source — driven entirely by the fixed structural
-// shape (targets: [{<groupKeyField>: string, upstreamDefinition: string,
-// fallbacks: [{upstreamDefinition: string}]}], statusCodes: [int]) and the
-// caller-supplied groupKeyField (from that policy's own
-// models.RetrySourceMetadata.GroupKeyField). gateway-controller never
-// executes policy Go code to produce this — see the design's Design
-// Revision 2 for why. Fields in each targets[]/fallbacks[] entry other
-// than groupKeyField/upstreamDefinition (e.g. model-failover's own
+// shape (<targetsField>: [{<groupKeyField>: string, upstreamDefinition:
+// string, fallbacks: [{upstreamDefinition: string}]}]) plus the
+// caller-supplied groupKeyField/targetsField (from that policy's own
+// models.RetrySourceMetadata). gateway-controller never executes policy Go
+// code to produce this — see the design's Design Revision 2 for why. Fields
+// in each targets[]/fallbacks[] entry other than
+// groupKeyField/upstreamDefinition (e.g. model-failover's own
 // fallbacks[].model, used to rewrite the request body — a concern entirely
 // internal to that policy's own runtime code) are ignored here; this
 // parser only extracts what gateway-controller itself needs to build
 // Envoy config.
-func ParseRetrySourceParams(params map[string]interface{}, groupKeyField string) (*policy.RetrySourceDeclaration, error) {
-	rawTargets, ok := params["targets"].([]interface{})
+//
+// Retriable status codes are deliberately NOT read here: WHAT to retry on is
+// now expressed exclusively through a policy's separate
+// x-wso2-retry-conditions declaration (config.ParseRetryConditions), the
+// same way every other retry contributor on the route expresses it. This
+// function only describes WHERE to retry to.
+func ParseRetrySourceParams(params map[string]interface{}, groupKeyField, targetsField string) (*policy.RetrySourceDeclaration, error) {
+	if targetsField == "" {
+		targetsField = "targets"
+	}
+	rawTargets, ok := params[targetsField].([]interface{})
 	if !ok || len(rawTargets) == 0 {
-		return nil, fmt.Errorf("retry-source policy requires a non-empty 'targets' list")
+		return nil, fmt.Errorf("retry-source policy requires a non-empty '%s' list", targetsField)
 	}
 
 	groups := make([]policy.RetryGroup, 0, len(rawTargets))
@@ -337,26 +337,6 @@ func ParseRetrySourceParams(params map[string]interface{}, groupKeyField string)
 		groups = append(groups, policy.RetryGroup{Key: key, OrderedTargets: orderedTargets})
 	}
 
-	rawStatusCodes, ok := params["statusCodes"].([]interface{})
-	if !ok || len(rawStatusCodes) == 0 {
-		return nil, fmt.Errorf("retry-source policy requires a non-empty 'statusCodes' list")
-	}
-	statusCodes := make([]int, 0, len(rawStatusCodes))
-	for i, raw := range rawStatusCodes {
-		code, ok := raw.(int)
-		if !ok {
-			if f, ok := raw.(float64); ok { // YAML/JSON numeric decode may hand back float64
-				code = int(f)
-			} else {
-				return nil, fmt.Errorf("retry-source policy: statusCodes[%d] must be an integer, got %T", i, raw)
-			}
-		}
-		if code < 100 || code > 599 {
-			return nil, fmt.Errorf("retry-source policy: statusCodes[%d] value %d is not a valid HTTP status code", i, code)
-		}
-		statusCodes = append(statusCodes, code)
-	}
-
 	decl := &policy.RetrySourceDeclaration{Groups: groups}
 
 	// requestTimeout is part of the same fixed structural shape: it bounds ONE
@@ -371,74 +351,6 @@ func ParseRetrySourceParams(params map[string]interface{}, groupKeyField string)
 	}
 
 	return decl, nil
-}
-
-// ParseRetryTriggerParams generically parses a policy's params into a
-// RetryTriggerDeclaration, for ANY policy whose policy-definition.yaml
-// declares x-wso2-retry-trigger. statusCodesField and minAttempts come
-// from that policy's own models.RetryTriggerMetadata. An empty named field
-// is not an error — it means this policy contributes no trigger conditions
-// for the current config (e.g. oauth2-generator's tokenPurgeStatusCodes
-// explicitly set to []), which the caller (Task 6) treats as "nothing to
-// add", not a failure.
-//
-// schema is the policy's own parameters JSON-schema (models.PolicyDefinition
-// .Parameters, threaded through by LookupRetryMetadata's third return value).
-// It matters only when the field is entirely ABSENT from params — as opposed
-// to explicitly set to [] — since gateway-controller's schema-coercion step
-// (coerceParamsBySchema) never materializes a schema-declared default into
-// an omitted key; it only coerces the type of keys already present. Without
-// this fallback, a deployment that omits tokenPurgeStatusCodes to rely on
-// its schema default ([401]) would silently stop contributing that code to
-// route-level retry, changing today's behavior. May be nil (e.g. in tests),
-// in which case an absent field behaves like an explicitly empty one.
-func ParseRetryTriggerParams(params map[string]interface{}, statusCodesField string, minAttempts int, schema *map[string]interface{}) (*policy.RetryConditions, error) {
-	raw, present := params[statusCodesField]
-	if !present {
-		raw = retryTriggerSchemaDefault(schema, statusCodesField)
-	}
-	rawStatusCodes, ok := raw.([]interface{})
-	if !ok {
-		return &policy.RetryConditions{}, nil
-	}
-	statusCodes := make([]int, 0, len(rawStatusCodes))
-	for i, raw := range rawStatusCodes {
-		code, ok := raw.(int)
-		if !ok {
-			if f, ok := raw.(float64); ok {
-				code = int(f)
-			} else {
-				return nil, fmt.Errorf("retry-trigger policy: %s[%d] must be an integer, got %T", statusCodesField, i, raw)
-			}
-		}
-		if code < 100 || code > 599 {
-			return nil, fmt.Errorf("retry-trigger policy: %s[%d] value %d is not a valid HTTP status code", statusCodesField, i, code)
-		}
-		statusCodes = append(statusCodes, code)
-	}
-	if len(statusCodes) == 0 {
-		return &policy.RetryConditions{}, nil
-	}
-	minAttemptsCopy := minAttempts
-	return &policy.RetryConditions{StatusCodes: statusCodes, MinAttempts: &minAttemptsCopy}, nil
-}
-
-// retryTriggerSchemaDefault reads properties.<field>.default from a policy's
-// JSON-schema parameters (models.PolicyDefinition.Parameters), returning nil
-// if schema is nil or the path is absent/malformed at any level.
-func retryTriggerSchemaDefault(schema *map[string]interface{}, field string) interface{} {
-	if schema == nil {
-		return nil
-	}
-	properties, ok := (*schema)["properties"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	propSchema, ok := properties[field].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	return propSchema["default"]
 }
 
 // mainUpstreamBasePath derives the API's main upstream's effective base path, mirroring
@@ -467,16 +379,4 @@ func mainUpstreamBasePath(main api.Upstream, upstreamDefinitions *[]api.Upstream
 		}
 	}
 	return ""
-}
-
-// effectiveResilienceRetry extracts the Retry field from an optional api.Resilience, without
-// needing the full timeout-resolution machinery in pkg/xds (which pkg/config cannot import —
-// pkg/xds already imports pkg/config for retry-source/retry-trigger parsing).
-// ValidateAtMostOneRetrySourcePerRoute only needs to know whether a retry policy is configured
-// at all, not its resolved values.
-func effectiveResilienceRetry(r *api.Resilience) *api.Retry {
-	if r == nil {
-		return nil
-	}
-	return r.Retry
 }

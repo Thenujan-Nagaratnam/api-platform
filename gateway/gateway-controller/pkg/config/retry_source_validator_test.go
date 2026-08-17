@@ -2,8 +2,8 @@ package config
 
 import (
 	"testing"
+	"time"
 
-	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
@@ -37,26 +37,23 @@ func TestValidateRetrySourceTargetsHaveNoBasePath_AllowsSingleTargetGroup(t *tes
 }
 
 func TestValidateAtMostOneRetrySourcePerRoute_RejectsTwoDeclarations(t *testing.T) {
-	if err := ValidateAtMostOneRetrySourcePerRoute(2, nil); err == nil {
+	if err := ValidateAtMostOneRetrySourcePerRoute(2); err == nil {
 		t.Fatal("expected an error for two RetrySourcePolicy declarations on one route, got nil")
 	}
 }
 
-func TestValidateAtMostOneRetrySourcePerRoute_RejectsDeclarationPlusResilienceRetry(t *testing.T) {
-	retry := &api.Retry{}
-	if err := ValidateAtMostOneRetrySourcePerRoute(1, retry); err == nil {
-		t.Fatal("expected an error for a RetrySourcePolicy declaration combined with resilience.retry, got nil")
-	}
-}
-
+// A retry-source policy coexisting with an operator's resilience.retry is deliberately NO
+// LONGER rejected here — the two compose field-by-field via MergeRetryConditions, which
+// rejects only a real NumRetries/BackOff ownership conflict. This validator now enforces
+// exactly one rule: the singular RetryPriority slot on Envoy's RetryPolicy proto.
 func TestValidateAtMostOneRetrySourcePerRoute_AllowsOneDeclarationAlone(t *testing.T) {
-	if err := ValidateAtMostOneRetrySourcePerRoute(1, nil); err != nil {
+	if err := ValidateAtMostOneRetrySourcePerRoute(1); err != nil {
 		t.Errorf("unexpected error for exactly one RetrySourcePolicy declaration: %v", err)
 	}
 }
 
 func TestValidateAtMostOneRetrySourcePerRoute_AllowsNeither(t *testing.T) {
-	if err := ValidateAtMostOneRetrySourcePerRoute(0, nil); err != nil {
+	if err := ValidateAtMostOneRetrySourcePerRoute(0); err != nil {
 		t.Errorf("unexpected error when nothing declares retry ownership: %v", err)
 	}
 }
@@ -76,9 +73,12 @@ func TestParseRetrySourceParams_BuildsGroupsFromStandardShape(t *testing.T) {
 				"upstreamDefinition": "claude-primary",
 			},
 		},
+		// statusCodes is deliberately still present in params: ParseRetrySourceParams must
+		// simply IGNORE it now (retriable status codes travel through the policy's own
+		// x-wso2-retry-conditions block instead), not error on it and not read it.
 		"statusCodes": []interface{}{429, 503},
 	}
-	decl, err := ParseRetrySourceParams(params, "model")
+	decl, err := ParseRetrySourceParams(params, "model", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,107 +100,65 @@ func TestParseRetrySourceParams_BuildsGroupsFromStandardShape(t *testing.T) {
 	if len(decl.Groups[1].OrderedTargets) != 1 {
 		t.Errorf("Groups[1].OrderedTargets = %d, want 1 (no fallbacks declared)", len(decl.Groups[1].OrderedTargets))
 	}
-	// TODO: RetriableStatusCodes moved to RetryConditions; this test needs updating
-	// if len(decl.RetriableStatusCodes) != 2 {
-	// 	t.Errorf("RetriableStatusCodes = %v, want [429, 503]", decl.RetriableStatusCodes)
-	// }
 }
 
 func TestParseRetrySourceParams_RejectsMissingTargets(t *testing.T) {
-	_, err := ParseRetrySourceParams(map[string]interface{}{"statusCodes": []interface{}{500}}, "model")
+	_, err := ParseRetrySourceParams(map[string]interface{}{"statusCodes": []interface{}{500}}, "model", "")
 	if err == nil {
 		t.Fatal("expected an error for missing 'targets', got nil")
 	}
 }
 
-func TestParseRetryTriggerParams_ReadsNamedStatusCodesField(t *testing.T) {
+// A policy whose x-wso2-retry-source names a non-default targetsField must have its ordered
+// target list read from THAT field, and a plain "targets" key must not satisfy the
+// requirement in its place.
+func TestParseRetrySourceParams_HonoursCustomTargetsField(t *testing.T) {
 	params := map[string]interface{}{
-		"tokenPurgeStatusCodes": []interface{}{401},
-	}
-	decl, err := ParseRetryTriggerParams(params, "tokenPurgeStatusCodes", 2, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(decl.StatusCodes) != 1 || decl.StatusCodes[0] != 401 {
-		t.Errorf("StatusCodes = %v, want [401]", decl.StatusCodes)
-	}
-	if decl.MinAttempts == nil || *decl.MinAttempts != 2 {
-		t.Errorf("MinAttempts = %v, want 2", decl.MinAttempts)
-	}
-}
-
-// TestParseRetryTriggerParams_RejectsOutOfRangeStatusCode is the I3 regression test: the
-// sibling parser, ParseRetrySourceParams, has always rejected a statusCodes value outside
-// 100-599 (TestParseRetrySourceParams_BuildsGroupsFromStandardShape's neighbor in intent);
-// ParseRetryTriggerParams must reject one too, rather than letting it wrap into a large
-// uint32 in buildRetryTriggerRetryPolicy and reach Envoy unvalidated.
-func TestParseRetryTriggerParams_RejectsOutOfRangeStatusCode(t *testing.T) {
-	params := map[string]interface{}{
-		"tokenPurgeStatusCodes": []interface{}{700},
-	}
-	_, err := ParseRetryTriggerParams(params, "tokenPurgeStatusCodes", 2, nil)
-	if err == nil {
-		t.Fatal("expected an error for an out-of-range status code, got nil")
-	}
-}
-
-func TestParseRetryTriggerParams_EmptyFieldIsNotAnError(t *testing.T) {
-	// tokenPurgeStatusCodes explicitly set to an empty list (purge-on-reject
-	// disabled) is valid — the caller (Task 6) treats an empty
-	// StatusCodes as "no trigger contribution", not a parse error.
-	// A schema default is passed here too, to prove an EXPLICIT empty list
-	// still wins over the default rather than being overridden by it.
-	schema := &map[string]interface{}{
-		"properties": map[string]interface{}{
-			"tokenPurgeStatusCodes": map[string]interface{}{
-				"default": []interface{}{401},
+		"providers": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary",
+				"fallbacks":          []interface{}{map[string]interface{}{"upstreamDefinition": "secondary"}},
 			},
 		},
-	}
-	params := map[string]interface{}{"tokenPurgeStatusCodes": []interface{}{}}
-	decl, err := ParseRetryTriggerParams(params, "tokenPurgeStatusCodes", 2, schema)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(decl.StatusCodes) != 0 {
-		t.Errorf("StatusCodes = %v, want empty", decl.StatusCodes)
-	}
-}
-
-func TestParseRetryTriggerParams_OmittedFieldFallsBackToSchemaDefault(t *testing.T) {
-	// tokenPurgeStatusCodes entirely absent from params (the user relied on
-	// the schema's declared default, e.g. [401]) must still contribute that
-	// default to route-level retry — gateway-controller's own
-	// coerceParamsBySchema never materializes a schema default into an
-	// omitted params key, so ParseRetryTriggerParams must fall back itself.
-	schema := &map[string]interface{}{
-		"properties": map[string]interface{}{
-			"tokenPurgeStatusCodes": map[string]interface{}{
-				"default": []interface{}{401},
-			},
+		"targets": []interface{}{
+			map[string]interface{}{"model": "decoy", "upstreamDefinition": "decoy-upstream"},
 		},
 	}
-	decl, err := ParseRetryTriggerParams(map[string]interface{}{}, "tokenPurgeStatusCodes", 2, schema)
+	decl, err := ParseRetrySourceParams(params, "model", "providers")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(decl.StatusCodes) != 1 || decl.StatusCodes[0] != 401 {
-		t.Errorf("StatusCodes = %v, want [401] from schema default", decl.StatusCodes)
+	if len(decl.Groups) != 1 || decl.Groups[0].Key != "gpt-4o" {
+		t.Fatalf("Groups = %+v, want one group keyed gpt-4o read from 'providers'", decl.Groups)
 	}
-	if decl.MinAttempts == nil || *decl.MinAttempts != 2 {
-		t.Errorf("MinAttempts = %v, want 2", decl.MinAttempts)
+	if len(decl.Groups[0].OrderedTargets) != 2 {
+		t.Errorf("OrderedTargets = %+v, want 2 (primary + secondary)", decl.Groups[0].OrderedTargets)
 	}
 }
 
-func TestParseRetryTriggerParams_OmittedFieldWithNilSchemaIsNotAnError(t *testing.T) {
-	// A nil schema (e.g. a caller/test with no policy registry wired) must
-	// behave like today: an absent field contributes nothing, not a panic.
-	decl, err := ParseRetryTriggerParams(map[string]interface{}{}, "tokenPurgeStatusCodes", 2, nil)
+func TestParseRetrySourceParams_CustomTargetsFieldMissingIsRejected(t *testing.T) {
+	params := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+	}
+	if _, err := ParseRetrySourceParams(params, "model", "providers"); err == nil {
+		t.Fatal("expected an error when the declared targetsField is absent, got nil")
+	}
+}
+
+// requestTimeout stays part of the retry-source shape (it bounds ONE attempt on this
+// policy's own failover chain, Envoy's PerTryTimeout) even though status codes moved out.
+func TestParseRetrySourceParams_ReadsRequestTimeout(t *testing.T) {
+	params := map[string]interface{}{
+		"targets":        []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"requestTimeout": "10s",
+	}
+	decl, err := ParseRetrySourceParams(params, "model", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(decl.StatusCodes) != 0 {
-		t.Errorf("StatusCodes = %v, want empty", decl.StatusCodes)
+	if decl.PerAttemptTimeout == nil || *decl.PerAttemptTimeout != 10*time.Second {
+		t.Errorf("PerAttemptTimeout = %v, want 10s", decl.PerAttemptTimeout)
 	}
 }
 

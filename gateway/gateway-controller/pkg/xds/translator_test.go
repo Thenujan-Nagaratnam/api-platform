@@ -1836,9 +1836,11 @@ func TestCollectClustersNeedingUpstreamFilter(t *testing.T) {
 }
 
 // TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout verifies that
-// buildRetrySourceRetryPolicy derives NumRetries from the longest group chain (never a
+// buildRoutePolicyFromConditions derives NumRetries from the longest group chain (never a
 // separately configured knob) and attaches the previous_priorities RetryPriority plus
-// PerTryTimeout from the declaration's PerAttemptTimeout.
+// PerTryTimeout from the declaration's PerAttemptTimeout. Retriable status codes now reach
+// it through the merged RetryConditions instead of a field on the declaration itself, but
+// the Envoy output asserted here is unchanged.
 func TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout(t *testing.T) {
 	timeout := 10 * time.Second
 	decl := &policy.RetrySourceDeclaration{
@@ -1850,11 +1852,14 @@ func TestBuildRetryPolicyWithPriority_SetsRetryPriorityAndPerTryTimeout(t *testi
 				{UpstreamDefinitionName: "z"},
 			},
 		}},
-		RetriableStatusCodes: []int{500, 502},
-		PerAttemptTimeout:    &timeout,
+		PerAttemptTimeout: &timeout,
+	}
+	merged := policy.RetryConditions{
+		On:          []string{"retriable-status-codes"},
+		StatusCodes: []int{500, 502},
 	}
 
-	rp := buildRetrySourceRetryPolicy(decl, 0)
+	rp := buildRoutePolicyFromConditions(merged, decl)
 
 	if rp.GetNumRetries().GetValue() != 2 { // longest chain (3 targets) - 1
 		t.Errorf("expected NumRetries 2, got %v", rp.GetNumRetries())

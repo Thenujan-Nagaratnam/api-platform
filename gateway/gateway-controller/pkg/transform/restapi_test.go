@@ -607,13 +607,6 @@ func TestRestAPITransformer_MainRefAndNamedDefinitionShareOneUpstreamCluster(t *
 	}
 }
 
-// TestRestAPITransformer_ModelFailoverRejectsResilienceRetry is the regression test for a
-// confirmed-dead validator: config.ValidateModelFailoverPolicy existed to reject model-failover
-// combined with resilience.retry on the same operation (both drive RouteAction.RetryPolicy
-// independently — whichever translates last in createRouteFromRDC would otherwise silently win),
-// but was never actually called from any code path until this test's own fix wired it into
-// Transform. Covers both directions: op-level retry, and API-level retry inherited by an
-// operation with no op-level override.
 // modelFailoverPolicy builds an api.Policy attaching model-failover with a minimal, valid
 // single-target-group config (one fallback) — the shared fixture every test below starts
 // from, since ParseModelFailoverParams now genuinely parses/validates these params (it used
@@ -633,7 +626,16 @@ func modelFailoverPolicy() api.Policy {
 	return api.Policy{Name: "model-failover", Version: "", Params: &params}
 }
 
-func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
+// TestRestAPITransformer_ModelFailoverAllowsResilienceRetry records a deliberate relaxation.
+// config.ValidateAtMostOneRetrySourcePerRoute used to reject a retry-source policy (here
+// model-failover) combined with resilience.retry on the same operation, because both drove
+// RouteAction.RetryPolicy independently and whichever translated last silently won. That
+// clobbering is gone: every contributor's retry conditions — the policy's own
+// x-wso2-retry-conditions and the operator's resilience.retry alike — now compose
+// field-by-field into one policy via config.MergeRetryConditions, which rejects only a
+// genuine NumRetries/BackOff ownership conflict. Covers both directions: op-level retry, and
+// API-level retry inherited by an operation with no op-level override.
+func TestRestAPITransformer_ModelFailoverAllowsResilienceRetry(t *testing.T) {
 	defs := map[string]models.PolicyDefinition{
 		"model-failover|v0.1.0": {
 			Name:    "model-failover",
@@ -655,7 +657,7 @@ func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
 		cfg.Configuration = restAPI
 
 		_, err := transformer.Transform(cfg)
-		require.Error(t, err, "model-failover + operation-level resilience.retry must be rejected")
+		require.NoError(t, err, "model-failover + operation-level resilience.retry must now compose, not be rejected")
 	})
 
 	t.Run("API-level retry inherited by the operation", func(t *testing.T) {
@@ -669,7 +671,7 @@ func TestRestAPITransformer_ModelFailoverRejectsResilienceRetry(t *testing.T) {
 		cfg.Configuration = restAPI
 
 		_, err := transformer.Transform(cfg)
-		require.Error(t, err, "model-failover + API-level resilience.retry (inherited) must be rejected")
+		require.NoError(t, err, "model-failover + API-level resilience.retry (inherited) must now compose, not be rejected")
 	})
 
 	t.Run("model-failover alone is accepted", func(t *testing.T) {

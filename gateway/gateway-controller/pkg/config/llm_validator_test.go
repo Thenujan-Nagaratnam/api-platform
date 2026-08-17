@@ -2396,17 +2396,16 @@ func TestValidateLLMProvider_UpstreamRef(t *testing.T) {
 	})
 }
 
-func TestValidateModelFailoverPolicy_RejectsCoexistenceWithResilienceRetry(t *testing.T) {
-	// model-failover declares retry-source ownership, so a route with it plus
-	// resilience.retry has retrySourceCount=1 and a non-nil retry — the same
-	// conflict ValidateAtMostOneRetrySourcePerRoute rejects generically now
-	// (see TestValidateAtMostOneRetrySourcePerRoute_RejectsDeclarationPlusResilienceRetry).
-	retry := &api.Retry{StatusCodes: []int{401}}
-	if err := ValidateAtMostOneRetrySourcePerRoute(1, retry); err == nil {
-		t.Error("expected an error when both model-failover and resilience.retry are configured on the same route")
-	}
-	if err := ValidateAtMostOneRetrySourcePerRoute(1, nil); err != nil {
-		t.Errorf("expected no error when resilience.retry is absent, got: %v", err)
+// TestValidateModelFailoverPolicy_AllowsCoexistenceWithResilienceRetry records the
+// deliberate relaxation of what used to be a hard rejection: model-failover declares
+// retry-source ownership, and a route carrying it PLUS an operator's resilience.retry is now
+// legal. The two no longer fight over RouteAction.RetryPolicy — they compose field-by-field
+// through MergeRetryConditions, which rejects only a genuine NumRetries/BackOff ownership
+// conflict rather than the mere presence of both. Two retry-SOURCE policies remain the one
+// real Envoy hard limit (see TestValidateAtMostOneRetrySourcePerRoute_RejectsTwoDeclarations).
+func TestValidateModelFailoverPolicy_AllowsCoexistenceWithResilienceRetry(t *testing.T) {
+	if err := ValidateAtMostOneRetrySourcePerRoute(1); err != nil {
+		t.Errorf("expected one retry source alongside resilience.retry to be allowed, got: %v", err)
 	}
 }
 

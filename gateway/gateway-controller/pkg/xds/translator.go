@@ -327,19 +327,19 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 	// it with zero changes on that side. The route key is part of the synthetic
 	// upstreamDefinition name because two operations on the same API can legally attach
 	// different chains for the same group key; an API+key-only aggregate name would make those
-	// routes overwrite each other's clusters. Mutual exclusivity with resilience.retry is
-	// already enforced at validation time, so a route reaching here with a retry source
-	// configured never also has rdc.Routes[key].Timeout.Retry set.
+	// routes overwrite each other's clusters. An operator's own resilience.retry may coexist
+	// with a retry source: the two compose field-by-field into one RetryPolicy in
+	// createRouteFromRDC, which changes nothing about the aggregate clusters built here.
 	for routeKey, chain := range rdc.PolicyChains {
-		sourceDecl, _, _, _, err := t.resolveRetryDeclarations(chain)
+		sourceDecl, _, err := t.resolveRetryDeclarations(chain)
 		if err != nil {
 			return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
 		}
-		// sourceCount is deliberately ignored: exclusivity is enforced at registration time
-		// by config.ValidateAtMostOneRetrySourcePerRoute. A route reaching translation with
+		// At-most-one exclusivity is enforced at registration time by
+		// config.ValidateAtMostOneRetrySourcePerRoute. A route reaching translation with
 		// more than one retry source is a bug in that gate, not something to re-validate here.
 		if sourceDecl == nil || len(sourceDecl.Groups) == 0 {
-			// A trigger-only route (no retry source) needs no aggregate cluster at all — it
+			// A conditions-only route (no retry source) needs no aggregate cluster at all — it
 			// gets a plain same-cluster RouteAction.RetryPolicy, built in createRouteFromRDC.
 			continue
 		}
@@ -388,7 +388,8 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 // resolveRetryDeclarations walks chain.Policies and, for each one, looks up its
 // ALREADY-LOADED policy-definition.yaml metadata (t.policyDefinitions, the same registry
 // PolicyValidator and the transformers hold, loaded once at controller startup) to decide
-// whether that policy contributes a retry-source or retry-trigger declaration.
+// whether that policy contributes a retry-source declaration (x-wso2-retry-source) and/or
+// retry conditions (x-wso2-retry-conditions).
 //
 // This NEVER instantiates policy Go code: gateway-controller has no dependency on any policy
 // implementation package. It reads cached YAML metadata plus the policy's raw Params map,
@@ -396,80 +397,83 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 // itself is config.LookupRetryMetadata — the identical primitive registration-time validation
 // uses — so translation and validation can never disagree about the same chain.
 //
-// sourceCount is returned for the caller's information only; at-most-one exclusivity is
-// enforced at registration time by config.ValidateAtMostOneRetrySourcePerRoute, so
-// sourceDecl is simply the last (in practice, only) declaration found.
+// sourceDecl is simply the last (in practice, only) declaration found: at-most-one
+// exclusivity is enforced at registration time by
+// config.ValidateAtMostOneRetrySourcePerRoute.
+//
+// merged is every chain member's x-wso2-retry-conditions contribution composed into one
+// value by config.MergeRetryConditions — including the retry-source policy's own, which
+// travels through its OWN separate x-wso2-retry-conditions block and is parsed here in
+// exactly the same pass as any other chain member's. RetrySourceDeclaration carries no
+// conditions of its own; it only ever describes WHERE to retry to, never WHAT to retry on.
+//
+// A caller that has a FURTHER contributor to add (createRouteFromRDC, which also folds in
+// the operator's own resilience.retry) must use collectRetryContributions and merge once,
+// rather than merging on top of this already-merged value — see that function's note.
 func (t *Translator) resolveRetryDeclarations(chain *models.PolicyChain) (
 	sourceDecl *policy.RetrySourceDeclaration,
-	sourceCount int,
-	triggerCodes map[int]struct{},
-	triggerMinAttempts int,
+	merged policy.RetryConditions,
 	err error,
 ) {
-	triggerCodes = map[int]struct{}{}
+	sourceDecl, contributions, err := t.collectRetryContributions(chain)
+	if err != nil {
+		return nil, policy.RetryConditions{}, err
+	}
+	merged, err = config.MergeRetryConditions(contributions)
+	if err != nil {
+		return nil, policy.RetryConditions{}, err
+	}
+	return sourceDecl, merged, nil
+}
+
+// collectRetryContributions is resolveRetryDeclarations' discovery half: it returns the
+// route's retry-source declaration plus every chain member's parsed, still-UNMERGED
+// RetryConditions.
+//
+// Keeping the unmerged list available matters because merging is not associative over
+// MergeRetryConditions' single-owner rules: that function DERIVES NumRetries from the
+// MinAttempts floor when no contributor asked for an exact count, so feeding an
+// already-merged value back in as one contribution presents that derived count as an
+// explicit request. A route whose policy declares only minAttempts alongside an operator's
+// resilience.retry with its own numRetries would then be rejected as a NumRetries ownership
+// conflict — and, since translation swallows that error, would silently lose the operator's
+// status codes entirely. Every contributor must therefore reach ONE merge pass.
+func (t *Translator) collectRetryContributions(chain *models.PolicyChain) (
+	sourceDecl *policy.RetrySourceDeclaration,
+	contributions []policy.RetryConditions,
+	err error,
+) {
 	if chain == nil {
-		return nil, 0, triggerCodes, 0, nil
+		return nil, nil, nil
 	}
 
 	if len(chain.Policies) > 0 && t.policyDefinitions == nil {
 		t.missingPolicyDefinitionsWarnOnce.Do(func() {
 			t.logger.Warn("translator has no policy definitions loaded; retry-source and " +
-				"retry-trigger metadata cannot be resolved for any policy chain — the " +
+				"retry-conditions metadata cannot be resolved for any policy chain — the " +
 				"controller binary embedding this translator is missing a " +
 				"SetPolicyDefinitions call")
 		})
 	}
 
 	for _, p := range chain.Policies {
-		source, trigger, schema := config.LookupRetryMetadata(t.policyDefinitions, t.latestVersions, p.Name, p.Version)
+		source, schema, conditionsRaw := config.LookupRetryMetadata(t.policyDefinitions, t.latestVersions, p.Name, p.Version)
 		if source != nil {
-			sourceCount++
-			decl, parseErr := config.ParseRetrySourceParams(p.Params, source.GroupKeyField)
+			decl, parseErr := config.ParseRetrySourceParams(p.Params, source.GroupKeyField, source.TargetsField)
 			if parseErr != nil {
-				return nil, 0, nil, 0, fmt.Errorf("policy %q: %w", p.Name, parseErr)
+				return nil, nil, fmt.Errorf("policy %q: %w", p.Name, parseErr)
 			}
 			sourceDecl = decl
 		}
-		if trigger != nil {
-			decl, parseErr := config.ParseRetryTriggerParams(p.Params, trigger.StatusCodesField, trigger.MinAttempts, schema)
+		if conditionsRaw != nil {
+			rc, parseErr := config.ParseRetryConditions(*conditionsRaw, p.Params, schema)
 			if parseErr != nil {
-				return nil, 0, nil, 0, fmt.Errorf("policy %q: %w", p.Name, parseErr)
+				return nil, nil, fmt.Errorf("policy %q: %w", p.Name, parseErr)
 			}
-			for _, code := range decl.RetriableStatusCodes {
-				triggerCodes[code] = struct{}{}
-			}
-			if decl.MinAttempts > triggerMinAttempts {
-				triggerMinAttempts = decl.MinAttempts
-			}
+			contributions = append(contributions, *rc)
 		}
 	}
-	return sourceDecl, sourceCount, triggerCodes, triggerMinAttempts, nil
-}
-
-// mergeRetriableStatusCodes folds every retry-trigger declaration's status codes into the
-// retry source's own list, de-duplicated and order-stable (source codes first, in their
-// declared order, then any additional trigger codes ascending). One Envoy retry policy with
-// richer trigger conditions — never a second, conflicting one.
-func mergeRetriableStatusCodes(sourceCodes []int, triggerCodes map[int]struct{}) []int {
-	merged := make([]int, 0, len(sourceCodes)+len(triggerCodes))
-	seen := make(map[int]struct{}, len(sourceCodes)+len(triggerCodes))
-	for _, code := range sourceCodes {
-		if _, dup := seen[code]; dup {
-			continue
-		}
-		seen[code] = struct{}{}
-		merged = append(merged, code)
-	}
-	extra := make([]int, 0, len(triggerCodes))
-	for code := range triggerCodes {
-		if _, dup := seen[code]; dup {
-			continue
-		}
-		seen[code] = struct{}{}
-		extra = append(extra, code)
-	}
-	sort.Ints(extra) // map iteration order is random; keep the emitted config deterministic
-	return append(merged, extra...)
+	return sourceDecl, contributions, nil
 }
 
 // routeTimeoutOrDefault returns the per-route timeout when configured (including an
@@ -517,9 +521,6 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 			IdleTimeout: t.routeTimeoutOrDefault(routeResilienceIdle, t.routerConfig.Upstream.Timeouts.RouteIdleTimeoutMs),
 		},
 	}
-	if routeResilienceRetry != nil {
-		routeAction.Route.RetryPolicy = buildRetryPolicy(routeResilienceRetry)
-	}
 
 	// Set cluster specifier. A retry-source policy needs no special branch here at all: its
 	// targets resolve to ordinary upstreamDefinition clusters, so rdcRoute.Upstream
@@ -537,41 +538,50 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		}
 	}
 
-	// Retry declarations discovered from this route's chain (by policy-definition metadata,
-	// never by policy name) combine into RetryPolicy:
+	// Every retry contributor on this route — each chain policy's own
+	// x-wso2-retry-conditions block (discovered by policy-definition metadata, never by
+	// policy name) plus the operator's own resilience.retry — composes field-by-field into
+	// ONE merged RetryConditions, which buildRoutePolicyFromConditions then assembles into
+	// the single RouteAction.RetryPolicy Envoy allows per route. There is no
+	// "source wins"/"trigger wins" precedence any more: union for On/StatusCodes/Headers,
+	// floor for MinAttempts, ceiling for PerTryTimeout, single-owner for NumRetries/BackOff
+	// (see config.MergeRetryConditions).
 	//
-	//   - A retry source gets retry_priority + PerTryTimeout, with NumRetries derived from the
-	//     LONGEST group chain, raised to cover a co-declared trigger's minAttempts when that
-	//     asks for more attempts than the chain alone provides (a zero-fallback source has
-	//     maxChain==0, which would otherwise leave a merged trigger status code permanently
-	//     inert — see buildRetrySourceRetryPolicy). Envoy has one shared retry budget per
-	//     route, not one per group, so whichever group a given request resolves to is retried
-	//     under the same budget. Any retry-trigger policy on the same route folds its status
-	//     codes into that SAME policy: one Envoy retry policy, richer trigger conditions, no
-	//     second aggregate. Mutual exclusivity between a retry SOURCE and resilience.retry is
-	//     enforced at validation time (ValidateAtMostOneRetrySourcePerRoute), so
-	//     routeResilienceRetry above is never also set when this branch applies.
-	//   - With no retry source, trigger declarations COMPOSE with an operator-configured
-	//     resilience.retry rather than replacing it — unlike retry sources, triggers are
-	//     designed to never conflict with anything (any number of trigger-declaring policies
-	//     compose by union). When resilience.retry set a plain RetryPolicy above, the trigger's
-	//     codes are unioned into it and NumRetries is only ever raised, never lowered, to cover
-	//     the trigger's minAttempts. With no resilience.retry either, triggers alone still
-	//     produce a plain, non-aggregate RetryPolicy (no retry_priority), i.e. ordinary
-	//     same-cluster Envoy retry — this is what lets a trigger-only policy get real retry
-	//     with no other policy present.
+	//   - A retry source additionally gets retry_priority + PerTryTimeout, with NumRetries
+	//     floored at the LONGEST group chain so a merged status code can never be left
+	//     permanently inert on a zero-fallback source (maxChain==0). Envoy has one shared
+	//     retry budget per route, not one per group, so whichever group a given request
+	//     resolves to is retried under the same budget.
+	//   - With no retry source, the merged conditions still produce a plain, non-aggregate
+	//     RetryPolicy (no retry_priority) — ordinary same-cluster Envoy retry. This is what
+	//     lets a conditions-only policy (e.g. one refreshing a credential between attempts)
+	//     get real retry with no retry-source policy present at all.
 	//
-	// An error here is impossible in practice (the same parse already succeeded during cluster
-	// construction, which fails the whole translation) — the route simply keeps its plain
-	// retry policy rather than aborting a translation that already got past that point.
-	if sourceDecl, _, triggerCodes, triggerMinAttempts, err := t.resolveRetryDeclarations(rdc.PolicyChains[routeKey]); err == nil {
-		switch {
-		case sourceDecl != nil:
-			sourceDecl.RetriableStatusCodes = mergeRetriableStatusCodes(sourceDecl.RetriableStatusCodes, triggerCodes)
-			routeAction.Route.RetryPolicy = buildRetrySourceRetryPolicy(sourceDecl, triggerMinAttempts)
-		case len(triggerCodes) > 0:
-			routeAction.Route.RetryPolicy = composeRetryTriggerPolicy(routeAction.Route.RetryPolicy, triggerCodes, triggerMinAttempts)
+	// A discovery error here is impossible in practice (the same parse already succeeded during
+	// cluster construction, which fails the whole translation) — the chain's contributions are
+	// dropped while the operator's own resilience.retry is still honored, rather than aborting
+	// a translation that already got past that point.
+	sourceDecl, contributions, resolveErr := t.collectRetryContributions(rdc.PolicyChains[routeKey])
+	if resolveErr != nil {
+		sourceDecl, contributions = nil, nil
+	}
+	// The operator's own resilience.retry is adapted into the same raw-block shape and joins
+	// the SAME single merge pass as every policy's contribution — never merged on top of an
+	// already-merged value (see collectRetryContributions).
+	if routeResilienceRetry != nil {
+		opRC, parseErr := config.ParseRetryConditions(operatorRetryToRawConditions(routeResilienceRetry), nil, nil)
+		if parseErr == nil {
+			contributions = append([]policy.RetryConditions{*opRC}, contributions...)
 		}
+	}
+	if merged, mergeErr := config.MergeRetryConditions(contributions); mergeErr != nil {
+		// A genuine ownership conflict (two contributors demanding different NumRetries, or
+		// two declaring BackOff). Registration-time validation is the intended gate for this;
+		// leave the route with no retry policy rather than silently picking a winner.
+		t.logger.Warn("route retry conditions conflict; emitting no retry policy for this route",
+			"route", routeKey, "error", mergeErr)
+	} else if sourceDecl != nil || retryCanFire(merged) {
+		routeAction.Route.RetryPolicy = buildRoutePolicyFromConditions(merged, sourceDecl)
 	}
 
 	// Set host rewrite
@@ -2500,7 +2510,7 @@ func (t *Translator) createRoute(apiId, apiName, apiVersion, context, method, pa
 		},
 	}
 	if timeoutCfg != nil && timeoutCfg.Retry != nil {
-		routeAction.Route.RetryPolicy = buildRetryPolicy(timeoutCfg.Retry)
+		routeAction.Route.RetryPolicy = buildOperatorRetryPolicy(timeoutCfg.Retry)
 	}
 
 	// Set cluster specifier based on whether dynamic cluster selection is enabled
@@ -4155,135 +4165,188 @@ func parseDurationAllowZero(timeoutStr *string) (*time.Duration, error) {
 	return &duration, nil
 }
 
-// buildRetryPolicy converts a resolved api.Retry into a native Envoy RouteAction.RetryPolicy
-// that retries on the configured response status codes. NumRetries defaults to 1 attempt
-// when not explicitly configured.
-func buildRetryPolicy(retry *api.Retry) *route.RetryPolicy {
-	numRetries := uint32(1)
-	if retry.NumRetries != nil {
-		numRetries = uint32(*retry.NumRetries)
-	}
-	statusCodes := make([]uint32, len(retry.StatusCodes))
-	for i, code := range retry.StatusCodes {
-		statusCodes[i] = uint32(code)
-	}
-	return &route.RetryPolicy{
-		RetryOn:              "retriable-status-codes",
-		RetriableStatusCodes: statusCodes,
-		NumRetries:           wrapperspb.UInt32(numRetries),
-	}
-}
-
-// buildRetrySourceRetryPolicy mirrors buildRetryPolicy but derives NumRetries from the
-// LONGEST group chain (never a separately configured knob — see the design spec), raised to
-// triggerMinAttempts-1 when a co-declared retry-trigger policy asks for more attempts than the
-// chain alone would provide (see Important finding I2 in the final review: a zero-fallback
-// retry source has maxChain==0, which would otherwise make a merged trigger status code
-// permanently inert). Also adds RetryPriority so Envoy prefers a not-yet-attempted priority
-// (i.e. the next target in the group's aggregate cluster) on each retry, plus PerTryTimeout from
-// PerAttemptTimeout when declared. Generalized from buildModelFailoverRetryPolicy — identical
-// Envoy output, now driven by any policy's declared RetrySourceDeclaration rather than one
-// policy's own params.
-func buildRetrySourceRetryPolicy(decl *policy.RetrySourceDeclaration, triggerMinAttempts int) *route.RetryPolicy {
-	statusCodes := make([]uint32, len(decl.RetriableStatusCodes))
-	for i, code := range decl.RetriableStatusCodes {
-		statusCodes[i] = uint32(code)
-	}
-
-	// Envoy has ONE retry budget per route, shared by every group's resolved cluster, so it
-	// must cover the longest chain; a shorter group simply never exhausts its share.
-	maxChain := 0
-	for _, group := range decl.Groups {
-		if n := len(group.OrderedTargets) - 1; n > maxChain {
-			maxChain = n
-		}
-	}
-
-	numRetries := maxChain
-	if want := triggerMinAttempts - 1; want > numRetries {
-		numRetries = want
-	}
-
-	priorityCfgAny, err := anypb.New(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
-	if err != nil {
-		// anypb.New only fails on a marshal error for a well-formed proto message, which
-		// PreviousPrioritiesConfig{UpdateFrequency: 1} can never produce — treated as
-		// unreachable, matching this file's existing convention of not threading an error
-		// return through every proto-marshal call site (see createUpstreamRefreshExtProcFilter
-		// for the same pattern).
-		priorityCfgAny = nil
-	}
-
-	rp := &route.RetryPolicy{
-		RetryOn:              "retriable-status-codes",
-		RetriableStatusCodes: statusCodes,
-		NumRetries:           wrapperspb.UInt32(uint32(numRetries)),
-		RetryPriority: &route.RetryPolicy_RetryPriority{
-			Name:       "envoy.retry_priorities.previous_priorities",
-			ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: priorityCfgAny},
-		},
-	}
-	if decl.PerAttemptTimeout != nil {
-		rp.PerTryTimeout = durationpb.New(*decl.PerAttemptTimeout)
-	}
-	return rp
-}
-
-// buildRetryTriggerRetryPolicy builds the plain, non-aggregate RetryPolicy for a route whose
-// chain declares retry TRIGGERS but no retry SOURCE. Deliberately no RetryPriority: there is
-// no aggregate cluster to step through, so Envoy performs ordinary same-cluster retry — the
-// same destination, retried, which is exactly what a trigger-only policy (e.g. one that
-// refreshes a credential between attempts) needs. Returns nil when no codes were declared,
-// since a RetryPolicy with an empty RetriableStatusCodes list would never fire.
-func buildRetryTriggerRetryPolicy(triggerCodes map[int]struct{}, minAttempts int) *route.RetryPolicy {
-	if len(triggerCodes) == 0 {
-		return nil
-	}
-	codes := mergeRetriableStatusCodes(nil, triggerCodes)
+// buildRoutePolicyFromConditions is the single assembler translating this
+// codebase's merged RetryConditions vocabulary into a real Envoy
+// route.RetryPolicy. source is nil for a route with no retry-source policy
+// (plain operator/conditions-only retry); when non-nil, NumRetries is floored
+// at the longest group chain length regardless of what merged.NumRetries
+// derived to, and RetryPriority/PerTryTimeout (from source.PerAttemptTimeout)
+// are set.
+//
+// Every repeated field is emitted in a stable sorted order. config
+// .MergeRetryConditions unions On/StatusCodes/Headers through Go maps, whose
+// iteration order is randomized per run, and an xDS resource that reorders on
+// every rebuild churns its snapshot version for no reason — the deleted
+// mergeRetriableStatusCodes sorted for exactly this reason, and the obligation
+// moves here with it. Envoy treats all three as sets, so ordering is
+// presentation only.
+func buildRoutePolicyFromConditions(merged policy.RetryConditions, source *policy.RetrySourceDeclaration) *route.RetryPolicy {
+	codes := append([]int(nil), merged.StatusCodes...)
+	sort.Ints(codes)
 	statusCodes := make([]uint32, len(codes))
 	for i, code := range codes {
 		statusCodes[i] = uint32(code)
 	}
-	numRetries := minAttempts - 1
-	if numRetries < 1 {
-		numRetries = 1
+
+	numRetries := 0
+	if merged.NumRetries != nil {
+		numRetries = *merged.NumRetries
 	}
-	return &route.RetryPolicy{
-		RetryOn:              "retriable-status-codes",
+
+	on := append([]string(nil), retryOnOrDefault(merged.On)...)
+	sort.Strings(on)
+
+	rp := &route.RetryPolicy{
+		RetryOn:              strings.Join(on, ","),
 		RetriableStatusCodes: statusCodes,
-		NumRetries:           wrapperspb.UInt32(uint32(numRetries)),
 	}
+
+	if source != nil {
+		// Envoy has ONE retry budget per route, shared by every group's resolved cluster, so
+		// it must cover the longest chain; a shorter group simply never exhausts its share.
+		// Flooring here (rather than trusting merged.NumRetries) is what keeps a merged status
+		// code from being permanently inert on a zero-fallback source, where maxChain==0.
+		maxChain := 0
+		for _, group := range source.Groups {
+			if n := len(group.OrderedTargets) - 1; n > maxChain {
+				maxChain = n
+			}
+		}
+		if maxChain > numRetries {
+			numRetries = maxChain
+		}
+
+		priorityCfgAny, err := anypb.New(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
+		if err == nil {
+			// anypb.New only fails on a marshal error for a well-formed proto message, which
+			// PreviousPrioritiesConfig{UpdateFrequency: 1} can never produce — treated as
+			// unreachable, matching this file's existing convention of not threading an error
+			// return through every proto-marshal call site (see createAggregateCluster and
+			// createUpstreamRefreshExtProcFilter for the same pattern).
+			rp.RetryPriority = &route.RetryPolicy_RetryPriority{
+				Name:       "envoy.retry_priorities.previous_priorities",
+				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: priorityCfgAny},
+			}
+		}
+		// The retry source's own per-attempt bound governs its own failover chain, so it wins
+		// over a merged contributor's perTryTimeout when both are present.
+		if source.PerAttemptTimeout != nil {
+			rp.PerTryTimeout = durationpb.New(*source.PerAttemptTimeout)
+		} else if merged.PerTryTimeout != nil {
+			rp.PerTryTimeout = durationpb.New(*merged.PerTryTimeout)
+		}
+	} else if merged.PerTryTimeout != nil {
+		rp.PerTryTimeout = durationpb.New(*merged.PerTryTimeout)
+	}
+
+	rp.NumRetries = wrapperspb.UInt32(uint32(numRetries))
+
+	if merged.BackOff != nil {
+		bo := &route.RetryPolicy_RetryBackOff{
+			BaseInterval: durationpb.New(merged.BackOff.BaseInterval),
+		}
+		if merged.BackOff.MaxInterval != nil {
+			bo.MaxInterval = durationpb.New(*merged.BackOff.MaxInterval)
+		}
+		rp.RetryBackOff = bo
+	}
+
+	if merged.AvoidPreviousHosts {
+		rp.RetryHostPredicate = append(rp.RetryHostPredicate, &route.RetryPolicy_RetryHostPredicate{
+			Name: "envoy.retry_host_predicates.previous_hosts",
+		})
+	}
+
+	headers := append([]policy.RetriableHeader(nil), merged.Headers...)
+	sort.Slice(headers, func(i, j int) bool {
+		if headers[i].Name != headers[j].Name {
+			return headers[i].Name < headers[j].Name
+		}
+		return headers[i].Exact < headers[j].Exact
+	})
+	for _, h := range headers {
+		rp.RetriableHeaders = append(rp.RetriableHeaders, &route.HeaderMatcher{
+			Name: h.Name,
+			HeaderMatchSpecifier: &route.HeaderMatcher_StringMatch{
+				StringMatch: &matcher.StringMatcher{
+					MatchPattern: &matcher.StringMatcher_Exact{Exact: h.Exact},
+				},
+			},
+		})
+	}
+
+	return rp
 }
 
-// composeRetryTriggerPolicy applies retry-trigger conditions on top of an existing RetryPolicy
-// (built from an operator's resilience.retry) when one is present, rather than replacing it —
-// unlike a retry source, a retry trigger is designed to compose by union with everything,
-// including resilience.retry (see Important finding I1 in the 2026-08-14 final review: a
-// trigger such as oauth2-generator was silently clobbering an operator's configured
-// resilience.retry, dropping both its status codes and its NumRetries). The trigger's codes are
-// unioned into RetriableStatusCodes and NumRetries is only ever raised, never lowered, to cover
-// triggerMinAttempts. When existing is nil (no resilience.retry configured), this falls back to
-// building a fresh plain trigger-only policy.
-func composeRetryTriggerPolicy(existing *route.RetryPolicy, triggerCodes map[int]struct{}, triggerMinAttempts int) *route.RetryPolicy {
-	if existing == nil {
-		return buildRetryTriggerRetryPolicy(triggerCodes, triggerMinAttempts)
+// retryOnOrDefault preserves the always-at-least-"retriable-status-codes"
+// behavior of the old builders when a merge produced no On conditions at
+// all — e.g. a bare NumRetries-only resilience.retry with no explicit
+// conditions.
+func retryOnOrDefault(on []string) []string {
+	if len(on) == 0 {
+		return []string{"retriable-status-codes"}
 	}
-	existingCodes := make([]int, len(existing.RetriableStatusCodes))
-	for i, code := range existing.RetriableStatusCodes {
-		existingCodes[i] = int(code)
+	return on
+}
+
+// retryCanFire reports whether merged conditions could ever actually trigger a retry in
+// Envoy. A NumRetries with no On/StatusCodes/Headers behind it is inert, and attaching an
+// inert RetryPolicy is not free: collectClustersNeedingUpstreamFilter keys purely on
+// RetryPolicy presence, so it would pull an upstream ext_proc filter onto a cluster that
+// needs none — a real regression against the deleted buildRetryTriggerRetryPolicy, which
+// returned nil for exactly this case.
+func retryCanFire(merged policy.RetryConditions) bool {
+	return len(merged.On) > 0 || len(merged.StatusCodes) > 0 || len(merged.Headers) > 0
+}
+
+// buildOperatorRetryPolicy assembles the RetryPolicy for a route whose ONLY retry
+// contributor is the operator's own resilience.retry — the legacy createRoute path, which
+// carries no policy chain and therefore never has retry conditions to merge with. It funnels
+// through the identical adapt+parse+merge+assemble pipeline createRouteFromRDC uses, so the
+// two paths can never drift on how an api.Retry becomes Envoy config. Returns nil on a parse
+// or merge failure, which a single well-formed contributor can never actually produce.
+func buildOperatorRetryPolicy(retry *api.Retry) *route.RetryPolicy {
+	rc, err := config.ParseRetryConditions(operatorRetryToRawConditions(retry), nil, nil)
+	if err != nil {
+		return nil
 	}
-	merged := mergeRetriableStatusCodes(existingCodes, triggerCodes)
-	statusCodes := make([]uint32, len(merged))
-	for i, code := range merged {
-		statusCodes[i] = uint32(code)
+	merged, err := config.MergeRetryConditions([]policy.RetryConditions{*rc})
+	if err != nil || !retryCanFire(merged) {
+		return nil
 	}
-	numRetries := int(existing.GetNumRetries().GetValue())
-	if want := triggerMinAttempts - 1; want > numRetries {
-		numRetries = want
+	return buildRoutePolicyFromConditions(merged, nil)
+}
+
+// operatorRetryToRawConditions adapts the operator-facing api.Retry into
+// the same raw-block shape ParseRetryConditions expects, so an operator's
+// resilience.retry funnels through the identical parse+merge path as a
+// policy's own x-wso2-retry-conditions declaration. Extended in Task 7 once
+// api.Retry gains the richer fields (On, PerTryTimeout, BackOff,
+// AvoidPreviousHosts) — this version wires NumRetries/StatusCodes only.
+//
+// An omitted numRetries becomes minAttempts: 2 rather than numRetries: 1.
+// Both express the management API's documented `numRetries` default of 1
+// (the generated api.Retry.NumRetries is a *int and oapi-codegen never
+// materializes a schema default), but minAttempts composes as a floor while
+// numRetries is single-owner: emitting an unrequested numRetries: 1 would
+// make a chain policy's own explicit numRetries a hard merge CONFLICT,
+// silently dropping the operator's status codes along with it.
+func operatorRetryToRawConditions(r *api.Retry) map[string]interface{} {
+	raw := map[string]interface{}{"statusCodes": toInterfaceSlice(r.StatusCodes)}
+	if r.NumRetries != nil {
+		raw["numRetries"] = *r.NumRetries
+	} else {
+		raw["minAttempts"] = 2
 	}
-	existing.RetriableStatusCodes = statusCodes
-	existing.NumRetries = wrapperspb.UInt32(uint32(numRetries))
-	return existing
+	return raw
+}
+
+func toInterfaceSlice(codes []int) []interface{} {
+	out := make([]interface{}, len(codes))
+	for i, c := range codes {
+		out[i] = c
+	}
+	return out
 }
 
 // ResolveResilience parses a resilience block into route timeout and idle-timeout durations,

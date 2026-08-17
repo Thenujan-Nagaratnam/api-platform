@@ -20,6 +20,7 @@ package xds
 
 import (
 	"testing"
+	"time"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
@@ -62,27 +63,46 @@ func TestRetrySourceAggregateClusterKey_MatchesSDKFormula(t *testing.T) {
 }
 
 // retryTestDefinitions builds a policy-definition registry in the real
-// "name|fullVersion" key format pkg/config uses, declaring one retry-source
-// policy and one retry-trigger policy. Nothing here names model-failover or
-// oauth2-generator specifically — discovery is driven purely by the declared
-// metadata, which is the whole point of this mechanism.
+// "name|fullVersion" key format pkg/config uses. "src-policy" declares
+// x-wso2-retry-source (WHERE to retry to) plus its own x-wso2-retry-conditions
+// block pointing at its statusCodes param; "trigger-policy" declares only
+// x-wso2-retry-conditions (WHAT to retry on) — the generalized replacement for
+// the deleted x-wso2-retry-trigger metadata, expressing the same
+// "read my named param, and I need at least 2 attempts" contract. Nothing here
+// names model-failover or oauth2-generator specifically — discovery is driven
+// purely by the declared metadata, which is the whole point of this mechanism.
 func retryTestDefinitions() map[string]models.PolicyDefinition {
 	return map[string]models.PolicyDefinition{
 		"src-policy|v1.0.0": {
-			Name:        "src-policy",
-			Version:     "v1.0.0",
-			RetrySource: &models.RetrySourceMetadata{GroupKeyField: "model"},
+			Name:            "src-policy",
+			Version:         "v1.0.0",
+			RetrySource:     &models.RetrySourceMetadata{GroupKeyField: "model"},
+			RetryConditions: &map[string]interface{}{"statusCodes": map[string]interface{}{"fromParam": "statusCodes"}},
 		},
 		"trigger-policy|v1.0.0": {
-			Name:         "trigger-policy",
-			Version:      "v1.0.0",
-			RetryTrigger: &models.RetryTriggerMetadata{StatusCodesField: "purgeStatusCodes", MinAttempts: 2},
+			Name:    "trigger-policy",
+			Version: "v1.0.0",
+			RetryConditions: &map[string]interface{}{
+				"statusCodes": map[string]interface{}{"fromParam": "purgeStatusCodes"},
+				"minAttempts": 2,
+			},
 		},
 		"inert-policy|v1.0.0": {
 			Name:    "inert-policy",
 			Version: "v1.0.0",
 		},
 	}
+}
+
+// containsCode reports whether merged retry conditions include a status code.
+// Merged StatusCodes come out of a Go map, so tests must never assume order.
+func containsCode(codes []int, want int) bool {
+	for _, c := range codes {
+		if c == want {
+			return true
+		}
+	}
+	return false
 }
 
 func newRetryTestTranslator() *Translator {
@@ -111,12 +131,9 @@ func TestResolveRetryDeclarations_DiscoversRetrySourceByMetadata(t *testing.T) {
 		},
 	}}}
 
-	decl, count, triggerCodes, triggerMinAttempts, err := tr.resolveRetryDeclarations(chain)
+	decl, merged, err := tr.resolveRetryDeclarations(chain)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("sourceCount = %d, want 1", count)
 	}
 	if decl == nil {
 		t.Fatal("expected a retry-source declaration, got nil")
@@ -127,15 +144,19 @@ func TestResolveRetryDeclarations_DiscoversRetrySourceByMetadata(t *testing.T) {
 	if len(decl.Groups[0].OrderedTargets) != 2 {
 		t.Errorf("orderedTargets = %+v, want 2 (main + backup)", decl.Groups[0].OrderedTargets)
 	}
-	if len(triggerCodes) != 0 {
-		t.Errorf("triggerCodes = %v, want empty", triggerCodes)
+	// The retry-source policy's own status codes now arrive via its separate
+	// x-wso2-retry-conditions block, in the merged conditions — never on the declaration.
+	if len(merged.StatusCodes) != 1 || merged.StatusCodes[0] != 429 {
+		t.Errorf("merged.StatusCodes = %v, want [429] from the policy's own retry conditions", merged.StatusCodes)
 	}
-	if triggerMinAttempts != 0 {
-		t.Errorf("triggerMinAttempts = %d, want 0", triggerMinAttempts)
+	if merged.MinAttempts != nil {
+		t.Errorf("merged.MinAttempts = %v, want nil (nothing declared a floor)", merged.MinAttempts)
 	}
 }
 
-func TestResolveRetryDeclarations_DiscoversRetryTriggerByMetadata(t *testing.T) {
+// A policy declaring ONLY x-wso2-retry-conditions (no retry source) contributes its
+// conditions and nothing else — the generalized replacement for the old retry-trigger path.
+func TestResolveRetryDeclarations_DiscoversRetryConditionsByMetadata(t *testing.T) {
 	tr := newRetryTestTranslator()
 	chain := &models.PolicyChain{Policies: []models.Policy{{
 		Name:    "trigger-policy",
@@ -143,20 +164,25 @@ func TestResolveRetryDeclarations_DiscoversRetryTriggerByMetadata(t *testing.T) 
 		Params:  map[string]interface{}{"purgeStatusCodes": []interface{}{401, 403}},
 	}}}
 
-	decl, count, triggerCodes, triggerMinAttempts, err := tr.resolveRetryDeclarations(chain)
+	decl, merged, err := tr.resolveRetryDeclarations(chain)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if decl != nil || count != 0 {
-		t.Errorf("expected no retry-source, got decl=%+v count=%d", decl, count)
+	if decl != nil {
+		t.Errorf("expected no retry-source, got decl=%+v", decl)
 	}
 	for _, code := range []int{401, 403} {
-		if _, ok := triggerCodes[code]; !ok {
-			t.Errorf("triggerCodes missing %d, got %v", code, triggerCodes)
+		if !containsCode(merged.StatusCodes, code) {
+			t.Errorf("merged.StatusCodes missing %d, got %v", code, merged.StatusCodes)
 		}
 	}
-	if triggerMinAttempts != 2 {
-		t.Errorf("triggerMinAttempts = %d, want 2", triggerMinAttempts)
+	if merged.MinAttempts == nil || *merged.MinAttempts != 2 {
+		t.Errorf("merged.MinAttempts = %v, want 2", merged.MinAttempts)
+	}
+	// MergeRetryConditions derives NumRetries from the MinAttempts floor when no
+	// contributor requested an exact count.
+	if merged.NumRetries == nil || *merged.NumRetries != 1 {
+		t.Errorf("merged.NumRetries = %v, want 1 (derived from minAttempts 2)", merged.NumRetries)
 	}
 }
 
@@ -169,17 +195,18 @@ func TestResolveRetryDeclarations_IgnoresPolicyWithNoRetryMetadata(t *testing.T)
 		{Name: "unregistered-policy", Version: "v1"},
 	}}
 
-	decl, count, triggerCodes, _, err := tr.resolveRetryDeclarations(chain)
+	decl, merged, err := tr.resolveRetryDeclarations(chain)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if decl != nil || count != 0 || len(triggerCodes) != 0 {
-		t.Errorf("expected nothing discovered, got decl=%+v count=%d codes=%v", decl, count, triggerCodes)
+	if decl != nil || len(merged.StatusCodes) != 0 || len(merged.On) != 0 {
+		t.Errorf("expected nothing discovered, got decl=%+v merged=%+v", decl, merged)
 	}
 }
 
-// Composition: a trigger policy's codes fold into the retry-source's own
-// RetryPolicy rather than producing a second, conflicting one.
+// Composition: a conditions-only policy's codes fold into the SAME merged conditions the
+// retry-source policy's own block contributed to, rather than producing a second,
+// conflicting RetryPolicy.
 func TestResolveRetryDeclarations_SourceAndTriggerCompose(t *testing.T) {
 	tr := newRetryTestTranslator()
 	chain := &models.PolicyChain{Policies: []models.Policy{
@@ -201,32 +228,52 @@ func TestResolveRetryDeclarations_SourceAndTriggerCompose(t *testing.T) {
 		},
 	}}
 
-	decl, count, triggerCodes, _, err := tr.resolveRetryDeclarations(chain)
+	decl, merged, err := tr.resolveRetryDeclarations(chain)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if count != 1 || decl == nil {
-		t.Fatalf("expected exactly one retry-source, got count=%d decl=%+v", count, decl)
+	if decl == nil {
+		t.Fatal("expected a retry-source declaration, got nil")
 	}
-	if _, ok := triggerCodes[401]; !ok {
-		t.Errorf("triggerCodes = %v, want 401 present", triggerCodes)
+	if len(merged.StatusCodes) != 2 || !containsCode(merged.StatusCodes, 429) || !containsCode(merged.StatusCodes, 401) {
+		t.Errorf("merged.StatusCodes = %v, want both 429 (source's own conditions) and 401", merged.StatusCodes)
 	}
-	merged := mergeRetriableStatusCodes(decl.RetriableStatusCodes, triggerCodes)
-	if len(merged) != 2 {
-		t.Errorf("merged codes = %v, want both 429 and 401", merged)
+	if merged.MinAttempts == nil || *merged.MinAttempts != 2 {
+		t.Errorf("merged.MinAttempts = %v, want 2 from the conditions-only policy's floor", merged.MinAttempts)
 	}
 }
 
-// The new capability: a route carrying ONLY retry-trigger declarations gets a
-// plain, non-aggregate RouteAction.RetryPolicy with no RetryPriority — ordinary
-// same-cluster Envoy retry, with no retry-source policy present at all.
-func TestBuildRetryTriggerRetryPolicy_PlainNoRetryPriority(t *testing.T) {
-	rp := buildRetryTriggerRetryPolicy(map[int]struct{}{401: {}}, 2)
+// The new capability, end-to-end through createRouteFromRDC: a route carrying ONLY a
+// conditions-declaring policy (no retry source, no resilience.retry) still gets a plain,
+// non-aggregate RouteAction.RetryPolicy — ordinary same-cluster Envoy retry.
+func TestCreateRouteFromRDC_ConditionsOnlyRouteGetsPlainRetryPolicy(t *testing.T) {
+	tr := newRetryTestTranslator()
+
+	routeKey := "GET|/api/v1.0/items|"
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"main": {Endpoints: []models.Endpoint{{Host: "echo", Port: 80}}},
+		},
+		PolicyChains: map[string]*models.PolicyChain{
+			routeKey: {Policies: []models.Policy{{
+				Name: "trigger-policy", Version: "v1",
+				Params: map[string]interface{}{"purgeStatusCodes": []interface{}{401}},
+			}}},
+		},
+	}
+	rdcRoute := &models.Route{
+		Method:        "GET",
+		Path:          "/api/v1.0/items",
+		OperationPath: "/items",
+		Upstream:      models.RouteUpstream{ClusterKey: "main"},
+	}
+
+	rp := tr.createRouteFromRDC(routeKey, rdcRoute, rdc).GetRoute().GetRetryPolicy()
 	if rp == nil {
-		t.Fatal("expected a retry policy")
+		t.Fatal("expected a RetryPolicy")
 	}
 	if rp.RetryPriority != nil {
-		t.Error("plain trigger-only retry must not set RetryPriority (no aggregate cluster exists)")
+		t.Error("a conditions-only route must not set RetryPriority (no aggregate cluster exists)")
 	}
 	if rp.RetryOn != "retriable-status-codes" {
 		t.Errorf("RetryOn = %q", rp.RetryOn)
@@ -239,29 +286,36 @@ func TestBuildRetryTriggerRetryPolicy_PlainNoRetryPriority(t *testing.T) {
 	}
 }
 
-func TestBuildRetryTriggerRetryPolicy_NoCodesYieldsNoPolicy(t *testing.T) {
-	if rp := buildRetryTriggerRetryPolicy(map[int]struct{}{}, 2); rp != nil {
-		t.Errorf("expected nil retry policy with no trigger codes, got %+v", rp)
-	}
-}
+// Replaces the old TestBuildRetryTriggerRetryPolicy_NoCodesYieldsNoPolicy: the
+// "contributed nothing, so emit no RetryPolicy at all" rule now lives in
+// createRouteFromRDC's guard rather than in a builder's nil return. A policy whose
+// conditions resolve to an EMPTY status-code list must leave RetryPolicy unset — an empty
+// RetriableStatusCodes list would never fire anyway.
+func TestCreateRouteFromRDC_EmptyConditionsYieldNoRetryPolicy(t *testing.T) {
+	tr := newRetryTestTranslator()
 
-// The aggregate-cluster RetryPolicy keeps model-failover's existing shape:
-// RetryPriority set, NumRetries from the longest group chain, PerTryTimeout
-// from the declaration — just derived generically now.
-func TestBuildRetrySourceRetryPolicy_UsesLongestGroupChain(t *testing.T) {
-	decl := &policy.RetrySourceDeclaration{
-		Groups: []policy.RetryGroup{
-			{Key: "a", OrderedTargets: []policy.RetryTarget{{}, {UpstreamDefinitionName: "b"}}},
-			{Key: "c", OrderedTargets: []policy.RetryTarget{{}, {UpstreamDefinitionName: "d"}, {UpstreamDefinitionName: "e"}}},
+	routeKey := "GET|/api/v1.0/items|"
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"main": {Endpoints: []models.Endpoint{{Host: "echo", Port: 80}}},
 		},
-		RetriableStatusCodes: []int{429},
+		PolicyChains: map[string]*models.PolicyChain{
+			routeKey: {Policies: []models.Policy{{
+				Name: "trigger-policy", Version: "v1",
+				// purge-on-reject explicitly disabled
+				Params: map[string]interface{}{"purgeStatusCodes": []interface{}{}},
+			}}},
+		},
 	}
-	rp := buildRetrySourceRetryPolicy(decl, 0)
-	if rp.RetryPriority == nil {
-		t.Error("aggregate-cluster retry must set RetryPriority")
+	rdcRoute := &models.Route{
+		Method:        "GET",
+		Path:          "/api/v1.0/items",
+		OperationPath: "/items",
+		Upstream:      models.RouteUpstream{ClusterKey: "main"},
 	}
-	if rp.GetNumRetries().GetValue() != 2 {
-		t.Errorf("NumRetries = %d, want 2 (longest chain 3 targets - 1)", rp.GetNumRetries().GetValue())
+
+	if rp := tr.createRouteFromRDC(routeKey, rdcRoute, rdc).GetRoute().GetRetryPolicy(); rp != nil {
+		t.Errorf("expected no RetryPolicy when nothing contributed retry conditions, got %+v", rp)
 	}
 }
 
@@ -368,5 +422,232 @@ func TestCreateRouteFromRDC_ZeroFallbackSourcePlusTriggerGetsNonZeroNumRetries(t
 		if !wantCodes[code] {
 			t.Errorf("unexpected status code %d in merged RetryPolicy", code)
 		}
+	}
+}
+
+// A policy declaring only a minAttempts FLOOR must not collide with an operator's explicit
+// numRetries. Merging is not associative over MergeRetryConditions' single-owner rules — it
+// derives NumRetries from the floor, so merging an already-merged value back in would
+// present that derived count as a second explicit NumRetries owner, fail as a conflict, and
+// (because translation swallows the error) silently drop the operator's status codes.
+// createRouteFromRDC must therefore feed every contributor into ONE merge pass.
+func TestCreateRouteFromRDC_OperatorNumRetriesDoesNotConflictWithPolicyMinAttempts(t *testing.T) {
+	tr := newRetryTestTranslator()
+
+	routeKey := "GET|/api/v1.0/items|"
+	numRetries := 4
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"main": {Endpoints: []models.Endpoint{{Host: "echo", Port: 80}}},
+		},
+		PolicyChains: map[string]*models.PolicyChain{
+			// trigger-policy declares minAttempts: 2 and no numRetries of its own
+			routeKey: {Policies: []models.Policy{{
+				Name: "trigger-policy", Version: "v1",
+				Params: map[string]interface{}{"purgeStatusCodes": []interface{}{401}},
+			}}},
+		},
+	}
+	rdcRoute := &models.Route{
+		Method:        "GET",
+		Path:          "/api/v1.0/items",
+		OperationPath: "/items",
+		Timeout:       &models.RouteTimeout{Retry: &api.Retry{StatusCodes: []int{503}, NumRetries: &numRetries}},
+		Upstream:      models.RouteUpstream{ClusterKey: "main"},
+	}
+
+	rp := tr.createRouteFromRDC(routeKey, rdcRoute, rdc).GetRoute().GetRetryPolicy()
+	if rp == nil {
+		t.Fatal("expected a RetryPolicy — a minAttempts floor is not a NumRetries ownership conflict")
+	}
+	if got := rp.GetNumRetries().GetValue(); got != 4 {
+		t.Errorf("NumRetries = %d, want the operator's explicit 4", got)
+	}
+	if len(rp.RetriableStatusCodes) != 2 {
+		t.Errorf("RetriableStatusCodes = %v, want the union of the operator's 503 and the policy's 401", rp.RetriableStatusCodes)
+	}
+}
+
+// An operator's resilience.retry that omits numRetries must still get the management API's
+// documented default of 1 retry — and must express it as a FLOOR, so a policy's own explicit
+// numRetries wins rather than colliding with an unrequested exact value.
+func TestCreateRouteFromRDC_OperatorRetryWithoutNumRetriesDefaultsToOne(t *testing.T) {
+	tr := newRetryTestTranslator()
+
+	routeKey := "GET|/api/v1.0/items|"
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"main": {Endpoints: []models.Endpoint{{Host: "echo", Port: 80}}},
+		},
+	}
+	rdcRoute := &models.Route{
+		Method:        "GET",
+		Path:          "/api/v1.0/items",
+		OperationPath: "/items",
+		Timeout:       &models.RouteTimeout{Retry: &api.Retry{StatusCodes: []int{503}}},
+		Upstream:      models.RouteUpstream{ClusterKey: "main"},
+	}
+
+	rp := tr.createRouteFromRDC(routeKey, rdcRoute, rdc).GetRoute().GetRetryPolicy()
+	if rp == nil {
+		t.Fatal("expected a RetryPolicy")
+	}
+	if got := rp.GetNumRetries().GetValue(); got != 1 {
+		t.Errorf("NumRetries = %d, want the schema's documented default of 1", got)
+	}
+}
+
+func TestBuildRoutePolicyFromConditions_NoRetrySource(t *testing.T) {
+	two := 2
+	merged := policy.RetryConditions{
+		On:          []string{"retriable-status-codes"},
+		StatusCodes: []int{401},
+		MinAttempts: &two,
+		NumRetries:  &[]int{1}[0], // MergeRetryConditions derives NumRetries = MinAttempts-1
+	}
+
+	rp := buildRoutePolicyFromConditions(merged, nil)
+
+	if rp == nil {
+		t.Fatal("expected a non-nil RetryPolicy")
+	}
+	if rp.GetNumRetries().GetValue() != 1 {
+		t.Errorf("expected NumRetries derived from MinAttempts-1 (1), got %d", rp.GetNumRetries().GetValue())
+	}
+	if len(rp.RetriableStatusCodes) != 1 || rp.RetriableStatusCodes[0] != 401 {
+		t.Errorf("unexpected RetriableStatusCodes: %v", rp.RetriableStatusCodes)
+	}
+	if rp.GetRetryPriority() != nil {
+		t.Error("expected no RetryPriority when no retry source is present")
+	}
+}
+
+func TestBuildRoutePolicyFromConditions_WithRetrySource_SetsRetryPriority(t *testing.T) {
+	merged := policy.RetryConditions{StatusCodes: []int{500}}
+	source := &policy.RetrySourceDeclaration{
+		Groups: []policy.RetryGroup{
+			{Key: "gpt-4o", OrderedTargets: []policy.RetryTarget{
+				{UpstreamDefinitionName: "gpt-4o"},
+				{UpstreamDefinitionName: "gpt-4o-mini"},
+			}},
+		},
+	}
+
+	rp := buildRoutePolicyFromConditions(merged, source)
+
+	if rp.GetRetryPriority() == nil {
+		t.Fatal("expected RetryPriority to be set when a retry source is present")
+	}
+	if rp.GetRetryPriority().GetName() != "envoy.retry_priorities.previous_priorities" {
+		t.Errorf("unexpected RetryPriority name: %q", rp.GetRetryPriority().GetName())
+	}
+	if rp.GetNumRetries().GetValue() != 1 {
+		t.Errorf("expected NumRetries derived from the one-fallback chain length (1), got %d", rp.GetNumRetries().GetValue())
+	}
+}
+
+func TestBuildRoutePolicyFromConditions_NumRetries_NeverLowerThanChainLength(t *testing.T) {
+	// a NumRetries=0 contributor (MinAttempts=1, derived) must never SHRINK the
+	// retry-source-derived count
+	zero := 0
+	one := 1
+	merged := policy.RetryConditions{StatusCodes: []int{500}, MinAttempts: &one, NumRetries: &zero}
+	source := &policy.RetrySourceDeclaration{
+		Groups: []policy.RetryGroup{
+			{Key: "g", OrderedTargets: []policy.RetryTarget{
+				{UpstreamDefinitionName: "a"}, {UpstreamDefinitionName: "b"}, {UpstreamDefinitionName: "c"},
+			}},
+		},
+	}
+
+	rp := buildRoutePolicyFromConditions(merged, source)
+
+	if rp.GetNumRetries().GetValue() != 2 {
+		t.Errorf("expected NumRetries to stay at the chain length (2), not be lowered by a smaller MinAttempts, got %d", rp.GetNumRetries().GetValue())
+	}
+}
+
+// buildRoutePolicyFromConditions must emit a DETERMINISTIC status-code list:
+// MergeRetryConditions unions codes through a Go map, whose iteration order is
+// randomized, and an xDS snapshot that reorders on every rebuild churns the
+// resource version for no reason. The old mergeRetriableStatusCodes sorted for
+// exactly this reason; the new assembler inherits the obligation.
+func TestBuildRoutePolicyFromConditions_EmitsDeterministicSortedOutput(t *testing.T) {
+	merged := policy.RetryConditions{
+		On:          []string{"retriable-status-codes", "gateway-error", "reset"},
+		StatusCodes: []int{503, 401, 502},
+	}
+
+	rp := buildRoutePolicyFromConditions(merged, nil)
+
+	want := []uint32{401, 502, 503}
+	if len(rp.RetriableStatusCodes) != len(want) {
+		t.Fatalf("RetriableStatusCodes = %v, want %v", rp.RetriableStatusCodes, want)
+	}
+	for i := range want {
+		if rp.RetriableStatusCodes[i] != want[i] {
+			t.Fatalf("RetriableStatusCodes = %v, want ascending %v", rp.RetriableStatusCodes, want)
+		}
+	}
+	if rp.RetryOn != "gateway-error,reset,retriable-status-codes" {
+		t.Errorf("RetryOn = %q, want the sorted union", rp.RetryOn)
+	}
+}
+
+// PerAttemptTimeout on the retry-source declaration must reach Envoy as
+// PerTryTimeout, and must win over a merged contributor's own perTryTimeout
+// (it is the retry source's own per-attempt bound on its own failover chain).
+func TestBuildRoutePolicyFromConditions_PerAttemptTimeoutWinsForRetrySource(t *testing.T) {
+	perAttempt := 10 * time.Second
+	contributed := 30 * time.Second
+	merged := policy.RetryConditions{StatusCodes: []int{500}, PerTryTimeout: &contributed}
+	source := &policy.RetrySourceDeclaration{
+		Groups: []policy.RetryGroup{
+			// two groups: NumRetries must come from the LONGEST chain, not the first
+			{Key: "a", OrderedTargets: []policy.RetryTarget{{}, {UpstreamDefinitionName: "b"}}},
+			{Key: "c", OrderedTargets: []policy.RetryTarget{{}, {UpstreamDefinitionName: "d"}, {UpstreamDefinitionName: "e"}}},
+		},
+		PerAttemptTimeout: &perAttempt,
+	}
+
+	rp := buildRoutePolicyFromConditions(merged, source)
+
+	if rp.GetPerTryTimeout().AsDuration() != 10*time.Second {
+		t.Errorf("PerTryTimeout = %v, want 10s from the declaration's PerAttemptTimeout", rp.GetPerTryTimeout())
+	}
+	if rp.GetNumRetries().GetValue() != 2 {
+		t.Errorf("NumRetries = %d, want 2 (longest chain 3 targets - 1)", rp.GetNumRetries().GetValue())
+	}
+}
+
+// A merged contribution's own backOff/avoidPreviousHosts/headers must reach the
+// Envoy proto — these are the fields the old status-code-only builders had no
+// way to express at all.
+func TestBuildRoutePolicyFromConditions_BackOffHeadersAndHostPredicate(t *testing.T) {
+	base := 100 * time.Millisecond
+	maxInterval := 2 * time.Second
+	merged := policy.RetryConditions{
+		On:                 []string{"retriable-headers"},
+		Headers:            []policy.RetriableHeader{{Name: "x-should-retry", Exact: "true"}},
+		BackOff:            &policy.RetryBackOff{BaseInterval: base, MaxInterval: &maxInterval},
+		AvoidPreviousHosts: true,
+	}
+
+	rp := buildRoutePolicyFromConditions(merged, nil)
+
+	if rp.GetRetryBackOff().GetBaseInterval().AsDuration() != base {
+		t.Errorf("BaseInterval = %v, want %v", rp.GetRetryBackOff().GetBaseInterval(), base)
+	}
+	if rp.GetRetryBackOff().GetMaxInterval().AsDuration() != maxInterval {
+		t.Errorf("MaxInterval = %v, want %v", rp.GetRetryBackOff().GetMaxInterval(), maxInterval)
+	}
+	if len(rp.RetryHostPredicate) != 1 || rp.RetryHostPredicate[0].Name != "envoy.retry_host_predicates.previous_hosts" {
+		t.Errorf("RetryHostPredicate = %v, want the previous_hosts predicate", rp.RetryHostPredicate)
+	}
+	if len(rp.RetriableHeaders) != 1 || rp.RetriableHeaders[0].Name != "x-should-retry" {
+		t.Fatalf("RetriableHeaders = %v, want one x-should-retry matcher", rp.RetriableHeaders)
+	}
+	if got := rp.RetriableHeaders[0].GetStringMatch().GetExact(); got != "true" {
+		t.Errorf("RetriableHeaders[0] exact match = %q, want %q", got, "true")
 	}
 }
