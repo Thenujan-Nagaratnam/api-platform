@@ -90,21 +90,34 @@ func MergeRetryConditions(contributions []policy.RetryConditions) (policy.RetryC
 	return merged, nil
 }
 
-// mergeSingleOwnerFields is implemented in the next task (Task 3). Declared
-// here so this file compiles standalone during Task 2's red/green cycle —
-// Task 3 replaces this stub with the real conflict-detecting implementation.
+// mergeSingleOwnerFields enforces the two single-owner composition rules:
+// NumRetries allows multiple contributors only if they all agree on the
+// same value; BackOff allows at most one contributor, full stop, even with
+// identical values (ownership ambiguity is the problem, not the value).
 func mergeSingleOwnerFields(contributions []policy.RetryConditions) (*int, *policy.RetryBackOff, error) {
 	var numRetries *int
+	var backOffOwners int
 	var backOff *policy.RetryBackOff
+
 	for _, c := range contributions {
 		if c.NumRetries != nil {
+			if numRetries != nil && *numRetries != *c.NumRetries {
+				return nil, nil, fmt.Errorf(
+					"conflicting NumRetries: %d and %d declared by different contributors on the same route",
+					*numRetries, *c.NumRetries)
+			}
 			numRetries = c.NumRetries
 		}
 		if c.BackOff != nil {
+			backOffOwners++
 			backOff = c.BackOff
 		}
 	}
+	if backOffOwners > 1 {
+		return nil, nil, fmt.Errorf(
+			"BackOff declared by %d contributors on the same route — at most one is allowed, even with identical values",
+			backOffOwners)
+	}
+
 	return numRetries, backOff, nil
 }
-
-var _ = fmt.Sprintf // placeholder import use, removed once Task 3 adds real fmt.Errorf usage

@@ -2,6 +2,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -105,5 +106,81 @@ func TestMergeRetryConditions_PerTryTimeout_MinCeiling(t *testing.T) {
 	}
 	if merged.PerTryTimeout == nil || *merged.PerTryTimeout != fiveSec {
 		t.Errorf("expected PerTryTimeout tightened to the min (5s), got %v", merged.PerTryTimeout)
+	}
+}
+
+func TestMergeRetryConditions_NumRetries_SingleContributorWins(t *testing.T) {
+	five := 5
+	merged, err := MergeRetryConditions([]policy.RetryConditions{
+		{StatusCodes: []int{401}},
+		{NumRetries: &five},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if merged.NumRetries == nil || *merged.NumRetries != 5 {
+		t.Errorf("expected the one explicit NumRetries (5) to win, got %v", merged.NumRetries)
+	}
+}
+
+func TestMergeRetryConditions_NumRetries_ConflictingValuesRejected(t *testing.T) {
+	two, five := 2, 5
+	_, err := MergeRetryConditions([]policy.RetryConditions{
+		{NumRetries: &two},
+		{NumRetries: &five},
+	})
+	if err == nil {
+		t.Fatal("expected an error for two contributors declaring different exact NumRetries")
+	}
+	if !strings.Contains(err.Error(), "NumRetries") {
+		t.Errorf("expected error to mention NumRetries, got: %v", err)
+	}
+}
+
+func TestMergeRetryConditions_NumRetries_IdenticalValuesStillAllowed(t *testing.T) {
+	// Two contributors independently asking for the SAME exact count is not
+	// an ownership conflict — nothing is ambiguous about what the route
+	// should do. Unlike BackOff (see below), value equality here is a
+	// legitimate way to avoid a spurious rejection.
+	three := 3
+	merged, err := MergeRetryConditions([]policy.RetryConditions{
+		{NumRetries: &three},
+		{NumRetries: &three},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for two contributors agreeing on NumRetries: %v", err)
+	}
+	if merged.NumRetries == nil || *merged.NumRetries != 3 {
+		t.Errorf("expected NumRetries 3, got %v", merged.NumRetries)
+	}
+}
+
+func TestMergeRetryConditions_BackOff_TwoContributorsAlwaysRejected(t *testing.T) {
+	// Unlike NumRetries, BackOff conflicts are rejected even when both
+	// contributors set identical values — ownership ambiguity is the
+	// problem, not the value.
+	bo := policy.RetryBackOff{BaseInterval: 100 * time.Millisecond}
+	_, err := MergeRetryConditions([]policy.RetryConditions{
+		{BackOff: &bo},
+		{BackOff: &bo},
+	})
+	if err == nil {
+		t.Fatal("expected an error when two contributors both set BackOff, even identically")
+	}
+	if !strings.Contains(err.Error(), "BackOff") {
+		t.Errorf("expected error to mention BackOff, got: %v", err)
+	}
+}
+
+func TestMergeRetryConditions_NumRetries_DerivedFromMinAttemptsWhenUnset(t *testing.T) {
+	four := 4
+	merged, err := MergeRetryConditions([]policy.RetryConditions{
+		{MinAttempts: &four},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if merged.NumRetries == nil || *merged.NumRetries != 3 {
+		t.Errorf("expected NumRetries derived as MinAttempts-1 (3), got %v", merged.NumRetries)
 	}
 }
