@@ -48,6 +48,19 @@ func (p *fakeUpstreamAttemptPolicy) OnUpstreamAttemptRequest(_ context.Context, 
 	return policy.UpstreamAttemptRequestModifications{HeadersToSet: map[string]string{"Authorization": "Bearer refreshed"}}
 }
 
+// authorityCapturingPolicy proves whether :authority (an HTTP/2 pseudo-header) survives from
+// Envoy's ext_proc RequestHeaders message into UpstreamAttemptContext.Headers — this is the
+// prerequisite fact for host/authority-based per-attempt policy scoping (an alternative to
+// AttemptCount-based scoping, which breaks for model-failover's own skip-ahead-after-suspend
+// redirect; see gateway/spec/prds/llm-cross-provider-failover.md's Open Questions).
+type authorityCapturingPolicy struct{ observedAuthority []string }
+
+func (p *authorityCapturingPolicy) Mode() policy.ProcessingMode { return policy.ProcessingMode{} }
+func (p *authorityCapturingPolicy) OnUpstreamAttemptRequest(_ context.Context, actx *policy.UpstreamAttemptContext) policy.UpstreamAttemptAction {
+	p.observedAuthority = actx.Headers.Get(":authority")
+	return policy.UpstreamAttemptRequestModifications{}
+}
+
 // nonParticipatingPolicy implements only the base Policy interface — proves
 // the dispatch loop skips it via type assertion, not a hardcoded name check.
 type nonParticipatingPolicy struct{}
@@ -109,6 +122,38 @@ func TestUpstreamExtProc_DispatchesOnlyToImplementingPolicies(t *testing.T) {
 	mutation := rh.RequestHeaders.GetResponse().GetHeaderMutation()
 	if mutation == nil || len(mutation.SetHeaders) != 1 || string(mutation.SetHeaders[0].Header.RawValue) != "Bearer refreshed" {
 		t.Fatalf("expected the refreshed Authorization header to be set, got %#v", mutation)
+	}
+}
+
+// TestUpstreamExtProc_AuthorityPseudoHeaderReachesPolicy is a fact-finding test, not a
+// regression guard for any shipped behavior: processUpstreamAttemptRequestHeaders (see its
+// own source) copies every header Envoy sends into headersMap with no filtering at all -
+// this proves that includes HTTP/2 pseudo-headers like :authority, which Envoy's ext_proc
+// protocol sends alongside ordinary headers by default. Confirms a per-attempt policy CAN
+// read the actual resolved destination for this specific dial, not just AttemptCount.
+func TestUpstreamExtProc_AuthorityPseudoHeaderReachesPolicy(t *testing.T) {
+	fp := &authorityCapturingPolicy{}
+	chain := &registry.PolicyChain{Policies: []policy.Policy{fp}}
+	k := newTestRouteConfigAndChain(t, "test-route", chain)
+	s := NewUpstreamExternalProcessorServer(k)
+
+	req := &extprocv3.ProcessingRequest{
+		Attributes: attrsFor("test-route"),
+		Request: &extprocv3.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extprocv3.HttpHeaders{
+				Headers: &corev3.HeaderMap{Headers: []*corev3.HeaderValue{
+					{Key: "x-envoy-attempt-count", RawValue: []byte("2")},
+					{Key: ":authority", RawValue: []byte("anthropic-backup.internal")},
+				}},
+			},
+		},
+	}
+
+	if _, _, err := s.processUpstreamAttemptRequestHeaders(context.Background(), req, "test-route"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fp.observedAuthority) != 1 || fp.observedAuthority[0] != "anthropic-backup.internal" {
+		t.Fatalf("expected :authority to reach the policy via actx.Headers.Get(\":authority\"), got %#v", fp.observedAuthority)
 	}
 }
 
