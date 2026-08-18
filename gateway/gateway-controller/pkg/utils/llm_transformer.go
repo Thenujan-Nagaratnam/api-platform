@@ -489,6 +489,7 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 		}
 	}
 	spec.UpstreamDefinitions = provider.Spec.UpstreamDefinitions
+	spec.AdditionalProviders = provider.Spec.AdditionalProviders
 	if provider.Spec.Vhost != nil {
 		spec.Vhosts = &struct {
 			Main    string  `json:"main" yaml:"main"`

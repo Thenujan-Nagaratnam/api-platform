@@ -916,6 +916,78 @@ func TestRestAPITransformer_SemicolonVhostsExpandToMultipleHosts(t *testing.T) {
 // (the plaintext endpoints would be silently dialed over TLS). The transform must reject it with a
 // clear error. Uniform definitions (all https or all plaintext) must still transform, preserving the
 // previous TLS-enabled result.
+// An additionalProviders entry (see gateway/spec/prds/llm-cross-provider-failover.md) must
+// produce a real Envoy cluster - built via the SAME resolveOrCreateUpstreamDefinitionCluster
+// path a plain upstreamDefinition uses (via a synthetic single-URL UpstreamDefinition), so a
+// retry-source policy's AdditionalProviderName target resolves to a cluster that actually
+// exists, with the exact naming scheme retrySourceTargetClusterNames (xds/translator.go)
+// independently expects: upstream_<kind>_<apiID>_<name>.
+func TestRestAPITransformer_AdditionalProviderProducesRealCluster(t *testing.T) {
+	additionalProviders := []api.LLMProviderAdditionalProvider{
+		{Name: "anthropic-backup", Template: "anthropic", Upstream: api.Upstream{Url: ptrStr("https://api.anthropic.com:443")}},
+	}
+	apiData := api.APIConfigData{
+		DisplayName:         "cross-provider-test",
+		Context:             "/test",
+		Version:             "1.0.0",
+		AdditionalProviders: &additionalProviders,
+		Operations:          []api.Operation{{Method: api.Ptr(api.OperationMethod("GET")), Path: api.Ptr("/hello")}},
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{
+			Main: api.Upstream{Url: ptrStr("http://backend:8080")},
+		},
+	}
+	cfg := &models.StoredConfig{
+		UUID:          "cross-provider-api",
+		Kind:          string(api.RestAPIKindRestApi),
+		Configuration: api.RestAPI{Kind: api.RestAPIKindRestApi, Metadata: api.Metadata{Name: "cross-provider-api"}, Spec: apiData},
+	}
+
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, map[string]models.PolicyDefinition{})
+	rdc, err := transformer.Transform(cfg)
+	require.NoError(t, err)
+
+	wantKey := "upstream_" + string(api.RestAPIKindRestApi) + "_cross-provider-api_anthropic-backup"
+	uc, ok := rdc.UpstreamClusters[wantKey]
+	require.True(t, ok, "expected an UpstreamClusters entry keyed %q, got keys %v", wantKey, upstreamClusterKeys(rdc))
+	require.Len(t, uc.Endpoints, 1)
+	assert.Equal(t, "api.anthropic.com", uc.Endpoints[0].Host)
+	assert.Equal(t, 443, uc.Endpoints[0].Port)
+}
+
+// An additionalProviders entry with neither upstream.url nor a supported reference must be
+// rejected outright, not silently produce an unresolvable cluster.
+func TestRestAPITransformer_AdditionalProviderMissingURLIsRejected(t *testing.T) {
+	additionalProviders := []api.LLMProviderAdditionalProvider{
+		{Name: "anthropic-backup", Template: "anthropic", Upstream: api.Upstream{}},
+	}
+	apiData := api.APIConfigData{
+		DisplayName:         "cross-provider-test",
+		Context:             "/test",
+		Version:             "1.0.0",
+		AdditionalProviders: &additionalProviders,
+		Operations:          []api.Operation{{Method: api.Ptr(api.OperationMethod("GET")), Path: api.Ptr("/hello")}},
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{
+			Main: api.Upstream{Url: ptrStr("http://backend:8080")},
+		},
+	}
+	cfg := &models.StoredConfig{
+		UUID:          "cross-provider-api",
+		Kind:          string(api.RestAPIKindRestApi),
+		Configuration: api.RestAPI{Kind: api.RestAPIKindRestApi, Metadata: api.Metadata{Name: "cross-provider-api"}, Spec: apiData},
+	}
+
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, map[string]models.PolicyDefinition{})
+	_, err := transformer.Transform(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "anthropic-backup")
+}
+
 func TestRestAPITransformer_MixedSchemeUpstreamDefinition(t *testing.T) {
 	mkUpstreams := func(urls ...string) []struct {
 		Url    string `json:"url" yaml:"url"`

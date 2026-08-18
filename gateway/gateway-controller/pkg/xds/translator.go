@@ -854,31 +854,44 @@ func (t *Translator) createWeightedCluster(
 }
 
 // retrySourceTargetClusterNames resolves ONE RetryGroup's own ordered priority chain into
-// real upstreamDefinition cluster names — that group's aggregate-cluster member list. Each
-// name is the exact cluster RestAPITransformer already creates for that upstreamDefinition
-// (constants.UpstreamDefinitionClusterPrefix + kind + "_" + apiID + "_" +
-// sanitizeUpstreamDefinitionName(name)) — the SAME clusters upstreamDefinitions always
-// produce, never a new/parallel set. Every named UpstreamDefinition referenced here is
-// pre-validated to exist (config.ValidateRetrySourceUpstreamReferences), so this never needs
-// to fall back to any default. Order is preserved: index i corresponds to Envoy attempt i+1
-// — this function must never reorder or dedupe.
+// real cluster names — that group's aggregate-cluster member list. Each name is the exact
+// cluster RestAPITransformer already creates for that upstreamDefinition or additional
+// provider (constants.UpstreamDefinitionClusterPrefix + kind + "_" + apiID + "_" +
+// sanitizeUpstreamDefinitionName(name)) — the SAME clusters upstreamDefinitions/
+// additionalProviders always produce (pkg/transform/restapi.go's Transform builds an
+// additional provider's cluster via a synthetic api.UpstreamDefinition through the identical
+// resolveOrCreateUpstreamDefinitionCluster path, so the two are byte-identical in naming —
+// see gateway/spec/prds/llm-cross-provider-failover.md), never a new/parallel set. Every
+// named reference here is pre-validated to exist (config.ValidateRetrySourceUpstreamReferences
+// for UpstreamDefinitionName; AdditionalProviderName validation is a known open gap — see
+// that same design doc's Open Questions), so this never needs to fall back to any default.
+// Order is preserved: index i corresponds to Envoy attempt i+1 — this function must never
+// reorder or dedupe.
 //
 // mainClusterName is the route's own resolved main-upstream Envoy cluster name (rdc.Routes[
 // routeKey].Upstream.DefaultCluster — the same string used as both the rdc.UpstreamClusters
 // map key and the Envoy cluster's Name, see translateRuntimeConfig's cluster-building loop
-// above). An empty UpstreamDefinitionName means "this API's own main upstream", so it
-// resolves here instead of the UpstreamDefinitionClusterPrefix scheme named
-// upstreamDefinitions use.
+// above). A target with NEITHER UpstreamDefinitionName NOR AdditionalProviderName set means
+// "this API's own main upstream", so it resolves here instead of the
+// UpstreamDefinitionClusterPrefix scheme named references use. The two name fields are
+// mutually exclusive (config.ParseRetrySourceParams already rejects both being set), so
+// whichever is non-empty is resolved via the identical formula — there is nothing
+// additional-provider-specific about cluster NAME resolution, only about how that cluster
+// got built in the first place.
 func retrySourceTargetClusterNames(group policy.RetryGroup, apiKind, apiID, mainClusterName string) []string {
-	resolve := func(upstreamDef string) string {
-		if upstreamDef == "" {
+	resolve := func(target policy.RetryTarget) string {
+		name := target.UpstreamDefinitionName
+		if name == "" {
+			name = target.AdditionalProviderName
+		}
+		if name == "" {
 			return mainClusterName
 		}
-		return constants.UpstreamDefinitionClusterPrefix + apiKind + "_" + apiID + "_" + sanitizeUpstreamDefinitionName(upstreamDef)
+		return constants.UpstreamDefinitionClusterPrefix + apiKind + "_" + apiID + "_" + sanitizeUpstreamDefinitionName(name)
 	}
 	names := make([]string, 0, len(group.OrderedTargets))
 	for _, target := range group.OrderedTargets {
-		names = append(names, resolve(target.UpstreamDefinitionName))
+		names = append(names, resolve(target))
 	}
 	return names
 }

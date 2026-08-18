@@ -2960,6 +2960,15 @@ components:
           description: List of reusable upstream definitions with optional timeout configurations
           items:
             $ref: "#/components/schemas/UpstreamDefinition"
+        additionalProviders:
+          type: array
+          description: >
+            Independently-authenticated, independently-templated backends a retry-source
+            policy can fail over to. Currently only populated by the LlmProvider path (see
+            LLMProviderConfigData.additionalProviders) - resource kinds that don't carry this
+            concept simply never set it.
+          items:
+            $ref: "#/components/schemas/LLMProviderAdditionalProvider"
         upstream:
           type: object
           required:

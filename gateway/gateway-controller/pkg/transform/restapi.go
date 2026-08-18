@@ -267,6 +267,34 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 		}
 	}
 
+	// Add additional-provider clusters (see gateway/spec/prds/llm-cross-provider-failover.md) —
+	// independently-authenticated, independently-templated backends a retry-source policy's
+	// target/fallback can reference via additionalProvider: <name> instead of
+	// upstreamDefinition: <name>. Cluster-building-wise these are just upstream definitions
+	// with a different declaration source: reuse resolveOrCreateUpstreamDefinitionCluster
+	// directly via a synthetic single-URL api.UpstreamDefinition, so the cluster this produces
+	// is byte-identical in naming/shape to what a real upstreamDefinition would produce —
+	// exactly what retrySourceTargetClusterNames (xds/translator.go) relies on to resolve an
+	// AdditionalProviderName target using the SAME formula it already uses for
+	// UpstreamDefinitionName, with no new naming scheme to keep in sync.
+	if apiData.AdditionalProviders != nil {
+		for _, ap := range *apiData.AdditionalProviders {
+			if ap.Upstream.Url == nil || *ap.Upstream.Url == "" {
+				return nil, fmt.Errorf("additional provider '%s': upstream.url is required (upstream.ref is not supported for additional providers)", ap.Name)
+			}
+			syntheticDef := api.UpstreamDefinition{
+				Name: ap.Name,
+				Upstreams: []struct {
+					Url    string `json:"url" yaml:"url"`
+					Weight *int   `json:"weight,omitempty" yaml:"weight,omitempty"`
+				}{{Url: *ap.Upstream.Url}},
+			}
+			if _, err := t.resolveOrCreateUpstreamDefinitionCluster(rdc, cfg.Kind, cfg.UUID, ap.Name, syntheticDef); err != nil {
+				return nil, fmt.Errorf("additional provider '%s': %w", ap.Name, err)
+			}
+		}
+	}
+
 	// Add sandbox upstream and update sandbox routes if present
 	if hasSandbox {
 		sbUpstream, err := t.addUpstreamCluster(rdc, "sandbox", apiData.Upstream.Sandbox, apiData.UpstreamDefinitions, cfg.Kind, cfg.UUID)

@@ -52,6 +52,35 @@ func TestRetrySourceTargetClusterNames_MainAndNamedTargets(t *testing.T) {
 	}
 }
 
+// An AdditionalProviderName target resolves via the IDENTICAL formula an
+// UpstreamDefinitionName target does — the two are byte-identical in naming because
+// pkg/transform/restapi.go builds an additional provider's cluster through the same
+// resolveOrCreateUpstreamDefinitionCluster path via a synthetic UpstreamDefinition (see
+// gateway/spec/prds/llm-cross-provider-failover.md). No additional-provider-specific naming
+// scheme exists.
+func TestRetrySourceTargetClusterNames_ResolvesAdditionalProviderTargets(t *testing.T) {
+	group := policy.RetryGroup{
+		Key: "gpt-4o",
+		OrderedTargets: []policy.RetryTarget{
+			{UpstreamDefinitionName: "primary"},
+			{AdditionalProviderName: "anthropic-backup"},
+		},
+	}
+	got := retrySourceTargetClusterNames(group, "LlmProvider", "abc-123", "upstream_main_example.com_443")
+	want := []string{
+		"upstream_LlmProvider_abc-123_primary",
+		"upstream_LlmProvider_abc-123_anthropic-backup",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestRetrySourceAggregateClusterKey_MatchesSDKFormula(t *testing.T) {
 	got := RetrySourceAggregateClusterKey("LlmProvider", "abc-123", "POST|/chat/completions|main", "gpt-4o")
 	// Must be built from the SAME local-name formula policy.RetrySourceUpstreamName
