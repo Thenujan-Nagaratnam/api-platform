@@ -549,12 +549,26 @@ scope (see open questions on fidelity).
 
 ## Phasing (indicative, not a committed plan)
 
-**Done:** the generic SDK/parser foundation — `policy.RetryTarget.AdditionalProviderName` and
-`config.ParseRetrySourceParams` reading a fixed `additionalProvider` key, mutually exclusive
-with `upstreamDefinition`, shared by any `x-wso2-retry-source`-declaring policy (api-platform
-`decoupled-retry-source`, commit `430b7b0ed`). `model-failover`'s own schema/Go code and the
-`additionalProviders` resource-level schema are still unbuilt — this is purely the shared
-parsing primitive both depend on.
+**Done:**
+1. The generic SDK/parser foundation — `policy.RetryTarget.AdditionalProviderName` and
+   `config.ParseRetrySourceParams` reading a fixed `additionalProvider` key, mutually exclusive
+   with `upstreamDefinition`, shared by any `x-wso2-retry-source`-declaring policy (commit
+   `430b7b0ed`).
+2. `LlmProvider.spec.additionalProviders[]` schema — direct URL, required `template`, optional
+   `auth` (`LLMUpstreamAuth`) — deliberately not reusing `LlmProxy`'s existing field of the
+   same name (confirmed structurally incompatible with retry-source aggregate clusters, since
+   every `LlmProxy` additional-provider resolves to an identical loopback address
+   distinguished only by path, which `ValidateRetrySourceTargetsHaveNoBasePath` already
+   rejects for a 2+-target retry-source group) (commit `3c07e64aa`).
+3. Aggregate-cluster wiring — an `additionalProvider` reference now resolves to a real Envoy
+   cluster, built via the same `resolveOrCreateUpstreamDefinitionCluster` path a plain
+   `upstreamDefinition` uses, with `retrySourceTargetClusterNames` resolving both reference
+   kinds through the identical naming formula (commit `43cf6661d`).
+
+**Not yet done, and not yet started in code:** registration-time reference validation for
+`additionalProvider` (currently only fails at translation time, not registration time); the
+entire per-target auth-injection mechanism (still only designed, not built); template-based
+request/response conversion (the adapter policies themselves).
 
 1. Live spot-check the `:authority` scoping mechanism against the real upstream filter chain;
    add the `Path` field to `UpstreamAttemptRequestModifications` (SDK change) if path-located
