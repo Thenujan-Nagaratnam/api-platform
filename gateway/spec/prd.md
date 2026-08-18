@@ -12,6 +12,7 @@ Production-ready Envoy-based gateway with Go xDS control plane, providing dynami
 - [FR4: Zero-Downtime Updates](prds/zero-downtime-updates.md) – Apply configuration changes without dropping in-flight requests using graceful xDS updates.
 - [FR5: Policy Engine Integration](prds/policy-engine.md) – Policy-first architecture with authentication, authorization, rate limiting, and custom policy support.
 - [FR6: Upstream OAuth2 Authentication](prds/oauth2-upstream-auth.md) – Authenticate outbound requests to OAuth2-secured LLM providers/proxies via a first-party policy, with two-tier Redis-backed token caching.
+- [FR7: Cross-Provider Failover for LLM Requests](prds/llm-cross-provider-failover.md) – Proposed: new `LlmProvider.spec.additionalProviders[]` (independently-authenticated/templated backends, `UpstreamDefinition` itself untouched); mechanism generalized via shared SDK/parser extension so any `x-wso2-retry-source` policy gets it, not just `model-failover`. Two real gaps found via a worst-case walkthrough: path-located templates need an SDK change, and per-attempt scoping needs to key off resolved destination, not attempt number.
 
 ## Non-Functional Requirements
 
