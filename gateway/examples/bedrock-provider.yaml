@@ -25,6 +25,11 @@
 # Authorization and the value is sent verbatim, so the "Bearer " prefix MUST
 # be included here (the portal auto-prepends it; raw YAML does not). Proxies in
 # front of this provider inherit this vendor auth automatically.
+#
+# The client-facing api-key-auth policy below also uses "Authorization:
+# Bearer <key>" -- the same header/prefix a Bedrock Bearer-token client
+# already sends -- so an existing client can point at this provider by
+# changing only its base URL and key value, with no custom header to add.
 # --------------------------------------------------------------------
 
 apiVersion: gateway.api-platform.wso2.com/v1
@@ -53,13 +58,15 @@ spec:
         - path: /model/{modelId}/converse
           methods: [POST]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
         - path: /model/{modelId}/converse-stream
           methods: [POST]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
   accessControl:
     mode: deny_all
     exceptions:

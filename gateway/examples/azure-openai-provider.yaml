@@ -22,6 +22,11 @@
 #
 # Auth: upstream.auth is the gateway -> Azure vendor auth (header: api-key).
 # Proxies in front of this provider inherit this vendor auth automatically.
+#
+# The client-facing api-key-auth policy below also uses "api-key" -- the
+# same header an Azure OpenAI SDK already sends -- so an existing client
+# can point at this provider by changing only its base URL and key value,
+# with no custom header to add.
 # --------------------------------------------------------------------
 
 apiVersion: gateway.api-platform.wso2.com/v1
@@ -45,22 +50,22 @@ spec:
         - path: /openai/deployments/{deployment}/chat/completions
           methods: [POST]
           params:
-            key: X-API-Key
+            key: api-key
             in: header
         - path: /openai/deployments/{deployment}/completions
           methods: [POST]
           params:
-            key: X-API-Key
+            key: api-key
             in: header
         - path: /openai/deployments/{deployment}/embeddings
           methods: [POST]
           params:
-            key: X-API-Key
+            key: api-key
             in: header
         - path: /openai/models
           methods: [GET]
           params:
-            key: X-API-Key
+            key: api-key
             in: header
   accessControl:
     mode: deny_all

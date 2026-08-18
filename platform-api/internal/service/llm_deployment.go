@@ -677,9 +677,13 @@ func generateLLMProviderDeploymentYAML(provider *model.LLMProvider, templateHand
 				return dto.LLMProviderDeploymentYAML{}, fmt.Errorf("invalid api key security configuration: key is required")
 			}
 
+			// The api-key-auth gateway policy only implements "header" lookup
+			// today ("in" enum is header-only) -- accepting "query" here would
+			// silently deploy a security config that never actually checks the
+			// key, which is worse than rejecting it outright.
 			in := strings.ToLower(strings.TrimSpace(security.APIKey.In))
-			if in != "header" && in != "query" {
-				return dto.LLMProviderDeploymentYAML{}, fmt.Errorf("invalid api key security configuration: in must be 'header' or 'query', got %q", security.APIKey.In)
+			if in != "header" {
+				return dto.LLMProviderDeploymentYAML{}, fmt.Errorf("invalid api key security configuration: in must be 'header', got %q", security.APIKey.In)
 			}
 
 			params := map[string]interface{}{"key": key, "in": in}
@@ -1782,9 +1786,13 @@ func generateLLMProxyDeploymentYAML(proxy *model.LLMProxy) (dto.LLMProxyDeployme
 				return dto.LLMProxyDeploymentYAML{}, fmt.Errorf("invalid api key security configuration: key is required")
 			}
 
+			// The api-key-auth gateway policy only implements "header" lookup
+			// today ("in" enum is header-only) -- accepting "query" here would
+			// silently deploy a security config that never actually checks the
+			// key, which is worse than rejecting it outright.
 			in := strings.ToLower(strings.TrimSpace(security.APIKey.In))
-			if in != "header" && in != "query" {
-				return dto.LLMProxyDeploymentYAML{}, fmt.Errorf("invalid api key security configuration: in must be 'header' or 'query', got %q", security.APIKey.In)
+			if in != "header" {
+				return dto.LLMProxyDeploymentYAML{}, fmt.Errorf("invalid api key security configuration: in must be 'header', got %q", security.APIKey.In)
 			}
 
 			params := map[string]interface{}{"key": key, "in": in}

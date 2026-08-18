@@ -127,7 +127,10 @@ export function buildFullProviderRequest(
     modelProviders:
       request.modelProviders ?? buildModelProvidersFromTemplate(request.template),
     rateLimiting: {},
-    security: {
+    // Honor a security config the caller already resolved (e.g. a
+    // vendor-matching client-facing header derived from the template) --
+    // only fall back to the generic default when none was supplied.
+    security: request.security ?? {
       enabled: true,
       apiKey: {
         enabled: true,

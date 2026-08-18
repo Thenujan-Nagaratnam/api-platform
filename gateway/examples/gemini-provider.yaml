@@ -17,6 +17,11 @@
 #
 # Auth: upstream.auth is the gateway -> Gemini vendor auth
 # (header: x-goog-api-key). Proxies inherit this vendor auth automatically.
+#
+# The client-facing api-key-auth policy below also uses "x-goog-api-key" --
+# the same header a Gemini SDK already sends -- so an existing client can
+# point at this provider by changing only its base URL and key value, with
+# no custom header to add.
 # --------------------------------------------------------------------
 
 apiVersion: gateway.api-platform.wso2.com/v1
@@ -40,12 +45,12 @@ spec:
         - path: /v1beta/models/{model}:generateContent
           methods: [POST]
           params:
-            key: X-API-Key
+            key: x-goog-api-key
             in: header
         - path: /v1beta/models/{model}:streamGenerateContent
           methods: [POST]
           params:
-            key: X-API-Key
+            key: x-goog-api-key
             in: header
   accessControl:
     mode: deny_all

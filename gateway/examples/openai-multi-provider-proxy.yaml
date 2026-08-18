@@ -24,6 +24,16 @@
 #     "providerId". The "providerId" doubles as the upstream cluster
 #     name, so it must match an entry in additionalProviders (id or as).
 #
+# Client-facing auth: regardless of which backend a request fans out to,
+# the surface this proxy exposes to clients is always OpenAI-shaped
+# (/chat/completions), so the client-facing api-key-auth policy below uses
+# "Authorization: Bearer <key>" -- the same header/prefix an OpenAI SDK
+# already sends -- rather than a WSO2-specific header.
+#
+# Loopback auth: each provider/additionalProviders entry's "auth" block is
+# the proxy -> provider internal call, and its header must match that
+# provider's own client-facing convention (e.g. "api-key" for Azure OpenAI,
+# "x-api-key" for Anthropic) since it hits the same protected path/policy.
 # --------------------------------------------------------------------
 
 apiVersion: gateway.api-platform.wso2.com/v1
@@ -40,8 +50,8 @@ spec:
     id: openai-provider
     auth:
       type: api-key
-      header: X-API-Key
-      value: REPLACE_WITH_OPENAI_PROVIDER_LOOPBACK_KEY
+      header: Authorization
+      value: Bearer REPLACE_WITH_OPENAI_PROVIDER_LOOPBACK_KEY
   additionalProviders:
     - id: anthropic-provider
       # Optional alias, for when the provider id is not readable enough to use
@@ -52,7 +62,7 @@ spec:
       # as: anthropic-upstream
       auth:
         type: api-key
-        header: X-API-Key
+        header: x-api-key
         value: REPLACE_WITH_ANTHROPIC_PROVIDER_LOOPBACK_KEY
       transformer:
         type: openai-to-anthropic
@@ -62,7 +72,7 @@ spec:
     - id: azure-openai-provider
       auth:
         type: api-key
-        header: X-API-Key
+        header: api-key
         value: REPLACE_WITH_AZURE_OPENAI_PROVIDER_LOOPBACK_KEY
       transformer:
         type: openai-to-azure-openai
@@ -73,8 +83,8 @@ spec:
     - id: mistral-provider
       auth:
         type: api-key
-        header: X-API-Key
-        value: REPLACE_WITH_MISTRAL_PROVIDER_LOOPBACK_KEY
+        header: Authorization
+        value: Bearer REPLACE_WITH_MISTRAL_PROVIDER_LOOPBACK_KEY
       transformer:
         type: openai-to-mistral
         version: v1
@@ -83,7 +93,7 @@ spec:
     - id: gemini-provider
       auth:
         type: api-key
-        header: X-API-Key
+        header: x-goog-api-key
         value: REPLACE_WITH_GEMINI_PROVIDER_LOOPBACK_KEY
       transformer:
         type: openai-to-gemini
@@ -94,8 +104,8 @@ spec:
     - id: bedrock-provider
       auth:
         type: api-key
-        header: X-API-Key
-        value: REPLACE_WITH_BEDROCK_PROVIDER_LOOPBACK_KEY
+        header: Authorization
+        value: Bearer REPLACE_WITH_BEDROCK_PROVIDER_LOOPBACK_KEY
       transformer:
         type: openai-to-bedrock-transformer
         version: v1
@@ -108,8 +118,9 @@ spec:
         - path: /chat/completions
           methods: [POST]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
     - name: llm-header-router
       version: v1
       paths:
@@ -145,9 +156,11 @@ spec:
     #         backend: memory
 ---
 # Client API key for this proxy. The api-key-auth policy above validates
-# the X-API-Key header against the key the gateway issues for this resource.
-# apiKey is omitted here, so the gateway generates one. Read it from the
-# create response (POST .../llm-proxies/openai-multi/api-keys).
+# an "Authorization: Bearer <key>" header against the key the gateway
+# issues for this resource -- the same convention an OpenAI SDK already
+# uses, so no custom header is required. apiKey is omitted here, so the
+# gateway generates one. Read it from the create response
+# (POST .../llm-proxies/openai-multi/api-keys).
 apiVersion: gateway.api-platform.wso2.com/v1
 kind: ApiKey
 metadata:

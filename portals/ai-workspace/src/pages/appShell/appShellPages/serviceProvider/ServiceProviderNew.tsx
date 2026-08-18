@@ -386,12 +386,20 @@ export default function ServiceProviderNew() {
         },
       };
 
+      // Default the client-facing header to the same convention the fronted
+      // vendor itself uses (e.g. "Authorization"/"Bearer " for OpenAI,
+      // "x-api-key" for Anthropic) so an existing client SDK can be pointed
+      // at this provider by changing only the base URL and key value --
+      // not by adding a WSO2-specific header. Falls back to a generic
+      // header when the template didn't declare one (e.g. no-credential
+      // auth types).
       const security = {
         enabled: true,
         apiKey: {
           enabled: true,
-          key: 'X-API-Key',
+          key: formState.upstreamAuthHeader.trim() || 'X-API-Key',
           in: 'header' as const,
+          valuePrefix: formState.valuePrefix || '',
         },
       };
 

@@ -20,6 +20,11 @@
 #
 # Auth: upstream.auth is the gateway -> Mistral vendor auth. Proxies in
 # front of this provider inherit this vendor auth automatically.
+#
+# The client-facing api-key-auth policy below uses "Authorization: Bearer
+# <key>" -- the same header/prefix a Mistral SDK already sends -- so an
+# existing client can point at this provider by changing only its base URL
+# and key value, with no custom header to add.
 # --------------------------------------------------------------------
 
 apiVersion: gateway.api-platform.wso2.com/v1
@@ -43,18 +48,21 @@ spec:
         - path: /v1/chat/completions
           methods: [POST]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
         - path: /v1/embeddings
           methods: [POST]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
         - path: /v1/models
           methods: [GET]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
   accessControl:
     mode: deny_all
     exceptions:

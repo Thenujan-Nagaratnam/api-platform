@@ -21,6 +21,11 @@
 #
 # Auth: upstream.auth is the gateway -> Anthropic vendor auth. Proxies in
 # front of this provider inherit this vendor auth automatically.
+#
+# The client-facing api-key-auth policy below uses "x-api-key" -- the same
+# header an Anthropic SDK already sends -- so an existing client can point
+# at this provider by changing only its base URL and key value, with no
+# custom header to add.
 # --------------------------------------------------------------------
 
 apiVersion: gateway.api-platform.wso2.com/v1
@@ -45,7 +50,7 @@ spec:
         - path: /v1/messages
           methods: [POST]
           params:
-            key: X-API-Key
+            key: x-api-key
             in: header
   accessControl:
     mode: deny_all

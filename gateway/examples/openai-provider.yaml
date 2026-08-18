@@ -18,6 +18,11 @@
 # Auth: upstream.auth is the gateway -> OpenAI vendor auth. This is the
 # only auth this provider needs; proxies in front of it route freely and
 # inherit this vendor auth automatically.
+#
+# The client-facing api-key-auth policy below uses "Authorization: Bearer
+# <key>" -- the same header/prefix an OpenAI SDK already sends -- so an
+# existing client can point at this provider by changing only its base URL
+# and key value, with no custom header to add.
 # --------------------------------------------------------------------
 
 apiVersion: gateway.api-platform.wso2.com/v1
@@ -43,28 +48,33 @@ spec:
         - path: /chat/completions
           methods: [POST]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
         - path: /completions
           methods: [POST]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
         - path: /embeddings
           methods: [POST]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
         - path: /models
           methods: [GET]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
         - path: /models/{modelId}
           methods: [GET]
           params:
-            key: X-API-Key
+            key: Authorization
             in: header
+            valuePrefix: "Bearer "
   accessControl:
     mode: deny_all
     exceptions:
