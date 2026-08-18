@@ -22,14 +22,30 @@ import (
 	"time"
 )
 
-// RetryTarget is one ordered destination within a single RetryGroup.
+// RetryTarget is one ordered destination within a single RetryGroup. Exactly
+// one of UpstreamDefinitionName or AdditionalProviderName is set — the two
+// are mutually exclusive reference kinds, never both, though a RetryTarget
+// with neither set is legal (see UpstreamDefinitionName below).
+//
 // UpstreamDefinitionName must resolve to a registered upstreamDefinition on
 // the resource the declaring policy is attached to — the same primitive
 // plain upstreamDefinitions already provide, not a new one. An empty
 // UpstreamDefinitionName means "this API's own main upstream", matching the
 // existing convention plain upstreamDefinition-based routing already uses.
+// A target reached this way shares the resource's own whole-operation
+// upstream auth exactly as it always has — that sharing is expected,
+// unchanged behavior, not something this type or its consumers alter.
+//
+// AdditionalProviderName must resolve to a registered entry in the
+// resource's own additionalProviders list — an independently-authenticated,
+// independently-templated backend (see gateway/spec/prds/
+// llm-cross-provider-failover.md). Unlike UpstreamDefinitionName, this is
+// never implicitly "the main upstream" — an empty AdditionalProviderName
+// simply means "not an additional-provider target," the same as it being
+// unset.
 type RetryTarget struct {
 	UpstreamDefinitionName string
+	AdditionalProviderName string
 }
 
 // RetryGroup is one independently-selectable failover chain within a route

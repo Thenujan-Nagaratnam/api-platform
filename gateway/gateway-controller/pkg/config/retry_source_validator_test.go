@@ -102,6 +102,92 @@ func TestParseRetrySourceParams_BuildsGroupsFromStandardShape(t *testing.T) {
 	}
 }
 
+// additionalProvider is the generic, cross-provider counterpart to upstreamDefinition — see
+// gateway/spec/prds/llm-cross-provider-failover.md. This parser reads it the same way it
+// already reads upstreamDefinition: a fixed key name in the shared structural shape, not
+// itself configurable via groupKeyField/targetsField, so ANY policy declaring
+// x-wso2-retry-source gets it for free, not just model-failover.
+func TestParseRetrySourceParams_ReadsAdditionalProviderReference(t *testing.T) {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"upstreamDefinition": "fallback-1"},
+					map[string]interface{}{"additionalProvider": "anthropic-backup"},
+				},
+			},
+		},
+	}
+	decl, err := ParseRetrySourceParams(params, "model", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(decl.Groups) != 1 || len(decl.Groups[0].OrderedTargets) != 3 {
+		t.Fatalf("Groups = %+v, want 1 group with 3 ordered targets", decl.Groups)
+	}
+	primary := decl.Groups[0].OrderedTargets[0]
+	if primary.UpstreamDefinitionName != "primary" || primary.AdditionalProviderName != "" {
+		t.Errorf("OrderedTargets[0] = %+v, want plain upstreamDefinition 'primary'", primary)
+	}
+	fb1 := decl.Groups[0].OrderedTargets[1]
+	if fb1.UpstreamDefinitionName != "fallback-1" || fb1.AdditionalProviderName != "" {
+		t.Errorf("OrderedTargets[1] = %+v, want plain upstreamDefinition 'fallback-1'", fb1)
+	}
+	fb2 := decl.Groups[0].OrderedTargets[2]
+	if fb2.AdditionalProviderName != "anthropic-backup" || fb2.UpstreamDefinitionName != "" {
+		t.Errorf("OrderedTargets[2] = %+v, want AdditionalProviderName 'anthropic-backup'", fb2)
+	}
+}
+
+// A target/fallback entry declaring BOTH upstreamDefinition and additionalProvider is
+// ambiguous — the two are mutually exclusive reference kinds (see RetryTarget's own doc
+// comment in the SDK) and must be rejected outright, not silently resolved by picking one.
+func TestParseRetrySourceParams_RejectsBothUpstreamDefinitionAndAdditionalProvider(t *testing.T) {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "gpt-4o",
+				"upstreamDefinition": "primary",
+				"fallbacks": []interface{}{
+					map[string]interface{}{
+						"upstreamDefinition": "fallback-1",
+						"additionalProvider": "anthropic-backup",
+					},
+				},
+			},
+		},
+	}
+	if _, err := ParseRetrySourceParams(params, "model", ""); err == nil {
+		t.Fatal("expected an error for a fallback declaring both upstreamDefinition and additionalProvider, got nil")
+	}
+}
+
+// The primary target[i] entry (not just fallbacks[]) can also reference an additionalProvider
+// — nothing in the shape restricts additionalProvider to fallback-only.
+func TestParseRetrySourceParams_AdditionalProviderOnPrimaryTarget(t *testing.T) {
+	params := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":              "claude-3-5-sonnet",
+				"additionalProvider": "anthropic-primary",
+			},
+		},
+	}
+	decl, err := ParseRetrySourceParams(params, "model", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(decl.Groups) != 1 || len(decl.Groups[0].OrderedTargets) != 1 {
+		t.Fatalf("Groups = %+v, want 1 group with 1 ordered target", decl.Groups)
+	}
+	got := decl.Groups[0].OrderedTargets[0]
+	if got.AdditionalProviderName != "anthropic-primary" || got.UpstreamDefinitionName != "" {
+		t.Errorf("OrderedTargets[0] = %+v, want AdditionalProviderName 'anthropic-primary'", got)
+	}
+}
+
 func TestParseRetrySourceParams_RejectsMissingTargets(t *testing.T) {
 	_, err := ParseRetrySourceParams(map[string]interface{}{"statusCodes": []interface{}{500}}, "model", "")
 	if err == nil {

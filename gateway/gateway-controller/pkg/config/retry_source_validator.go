@@ -282,19 +282,42 @@ func ValidateRetrySourcesForOperations(spec *api.APIConfigData, resolveDeclarati
 	return nil
 }
 
+// buildRetryTarget reads the two mutually-exclusive reference kinds a single
+// targets[]/fallbacks[] entry may declare — upstreamDefinition (a
+// same-provider backend sharing this resource's own whole-operation upstream
+// auth, unchanged, existing behavior) or additionalProvider (an
+// independently-authenticated, independently-templated backend — see
+// gateway/spec/prds/llm-cross-provider-failover.md). Both are fixed key
+// names in the shared structural shape ParseRetrySourceParams already reads,
+// not themselves configurable via groupKeyField/targetsField, exactly like
+// upstreamDefinition always has been — so this works identically for any
+// policy declaring x-wso2-retry-source, not just model-failover. entryDesc
+// is a human-readable path (e.g. "targets[1].fallbacks[0]") for error
+// messages only.
+func buildRetryTarget(entry map[string]interface{}, entryDesc string) (policy.RetryTarget, error) {
+	upstreamDef, _ := entry["upstreamDefinition"].(string)
+	additionalProvider, _ := entry["additionalProvider"].(string)
+	if upstreamDef != "" && additionalProvider != "" {
+		return policy.RetryTarget{}, fmt.Errorf(
+			"retry-source policy: %s declares both upstreamDefinition and additionalProvider — these are mutually exclusive", entryDesc)
+	}
+	return policy.RetryTarget{UpstreamDefinitionName: upstreamDef, AdditionalProviderName: additionalProvider}, nil
+}
+
 // ParseRetrySourceParams generically parses a policy's params into a
 // RetrySourceDeclaration, for ANY policy whose policy-definition.yaml
 // declares x-wso2-retry-source — driven entirely by the fixed structural
-// shape (<targetsField>: [{<groupKeyField>: string, upstreamDefinition:
-// string, fallbacks: [{upstreamDefinition: string}]}]) plus the
-// caller-supplied groupKeyField/targetsField (from that policy's own
+// shape (<targetsField>: [{<groupKeyField>: string, upstreamDefinition|
+// additionalProvider: string, fallbacks: [{upstreamDefinition|
+// additionalProvider: string}]}]) plus the caller-supplied
+// groupKeyField/targetsField (from that policy's own
 // models.RetrySourceMetadata). gateway-controller never executes policy Go
 // code to produce this — see the design's Design Revision 2 for why. Fields
 // in each targets[]/fallbacks[] entry other than
-// groupKeyField/upstreamDefinition (e.g. model-failover's own
-// fallbacks[].model, used to rewrite the request body — a concern entirely
-// internal to that policy's own runtime code) are ignored here; this
-// parser only extracts what gateway-controller itself needs to build
+// groupKeyField/upstreamDefinition/additionalProvider (e.g. model-failover's
+// own fallbacks[].model, used to rewrite the request body — a concern
+// entirely internal to that policy's own runtime code) are ignored here;
+// this parser only extracts what gateway-controller itself needs to build
 // Envoy config.
 //
 // Retriable status codes are deliberately NOT read here: WHAT to retry on is
@@ -321,8 +344,11 @@ func ParseRetrySourceParams(params map[string]interface{}, groupKeyField, target
 		if key == "" {
 			return nil, fmt.Errorf("retry-source policy: targets[%d].%s is required", i, groupKeyField)
 		}
-		upstreamDef, _ := t["upstreamDefinition"].(string)
-		orderedTargets := []policy.RetryTarget{{UpstreamDefinitionName: upstreamDef}}
+		target, err := buildRetryTarget(t, fmt.Sprintf("targets[%d]", i))
+		if err != nil {
+			return nil, err
+		}
+		orderedTargets := []policy.RetryTarget{target}
 
 		rawFallbacks, _ := t["fallbacks"].([]interface{})
 		for j, rawFb := range rawFallbacks {
@@ -330,8 +356,11 @@ func ParseRetrySourceParams(params map[string]interface{}, groupKeyField, target
 			if !ok {
 				return nil, fmt.Errorf("retry-source policy: targets[%d].fallbacks[%d] is not an object", i, j)
 			}
-			fbUpstreamDef, _ := fb["upstreamDefinition"].(string)
-			orderedTargets = append(orderedTargets, policy.RetryTarget{UpstreamDefinitionName: fbUpstreamDef})
+			fbTarget, err := buildRetryTarget(fb, fmt.Sprintf("targets[%d].fallbacks[%d]", i, j))
+			if err != nil {
+				return nil, err
+			}
+			orderedTargets = append(orderedTargets, fbTarget)
 		}
 
 		groups = append(groups, policy.RetryGroup{Key: key, OrderedTargets: orderedTargets})
