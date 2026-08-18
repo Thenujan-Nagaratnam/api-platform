@@ -4359,6 +4359,18 @@ components:
           description: List of reusable upstream definitions with optional timeout configurations. Referenced by upstream.ref.
           items:
             $ref: "#/components/schemas/UpstreamDefinition"
+        additionalProviders:
+          type: array
+          description: >
+            Independently-authenticated, independently-templated backends a retry-source
+            policy (e.g. model-failover) can fail over to via its own targets[].fallbacks[]
+            additionalProvider field, instead of a same-provider upstreamDefinition. Unlike
+            upstreamDefinitions (a same-provider backend that shares this API's own
+            upstream.auth), each entry here is a genuinely different provider - its own
+            direct URL, its own wire-format template, its own credential - see
+            gateway/spec/prds/llm-cross-provider-failover.md.
+          items:
+            $ref: "#/components/schemas/LLMProviderAdditionalProvider"
         upstream:
           allOf:
             - $ref: "#/components/schemas/Upstream"
@@ -4614,6 +4626,46 @@ components:
           type: object
           description: Translator-specific parameters (for example model, apiVersion).
           additionalProperties: true
+
+    LLMProviderAdditionalProvider:
+      type: object
+      required:
+        - name
+        - upstream
+        - template
+      description: >
+        A genuinely different provider a retry-source policy's target/fallback can
+        reference (via additionalProvider: <name>) instead of a same-provider
+        upstreamDefinition - see gateway/spec/prds/llm-cross-provider-failover.md.
+        Distinguished from UpstreamDefinition by carrying its own template and
+        (optionally) its own credential, rather than sharing this API's own
+        upstream.auth.
+      properties:
+        name:
+          type: string
+          description: Unique identifier for this additional provider, referenced by targets[].fallbacks[].additionalProvider.
+          minLength: 1
+          maxLength: 100
+          pattern: '^[a-zA-Z0-9\-_]+$'
+          example: anthropic-backup
+        upstream:
+          $ref: "#/components/schemas/Upstream"
+        template:
+          type: string
+          description: >
+            This provider's own wire-format template (e.g. anthropic, awsbedrock) - may
+            differ from this LlmProvider's own template. Required: unlike upstream.auth,
+            there is no implicit "same as the API's own template" default, since the whole
+            point of this type is that it may differ.
+          example: anthropic
+        auth:
+          $ref: "#/components/schemas/LLMUpstreamAuth"
+          description: >
+            This provider's own credential. Optional - omit only if this backend
+            genuinely needs no authentication; there is no fallback to this API's own
+            upstream.auth (a different provider almost always needs a different
+            credential, so silently reusing the primary's would be actively wrong more
+            often than it would be convenient).
 
     LLMAccessControl:
       type: object
