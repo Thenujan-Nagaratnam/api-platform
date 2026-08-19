@@ -39,6 +39,23 @@ type RetrySourceMetadata struct {
 	TargetsField string `json:"targetsField,omitempty" yaml:"targetsField,omitempty"`
 }
 
+// UpstreamAttemptMetadata is a policy-definition.yaml's x-wso2-upstream-attempt
+// declaration — an explicit, per-policy-type opt-in for what this policy needs on the
+// per-attempt upstream ext_proc phase, beyond the always-free headers phase (any
+// retry-configured route's cluster already gets that one for free — see
+// collectClustersNeedingUpstreamFilter).
+type UpstreamAttemptMetadata struct {
+	// Body is true when this policy needs UpstreamAttemptContext.Body populated on
+	// OnUpstreamAttemptRequest — i.e. it may return a body mutation for a same-endpoint retry
+	// attempt. Off by default: buffering the request body has a real cost on every attempt,
+	// so only a policy that actually mutates it should turn this on. Applies to ANY
+	// retry-configured route this policy is attached to; a retry-source/aggregate-cluster
+	// route already gets body buffering unconditionally regardless of this flag (see
+	// collectClustersNeedingUpstreamBodyFilter) — this flag only widens the same-endpoint
+	// case.
+	Body bool `json:"body,omitempty" yaml:"body,omitempty"`
+}
+
 // PolicyDefinition represents the definition/schema of a policy
 type PolicyDefinition struct {
 	Name             string                  `json:"name" yaml:"name"`
@@ -64,4 +81,8 @@ type PolicyDefinition struct {
 	// policy-definition.yaml declares x-wso2-upstream-response-observer:
 	// true — see Task 8.
 	UpstreamResponseObserver bool `json:"x-wso2-upstream-response-observer,omitempty" yaml:"x-wso2-upstream-response-observer,omitempty"`
+
+	// UpstreamAttempt is non-nil when this policy's policy-definition.yaml declares
+	// x-wso2-upstream-attempt.
+	UpstreamAttempt *UpstreamAttemptMetadata `json:"x-wso2-upstream-attempt,omitempty" yaml:"x-wso2-upstream-attempt,omitempty"`
 }

@@ -1009,10 +1009,14 @@ func (t *Translator) TranslateConfigs(
 	// createRouteFromRDC) paths — both already emit RouteAction.RetryPolicy identically.
 	clustersNeedingUpstreamFilter := make(map[string]bool)
 
-	// clustersNeedingUpstreamBodyFilter is the model-failover-specific counterpart to
-	// clustersNeedingUpstreamFilter above — a strictly separate set (see
-	// collectClustersNeedingUpstreamBodyFilter), so a cluster is never marked in both and
-	// never receives two upstream ext_proc filters.
+	// clustersNeedingUpstreamBodyFilter is a strictly separate set from
+	// clustersNeedingUpstreamFilter above, so a cluster is never marked in both and never
+	// receives two upstream ext_proc filters. Fed from two sources: unconditionally, every
+	// model-failover/retry-source aggregate cluster (collectClustersNeedingUpstreamBodyFilter),
+	// and, opt-in, any same-endpoint retry-configured cluster whose policy chain explicitly
+	// declares x-wso2-upstream-attempt: {body: true} (collectClustersNeedingUpstreamAttemptBodyFilter)
+	// — a plain resilience.retry route never gets body buffering unless a policy on it asks
+	// for it.
 	clustersNeedingUpstreamBodyFilter := make(map[string]bool)
 
 	// clustersNeedingUpstreamResponseObserver accumulates, across every deployed
@@ -1046,9 +1050,16 @@ func (t *Translator) TranslateConfigs(
 		var clusterList []*cluster.Cluster
 		var err error
 
+		// rdc is hoisted out of the transformer-path if-block below (rather than declared
+		// with := inside it) so collectClustersNeedingUpstreamAttemptBodyFilter, called after
+		// routesList is finalized, can still reach this config's PolicyChains — nil on the
+		// legacy path, where there is no PolicyChains to walk.
+		var rdc *models.RuntimeDeployConfig
+
 		// Try RuntimeDeployConfig transformer path first (produces minimal metadata routes)
 		if transformer, ok := t.transformers[cfg.Kind]; ok {
-			rdc, transformErr := transformer.Transform(cfg)
+			var transformErr error
+			rdc, transformErr = transformer.Transform(cfg)
 			if transformErr != nil {
 				log.Error("Failed to transform config via RuntimeDeployConfig, falling back to legacy path",
 					slog.String("id", cfg.UUID),
@@ -1108,6 +1119,17 @@ func (t *Translator) TranslateConfigs(
 		}
 		collectClustersNeedingUpstreamFilter(routesList, clustersNeedingUpstreamFilter)
 		collectClustersNeedingUpstreamBodyFilter(routesList, clustersNeedingUpstreamBodyFilter)
+		// Opt-in counterpart to the implicit rule above: a PLAIN same-endpoint
+		// resilience.retry route's cluster only gets body buffering when a policy on its
+		// chain explicitly declares x-wso2-upstream-attempt: {body: true} — see
+		// collectClustersNeedingUpstreamAttemptBodyFilter. Reuses clustersNeedingUpstreamFilter
+		// (already accumulated by the call just above, for this same routesList) as the
+		// "is this route even retry-configured" gate, so the two collectors can never disagree
+		// about which routes are retry-configured. rdc is nil on the legacy (non-RDC) path,
+		// which carries no PolicyChains and so has nothing for this collector to walk.
+		if rdc != nil {
+			collectClustersNeedingUpstreamAttemptBodyFilter(rdc, t.policyDefinitions, t.latestVersions, clustersNeedingUpstreamFilter, clustersNeedingUpstreamBodyFilter)
+		}
 	}
 
 	if err := t.attachUpstreamRefreshFilter(clusterMap, clustersNeedingUpstreamFilter); err != nil {
@@ -1407,9 +1429,12 @@ func collectClustersNeedingUpstreamFilter(routes []*route.Route, dest map[string
 // collectClustersNeedingUpstreamBodyFilter is the model-failover-specific counterpart to
 // collectClustersNeedingUpstreamFilter above — deliberately a SEPARATE set, never merged
 // into it (a cluster must never receive two upstream ext_proc filters). A plain
-// resilience.retry route's cluster must never get RequestBodyMode: BUFFERED (unnecessary
-// buffering cost); only a route whose RetryPolicy carries RetryPriority — which only
-// model-failover routes ever set, via buildModelFailoverRetryPolicy — is marked here.
+// resilience.retry route's cluster must never get RequestBodyMode: BUFFERED automatically
+// (unnecessary buffering cost); only a route whose RetryPolicy carries RetryPriority — which
+// only model-failover routes ever set, via buildModelFailoverRetryPolicy — is marked here
+// unconditionally. A same-endpoint route's cluster can still land in this same dest map, but
+// only via the explicit, per-policy opt-in in collectClustersNeedingUpstreamAttemptBodyFilter
+// below — never implicitly, and never from this function.
 func collectClustersNeedingUpstreamBodyFilter(routes []*route.Route, dest map[string]bool) {
 	for _, r := range routes {
 		ra := r.GetRoute()
@@ -1418,6 +1443,49 @@ func collectClustersNeedingUpstreamBodyFilter(routes []*route.Route, dest map[st
 		}
 		if clusterName := ra.GetCluster(); clusterName != "" {
 			dest[clusterName] = true
+		}
+	}
+}
+
+// collectClustersNeedingUpstreamAttemptBodyFilter is the general-purpose, opt-in counterpart
+// to collectClustersNeedingUpstreamBodyFilter's implicit, retry-source-only rule: it marks, in
+// dest, the name of every statically-specified cluster backing a route that BOTH (a) carries a
+// native RetryPolicy at all (retryConfiguredClusters — the same set
+// collectClustersNeedingUpstreamFilter populates; this capability only ever applies to a retry
+// attempt, so a non-retrying route's cluster is never marked here even if a policy on its
+// chain declares the flag) and (b) has a policy chain containing a policy that DECLARES
+// x-wso2-upstream-attempt: {body: true} in its own policy-definition.yaml — an explicit,
+// per-policy-type opt-in (config.LookupUpstreamAttemptBody), discovered generically via cached
+// metadata, never by policy name. Body buffering is deliberately NOT automatic for every
+// retry-configured route (that cost is real — see collectClustersNeedingUpstreamBodyFilter's
+// own comment); a policy that never mutates the outgoing body should never pay it.
+//
+// dest is the SAME map collectClustersNeedingUpstreamBodyFilter writes into — a cluster
+// reached via either path gets exactly one body-buffering filter attached, same as today, with
+// no new attach/collect machinery needed downstream. Mirrors
+// collectClustersNeedingUpstreamResponseObserver's shape (walks rdc.PolicyChains/rdc.Routes
+// directly, since this capability has no Envoy RouteAction field to detect post-hoc, and skips
+// a dynamic cluster_header route for the same reason: that cluster identity resolves only
+// per-request, unavailable at xDS-build time).
+func collectClustersNeedingUpstreamAttemptBodyFilter(rdc *models.RuntimeDeployConfig, policyDefinitions map[string]models.PolicyDefinition, latestVersions map[string]string, retryConfiguredClusters map[string]bool, dest map[string]bool) {
+	for routeKey, chain := range rdc.PolicyChains {
+		if chain == nil {
+			continue
+		}
+		rdcRoute, ok := rdc.Routes[routeKey]
+		if !ok || rdcRoute.Upstream.UseClusterHeader {
+			continue
+		}
+		clusterName := rdcRoute.Upstream.ClusterKey
+		if clusterName == "" || !retryConfiguredClusters[clusterName] {
+			continue
+		}
+		for _, p := range chain.Policies {
+			if !config.LookupUpstreamAttemptBody(policyDefinitions, latestVersions, p.Name, p.Version) {
+				continue
+			}
+			dest[clusterName] = true
+			break
 		}
 	}
 }
