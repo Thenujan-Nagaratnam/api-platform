@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="1" time="1.148">
+  <testsuite name="32 - LlmProxy: Registration-time rejection when a fallback-having group defaults to main / Reject: target has a fallback and defaults its own primary to main - an LlmProxy's main is ALSO loopback+path-based" id="288e1abf-469d-41b8-a598-55185db1df41" timestamp="2026-08-18T03:14:19.930Z" tests="2" failures="0" errors="0" time="1.148">
+    <testcase name="status is 4xx, not 201" time="1.148" classname="32LlmProxyRegistrationTimeRejectionWhenAFallbackHavingGroupDefaultsToMainRejectTargetHasAFallbackAndDefaultsItsOwnPrimaryToMainAnLlmProxysMainIsAlsoLoopbackPathBased"/>
+    <testcase name="error message explains the basePath/aggregate-cluster conflict, and names main explicitly" time="1.148" classname="32LlmProxyRegistrationTimeRejectionWhenAFallbackHavingGroupDefaultsToMainRejectTargetHasAFallbackAndDefaultsItsOwnPrimaryToMainAnLlmProxysMainIsAlsoLoopbackPathBased"/>
+  </testsuite>
+</testsuites>

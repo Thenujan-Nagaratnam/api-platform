@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="13" time="1.157">
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / op1 (/chat/completions): gpt-4o -> its OWN primary (backend A)" id="a33d9c31-96e9-46cd-a892-45135fb882b8" timestamp="2026-08-18T08:08:28.514Z" tests="1" failures="0" errors="0" time="0.035">
+    <testcase name="status is 200" time="0.035" classname="16LlmProviderMultiOperationRouteScopingNoCollisionNoCrossOpSuspendLeakOp1ChatCompletionsGpt4OItsOwnPrimaryBackendA"/>
+  </testsuite>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Verify backend A (not B) received op1's request" id="9cd12429-632a-46f2-bf76-8b71938a8040" timestamp="2026-08-18T08:08:28.514Z" tests="1" failures="0" errors="0" time="0.002">
+    <testcase name="backend A was dialed" time="0.002" classname="16LlmProviderMultiOperationRouteScopingNoCollisionNoCrossOpSuspendLeakVerifyBackendANotBReceivedOp1SRequest"/>
+  </testsuite>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Reset backend A and B" id="9e4e49fe-2b44-4b06-b3fc-1a4678c7f80d" timestamp="2026-08-18T08:08:28.514Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Reset backend B" id="07513821-444b-4a8c-a5a1-f77dfd3de5c8" timestamp="2026-08-18T08:08:28.514Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / op2 (/other-chat/completions): gpt-4o -> its OWN primary (backend B, the OPPOSITE mapping from op1)" id="5e4a4e62-644b-4af3-bc7f-8ddabaca4344" timestamp="2026-08-18T08:08:28.514Z" tests="1" failures="0" errors="0" time="0.023">
+    <testcase name="status is 200" time="0.023" classname="16LlmProviderMultiOperationRouteScopingNoCollisionNoCrossOpSuspendLeakOp2OtherChatCompletionsGpt4OItsOwnPrimaryBackendBTheOppositeMappingFromOp1"/>
+  </testsuite>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Verify backend B (not A) received op2's request - proves route-scoped cluster naming, no collision with op1" id="4ba40e87-0e1a-4b1a-a29f-e0b55c603023" timestamp="2026-08-18T08:08:28.514Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend B was dialed for op2, matching its OWN config" time="0.001" classname="16LlmProviderMultiOperationRouteScopingNoCollisionNoCrossOpSuspendLeakVerifyBackendBNotAReceivedOp2SRequestProvesRouteScopedClusterNamingNoCollisionWithOp1"/>
+  </testsuite>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Reset backend A" id="7d7f7b13-86b6-404e-ac94-987d2905aa6b" timestamp="2026-08-18T08:08:28.514Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Force backend A to fail" id="365e9761-456c-47d9-a46a-0bc36e1a8df1" timestamp="2026-08-18T08:08:28.514Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Suspend op1's primary (backend A) via a forced failure" id="e56ebc08-389e-44d0-ad73-f8d485dfa8c6" timestamp="2026-08-18T08:08:28.514Z" tests="1" failures="0" errors="0" time="0.021">
+    <testcase name="status is 200 via op1 fallback" time="0.021" classname="16LlmProviderMultiOperationRouteScopingNoCollisionNoCrossOpSuspendLeakSuspendOp1SPrimaryBackendAViaAForcedFailure"/>
+  </testsuite>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Reset backend B" id="b69322bc-7a90-4bb5-9e92-bd0247d3cafb" timestamp="2026-08-18T08:08:28.514Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / op2 again: gpt-4o must STILL resolve to backend B - completely unaffected by op1's suspend on backend A" id="8ae6468a-fdda-41a0-92b1-bb6cebab30d3" timestamp="2026-08-18T08:08:28.514Z" tests="1" failures="0" errors="0" time="0.006">
+    <testcase name="status is 200" time="0.006" classname="16LlmProviderMultiOperationRouteScopingNoCollisionNoCrossOpSuspendLeakOp2AgainGpt4OMustStillResolveToBackendBCompletelyUnaffectedByOp1SSuspendOnBackendA"/>
+  </testsuite>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Verify backend B received op2's request, unaffected by op1's suspend state" id="aa77bf44-6f8e-4421-8f49-d9e5efc4793a" timestamp="2026-08-18T08:08:28.514Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend B was dialed - op2 is fully independent of op1" time="0.001" classname="16LlmProviderMultiOperationRouteScopingNoCollisionNoCrossOpSuspendLeakVerifyBackendBReceivedOp2SRequestUnaffectedByOp1SSuspendState"/>
+  </testsuite>
+  <testsuite name="16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak) / Cleanup: delete mf-multi-op-test" id="f0be3f8b-272f-4de5-b9cc-0d147af82a45" timestamp="2026-08-18T08:08:28.514Z" tests="0" failures="0" errors="0" time="1.064"/>
+</testsuites>

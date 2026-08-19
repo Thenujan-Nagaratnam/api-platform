@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="AI Gateway - oauth2 policy" tests="3" time="0.479">
+  <testsuite name="E.27 - tlsCaCertPath / tlsInsecureSkipVerify / Send request (tlsCaCertPath trusts the private CA)" id="c28dd753-6595-4f30-b8c7-99dfbc0c9f81" timestamp="2026-08-18T08:02:49.889Z" tests="2" failures="0" errors="0" time="0.037">
+    <testcase name="status is 200" time="0.037" classname="E27TlsCaCertPathTlsInsecureSkipVerifySendRequestTlsCaCertPathTrustsThePrivateCa"/>
+    <testcase name="content shows an injected bearer token" time="0.037" classname="E27TlsCaCertPathTlsInsecureSkipVerifySendRequestTlsCaCertPathTrustsThePrivateCa"/>
+  </testsuite>
+  <testsuite name="E.27 - tlsCaCertPath / tlsInsecureSkipVerify / Send request (tlsInsecureSkipVerify skips verification)" id="c3345b8b-8f39-4a01-85a5-41587865e846" timestamp="2026-08-18T08:02:49.889Z" tests="2" failures="0" errors="0" time="0.006">
+    <testcase name="status is 200" time="0.006" classname="E27TlsCaCertPathTlsInsecureSkipVerifySendRequestTlsInsecureSkipVerifySkipsVerification"/>
+    <testcase name="content shows an injected bearer token" time="0.006" classname="E27TlsCaCertPathTlsInsecureSkipVerifySendRequestTlsInsecureSkipVerifySkipsVerification"/>
+  </testsuite>
+  <testsuite name="E.27 - tlsCaCertPath / tlsInsecureSkipVerify / Send request (untrusted cert, expect 502)" id="d2009d54-ed87-4adb-98c1-7b29a074d8ad" timestamp="2026-08-18T08:02:49.889Z" tests="1" failures="0" errors="0" time="0.436">
+    <testcase name="status is 502 (untrusted self-signed cert rejected)" time="0.436" classname="E27TlsCaCertPathTlsInsecureSkipVerifySendRequestUntrustedCertExpect502"/>
+  </testsuite>
+</testsuites>

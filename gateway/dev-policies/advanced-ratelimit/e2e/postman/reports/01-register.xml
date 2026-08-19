@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="AI Gateway - advanced-ratelimit redis precedence" tests="1" time="1.195">
+  <testsuite name="01 - Register Test API / Register ratelimit-test-precedence" id="c03d9fec-9bb8-4b54-be12-06f730c5178e" timestamp="2026-08-13T09:03:44.854Z" tests="1" failures="0" errors="0" time="1.195">
+    <testcase name="status is 200 or 201" time="1.195" classname="01RegisterTestApiRegisterRatelimitTestPrecedence"/>
+  </testsuite>
+</testsuites>

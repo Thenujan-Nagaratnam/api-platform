@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="24" time="0.123">
+  <testsuite name="02 - LlmProvider: Baseline routing (no failure) / gpt-4o -> primary (backend A)" id="763de264-82bc-41e6-bd8b-68501e963b6b" timestamp="2026-08-18T08:07:43.578Z" tests="2" failures="0" errors="0" time="0.035">
+    <testcase name="status is 200" time="0.035" classname="02LlmProviderBaselineRoutingNoFailureGpt4OPrimaryBackendA"/>
+    <testcase name="model unchanged on the happy path" time="0.035" classname="02LlmProviderBaselineRoutingNoFailureGpt4OPrimaryBackendA"/>
+  </testsuite>
+  <testsuite name="02 - LlmProvider: Baseline routing (no failure) / Verify backend A received the request" id="038185f0-d923-495d-be74-8496c21e5e80" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend A was dialed" time="0.001" classname="02LlmProviderBaselineRoutingNoFailureVerifyBackendAReceivedTheRequest"/>
+  </testsuite>
+  <testsuite name="02 - LlmProvider: Baseline routing (no failure) / claude-3-5-sonnet -> anthropic-primary (backend C)" id="01f2f6bc-bfc7-42a2-acb8-e8062979ef8f" timestamp="2026-08-18T08:07:43.578Z" tests="2" failures="0" errors="0" time="0.006">
+    <testcase name="status is 200" time="0.006" classname="02LlmProviderBaselineRoutingNoFailureClaude35SonnetAnthropicPrimaryBackendC"/>
+    <testcase name="model unchanged on the happy path" time="0.006" classname="02LlmProviderBaselineRoutingNoFailureClaude35SonnetAnthropicPrimaryBackendC"/>
+  </testsuite>
+  <testsuite name="02 - LlmProvider: Baseline routing (no failure) / Verify backend C received the request" id="615ca50a-8f9e-4f62-a6c9-ae43de97c860" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend C was dialed" time="0.001" classname="02LlmProviderBaselineRoutingNoFailureVerifyBackendCReceivedTheRequest"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Cross-cluster failover with per-attempt model rewrite / Reset backend A (clear last-request + force-status)" id="34952a10-cf4c-4459-9d15-8eaeb49e6fe0" timestamp="2026-08-18T08:07:43.578Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="03 - LlmProvider: Cross-cluster failover with per-attempt model rewrite / Force backend A (primary) to fail" id="90d8d25b-598b-4785-b7df-4be008b89126" timestamp="2026-08-18T08:07:43.578Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="03 - LlmProvider: Cross-cluster failover with per-attempt model rewrite / Invoke gpt-4o - expect clean 200 via fallback, model rewritten to gpt-4o-mini" id="e67119e5-4124-4c5c-9057-3fbff92c5f52" timestamp="2026-08-18T08:07:43.578Z" tests="2" failures="0" errors="0" time="0.036">
+    <testcase name="status is 200 despite primary failing" time="0.036" classname="03LlmProviderCrossClusterFailoverWithPerAttemptModelRewriteInvokeGpt4OExpectClean200ViaFallbackModelRewrittenToGpt4OMini"/>
+    <testcase name="per-attempt body rewrite: model became gpt-4o-mini" time="0.036" classname="03LlmProviderCrossClusterFailoverWithPerAttemptModelRewriteInvokeGpt4OExpectClean200ViaFallbackModelRewrittenToGpt4OMini"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Cross-cluster failover with per-attempt model rewrite / Verify backend B (fallback) received the rewritten model" id="5bf52382-83c9-426b-8096-8659a9277dc7" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.002">
+    <testcase name="backend B was dialed with the rewritten model" time="0.002" classname="03LlmProviderCrossClusterFailoverWithPerAttemptModelRewriteVerifyBackendBFallbackReceivedTheRewrittenModel"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Cross-cluster failover with per-attempt model rewrite / Verify backend A's own attempt kept the ORIGINAL model (never the fallback's)" id="9e975970-249b-4920-90b4-fbe0b08a6c1b" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend A's single attempt still shows gpt-4o, not gpt-4o-mini" time="0.001" classname="03LlmProviderCrossClusterFailoverWithPerAttemptModelRewriteVerifyBackendAsOwnAttemptKeptTheOriginalModelNeverTheFallbacks"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Cross-cluster failover with per-attempt model rewrite / Group independence: claude-3-5-sonnet is completely unaffected by group A's failure" id="a3b20675-4489-4cd2-a064-930575521976" timestamp="2026-08-18T08:07:43.578Z" tests="2" failures="0" errors="0" time="0.008">
+    <testcase name="status is 200" time="0.008" classname="03LlmProviderCrossClusterFailoverWithPerAttemptModelRewriteGroupIndependenceClaude35SonnetIsCompletelyUnaffectedByGroupAsFailure"/>
+    <testcase name="unrelated target group still resolves to its OWN primary, unaffected by a sibling group failing" time="0.008" classname="03LlmProviderCrossClusterFailoverWithPerAttemptModelRewriteGroupIndependenceClaude35SonnetIsCompletelyUnaffectedByGroupAsFailure"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Cross-cluster failover with per-attempt model rewrite / Verify backend C (anthropic primary) received the untouched request" id="932d4876-8dad-4c64-94c6-2fc69a909dd8" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend C was dialed, not D" time="0.001" classname="03LlmProviderCrossClusterFailoverWithPerAttemptModelRewriteVerifyBackendCAnthropicPrimaryReceivedTheUntouchedRequest"/>
+  </testsuite>
+  <testsuite name="04 - LlmProvider: Suspend skip-ahead / Reset backend A (clear last-request only, keep force-status active)" id="d807d17b-27f7-4c89-8c13-41f8f902a67e" timestamp="2026-08-18T08:07:43.578Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="04 - LlmProvider: Suspend skip-ahead / Force backend A to fail again" id="ae8b9cc7-c315-4c7a-9258-f7a51753407a" timestamp="2026-08-18T08:07:43.578Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="04 - LlmProvider: Suspend skip-ahead / Invoke again - expect UpstreamName skip-ahead straight to the fallback" id="89ba0c4d-99ae-4896-a8e3-1147a34461de" timestamp="2026-08-18T08:07:43.578Z" tests="2" failures="0" errors="0" time="0.007">
+    <testcase name="status is 200" time="0.007" classname="04LlmProviderSuspendSkipAheadInvokeAgainExpectUpstreamNameSkipAheadStraightToTheFallback"/>
+    <testcase name="resolved straight to the fallback model" time="0.007" classname="04LlmProviderSuspendSkipAheadInvokeAgainExpectUpstreamNameSkipAheadStraightToTheFallback"/>
+  </testsuite>
+  <testsuite name="04 - LlmProvider: Suspend skip-ahead / Verify backend A was never dialed (suspend skip-ahead proof)" id="b3c087d2-cf13-4e62-b972-b669d9ce72d2" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.000">
+    <testcase name="backend A last-request is empty - it was skipped entirely, not just failed again" time="0.000" classname="04LlmProviderSuspendSkipAheadVerifyBackendAWasNeverDialedSuspendSkipAheadProof"/>
+  </testsuite>
+  <testsuite name="05 - LlmProvider: Unmatched model passes through untouched / Reset backend A" id="e202d28e-10a2-431b-95bd-eef1a7f78a55" timestamp="2026-08-18T08:07:43.578Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="05 - LlmProvider: Unmatched model passes through untouched / Invoke with a model no target group declares" id="41c44383-c7bf-4a85-a8b0-1e3ce33af091" timestamp="2026-08-18T08:07:43.578Z" tests="2" failures="0" errors="0" time="0.007">
+    <testcase name="status is 200 - falls through to the plain main upstream, no failover applied" time="0.007" classname="05LlmProviderUnmatchedModelPassesThroughUntouchedInvokeWithAModelNoTargetGroupDeclares"/>
+    <testcase name="model name is completely unchanged" time="0.007" classname="05LlmProviderUnmatchedModelPassesThroughUntouchedInvokeWithAModelNoTargetGroupDeclares"/>
+  </testsuite>
+  <testsuite name="05 - LlmProvider: Unmatched model passes through untouched / Verify backend A (main upstream) received the request byte-for-byte unmodified" id="7b4a3375-57b0-487c-a1c3-eff1d82c2aee" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="body was never touched by model-failover" time="0.001" classname="05LlmProviderUnmatchedModelPassesThroughUntouchedVerifyBackendAMainUpstreamReceivedTheRequestByteForByteUnmodified"/>
+  </testsuite>
+  <testsuite name="06 - LlmProvider: Unmatched model passthrough is unaffected by an unrelated suspend / Reset backend A" id="04c8c172-4941-4390-9189-ffdf2126847b" timestamp="2026-08-18T08:07:43.578Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: Unmatched model passthrough is unaffected by an unrelated suspend / Force backend A to fail" id="1a56920d-3a1f-4ee8-ba0f-0629d05afe58" timestamp="2026-08-18T08:07:43.578Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: Unmatched model passthrough is unaffected by an unrelated suspend / Trigger gpt-4o failover (records a suspend for backend A within this group)" id="9d318330-e71b-46fc-ba6b-d3011407d6b3" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.005">
+    <testcase name="status is 200 via fallback" time="0.005" classname="06LlmProviderUnmatchedModelPassthroughIsUnaffectedByAnUnrelatedSuspendTriggerGpt4OFailoverRecordsASuspendForBackendAWithinThisGroup"/>
+  </testsuite>
+  <testsuite name="06 - LlmProvider: Unmatched model passthrough is unaffected by an unrelated suspend / Reset backend A (clear last-request only)" id="1b051b78-8a07-41fe-9b16-520ea1163e95" timestamp="2026-08-18T08:07:43.578Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: Unmatched model passthrough is unaffected by an unrelated suspend / Immediately invoke an unmatched model - must still route straight to backend A untouched" id="7ad2bf89-f183-452f-bb64-f9af7e65890d" timestamp="2026-08-18T08:07:43.578Z" tests="2" failures="0" errors="0" time="0.005">
+    <testcase name="status is 200 - passthrough is not affected by a sibling suspend" time="0.005" classname="06LlmProviderUnmatchedModelPassthroughIsUnaffectedByAnUnrelatedSuspendImmediatelyInvokeAnUnmatchedModelMustStillRouteStraightToBackendAUntouched"/>
+    <testcase name="model unchanged" time="0.005" classname="06LlmProviderUnmatchedModelPassthroughIsUnaffectedByAnUnrelatedSuspendImmediatelyInvokeAnUnmatchedModelMustStillRouteStraightToBackendAUntouched"/>
+  </testsuite>
+  <testsuite name="06 - LlmProvider: Unmatched model passthrough is unaffected by an unrelated suspend / Verify backend A WAS dialed directly (passthrough bypasses group/suspend lookup entirely)" id="6ca599e8-8410-478c-907b-7db6d584eeff" timestamp="2026-08-18T08:07:43.578Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend A received the untouched request despite being suspended for the gpt-4o group" time="0.001" classname="06LlmProviderUnmatchedModelPassthroughIsUnaffectedByAnUnrelatedSuspendVerifyBackendAWasDialedDirectlyPassthroughBypassesGroupSuspendLookupEntirely"/>
+  </testsuite>
+</testsuites>

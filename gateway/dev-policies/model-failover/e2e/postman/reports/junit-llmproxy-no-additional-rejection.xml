@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="1" time="0.820">
+  <testsuite name="31 - LlmProxy: Registration-time rejection when additionalProviders is absent entirely / Reject: model-failover references an alias, but additionalProviders is not set at all" id="5072b955-8858-4ea2-a06b-cc8e2fcc0439" timestamp="2026-08-18T03:14:18.759Z" tests="2" failures="0" errors="0" time="0.820">
+    <testcase name="status is 4xx, not 201" time="0.820" classname="31LlmProxyRegistrationTimeRejectionWhenAdditionalProvidersIsAbsentEntirelyRejectModelFailoverReferencesAnAliasButAdditionalProvidersIsNotSetAtAll"/>
+    <testcase name="error message names the undeclared reference" time="0.820" classname="31LlmProxyRegistrationTimeRejectionWhenAdditionalProvidersIsAbsentEntirelyRejectModelFailoverReferencesAnAliasButAdditionalProvidersIsNotSetAtAll"/>
+  </testsuite>
+</testsuites>

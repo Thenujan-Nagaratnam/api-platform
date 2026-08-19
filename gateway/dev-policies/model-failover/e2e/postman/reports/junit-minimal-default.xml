@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="5" time="1.135">
+  <testsuite name="25 - LlmProvider: Minimal default-to-main config - baseline + failover / Baseline: gpt-4o -> main (backend A)" id="e0b3d9d1-e8b6-4df7-9c1d-9a75dce79081" timestamp="2026-08-18T03:14:01.191Z" tests="2" failures="0" errors="0" time="0.034">
+    <testcase name="status is 200" time="0.034" classname="25LlmProviderMinimalDefaultToMainConfigBaselineFailoverBaselineGpt4OMainBackendA"/>
+    <testcase name="routed to main, model unchanged" time="0.034" classname="25LlmProviderMinimalDefaultToMainConfigBaselineFailoverBaselineGpt4OMainBackendA"/>
+  </testsuite>
+  <testsuite name="25 - LlmProvider: Minimal default-to-main config - baseline + failover / Reset backend A" id="29ca71f2-4b42-4ed1-8f3e-c5fd521900d9" timestamp="2026-08-18T03:14:01.191Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="25 - LlmProvider: Minimal default-to-main config - baseline + failover / Force backend A to fail" id="f6c85ace-9dd1-4e6e-845b-f80eaa106ae5" timestamp="2026-08-18T03:14:01.191Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="25 - LlmProvider: Minimal default-to-main config - baseline + failover / Force-fail: gpt-4o -> retries through the aggregate cluster, SAME backend A, model rewritten to gpt-4o-mini" id="7b656ef6-b1af-4f60-ba34-332bc8de5f3b" timestamp="2026-08-18T03:14:01.191Z" tests="2" failures="0" errors="0" time="0.031">
+    <testcase name="status is 200 despite the forced failure" time="0.031" classname="25LlmProviderMinimalDefaultToMainConfigBaselineFailoverForceFailGpt4ORetriesThroughTheAggregateClusterSameBackendAModelRewrittenToGpt4OMini"/>
+    <testcase name="retried against main again with the rewritten model - both target and fallback default to the SAME backend" time="0.031" classname="25LlmProviderMinimalDefaultToMainConfigBaselineFailoverForceFailGpt4ORetriesThroughTheAggregateClusterSameBackendAModelRewrittenToGpt4OMini"/>
+  </testsuite>
+  <testsuite name="25 - LlmProvider: Minimal default-to-main config - baseline + failover / Cleanup: delete mf-minimal-default" id="9b976ae4-df4a-43fd-b6c7-57db9b79e230" timestamp="2026-08-18T03:14:01.191Z" tests="0" failures="0" errors="0" time="1.067"/>
+</testsuites>

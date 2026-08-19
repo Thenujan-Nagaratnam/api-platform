@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="AI Gateway - advanced-ratelimit redis precedence" tests="3" time="0.035">
+  <testsuite name="02 - Phase 1: No override -> gateway default used / Request 1 (should succeed)" id="1ad47dcb-e048-4876-8d2a-9a2c1a0078c1" timestamp="2026-08-13T09:04:01.458Z" tests="1" failures="0" errors="0" time="0.024">
+    <testcase name="status is 200" time="0.024" classname="02Phase1NoOverrideGatewayDefaultUsedRequest1ShouldSucceed"/>
+  </testsuite>
+  <testsuite name="02 - Phase 1: No override -> gateway default used / Request 2 (should succeed)" id="28d1bdee-d6f6-4ff7-8ce3-9561b48cf39c" timestamp="2026-08-13T09:04:01.458Z" tests="1" failures="0" errors="0" time="0.005">
+    <testcase name="status is 200" time="0.005" classname="02Phase1NoOverrideGatewayDefaultUsedRequest2ShouldSucceed"/>
+  </testsuite>
+  <testsuite name="02 - Phase 1: No override -> gateway default used / Request 3 (quota exhausted, expect 429)" id="6dfd14d2-63c0-4fbb-95e7-c12836ac514a" timestamp="2026-08-13T09:04:01.458Z" tests="1" failures="0" errors="0" time="0.006">
+    <testcase name="status is 429" time="0.006" classname="02Phase1NoOverrideGatewayDefaultUsedRequest3QuotaExhaustedExpect429"/>
+  </testsuite>
+</testsuites>

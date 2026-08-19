@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="2" time="2.627">
+  <testsuite name="09 - LlmProvider: Registration-time validation rejections / Reject: target references an undeclared upstreamDefinition" id="3054e8f1-9aad-412f-a328-d6a04222c0ad" timestamp="2026-08-18T08:07:51.426Z" tests="2" failures="0" errors="0" time="1.459">
+    <testcase name="status is 4xx, not 201" time="1.459" classname="09LlmProviderRegistrationTimeValidationRejectionsRejectTargetReferencesAnUndeclaredUpstreamDefinition"/>
+    <testcase name="error message names the undeclared reference" time="1.459" classname="09LlmProviderRegistrationTimeValidationRejectionsRejectTargetReferencesAnUndeclaredUpstreamDefinition"/>
+  </testsuite>
+  <testsuite name="09 - LlmProvider: Registration-time validation rejections / Reject: model-failover configured but upstreamDefinitions is entirely absent" id="f4a1ace3-16cb-483d-a51c-dfd6569fd0bb" timestamp="2026-08-18T08:07:51.426Z" tests="2" failures="0" errors="0" time="1.168">
+    <testcase name="status is 4xx, not 201" time="1.168" classname="09LlmProviderRegistrationTimeValidationRejectionsRejectModelFailoverConfiguredButUpstreamDefinitionsIsEntirelyAbsent"/>
+    <testcase name="error message names the undeclared reference" time="1.168" classname="09LlmProviderRegistrationTimeValidationRejectionsRejectModelFailoverConfiguredButUpstreamDefinitionsIsEntirelyAbsent"/>
+  </testsuite>
+</testsuites>

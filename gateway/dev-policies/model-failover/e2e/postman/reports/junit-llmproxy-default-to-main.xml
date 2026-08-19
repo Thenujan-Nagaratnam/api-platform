@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="4" time="0.986">
+  <testsuite name="29 - LlmProxy: Verify default-to-main dispatch works with no additionalProviders / Reset backend A" id="b1a04812-147e-4bde-a741-91b06246d92d" timestamp="2026-08-18T03:14:16.151Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="29 - LlmProxy: Verify default-to-main dispatch works with no additionalProviders / gpt-4o -> the proxy's own main upstream (backend A, via loopback), no alias declared" id="11e1f1fa-57d3-4b9e-a01c-607c674de945" timestamp="2026-08-18T03:14:16.151Z" tests="1" failures="0" errors="0" time="0.020">
+    <testcase name="status is 200" time="0.020" classname="29LlmProxyVerifyDefaultToMainDispatchWorksWithNoAdditionalProvidersGpt4OTheProxysOwnMainUpstreamBackendAViaLoopbackNoAliasDeclared"/>
+  </testsuite>
+  <testsuite name="29 - LlmProxy: Verify default-to-main dispatch works with no additionalProviders / Verify backend A received it via the loopback path" id="ca602a83-82b9-4c71-b937-8f266a7e2bae" timestamp="2026-08-18T03:14:16.151Z" tests="1" failures="0" errors="0" time="0.000">
+    <testcase name="request carries the internal loopback marker despite no additionalProviders being declared" time="0.000" classname="29LlmProxyVerifyDefaultToMainDispatchWorksWithNoAdditionalProvidersVerifyBackendAReceivedItViaTheLoopbackPath"/>
+  </testsuite>
+  <testsuite name="29 - LlmProxy: Verify default-to-main dispatch works with no additionalProviders / Cleanup: delete mf-proxy-default-test" id="96b0a1b5-cf8f-4152-b1e7-6a27a1aa3d4e" timestamp="2026-08-18T03:14:16.151Z" tests="0" failures="0" errors="0" time="0.953"/>
+</testsuites>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="3" time="1.157">
+  <testsuite name="12 - LlmProvider: Single-upstream sanity check (exactly one cluster) / Invoke - plain passthrough works" id="329eae16-e467-41c3-9b86-4bad6d9b0749" timestamp="2026-08-18T08:08:10.993Z" tests="1" failures="0" errors="0" time="0.035">
+    <testcase name="status is 200" time="0.035" classname="12LlmProviderSingleUpstreamSanityCheckExactlyOneClusterInvokePlainPassthroughWorks"/>
+  </testsuite>
+  <testsuite name="12 - LlmProvider: Single-upstream sanity check (exactly one cluster) / Verify exactly ONE Envoy cluster exists for this API (no aggregate/per-upstreamDefinition overhead)" id="af0f732f-ecee-4d95-9699-57432f6facd1" timestamp="2026-08-18T08:08:10.993Z" tests="1" failures="0" errors="0" time="0.008">
+    <testcase name="exactly one cluster references this API" time="0.008" classname="12LlmProviderSingleUpstreamSanityCheckExactlyOneClusterVerifyExactlyOneEnvoyClusterExistsForThisApiNoAggregatePerUpstreamDefinitionOverhead"/>
+  </testsuite>
+  <testsuite name="12 - LlmProvider: Single-upstream sanity check (exactly one cluster) / Cleanup: delete mf-plain-single-upstream" id="738a739e-640d-42ba-a7a5-77e92f192783" timestamp="2026-08-18T08:08:10.993Z" tests="0" failures="0" errors="0" time="1.114"/>
+</testsuites>
