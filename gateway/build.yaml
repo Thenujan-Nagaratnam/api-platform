@@ -20,6 +20,8 @@ policies:
     gomodule: github.com/wso2/gateway-controllers/policies/basic-auth@v1
   - name: basic-ratelimit
     gomodule: github.com/wso2/gateway-controllers/policies/basic-ratelimit@v1
+  - name: body-attempt-echo
+    filePath: ./dev-policies/body-attempt-echo
   - name: content-length-guardrail
     gomodule: github.com/wso2/gateway-controllers/policies/content-length-guardrail@v1
   - name: cors

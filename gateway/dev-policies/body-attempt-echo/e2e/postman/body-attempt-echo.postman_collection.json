@@ -1,0 +1,541 @@
+{
+  "info": {
+    "name": "body-attempt-echo dev policy - x-wso2-upstream-attempt body opt-in",
+    "_postman_id": "d4e1f6a0-body-attempt-echo-e2e",
+    "description": "End-to-end test for gateway-controller's x-wso2-upstream-attempt: {body: true} opt-in (commit 4204a943c on decoupled-retry-source) - the mechanism that lets a policy get UpstreamAttemptContext.Body populated on a PLAIN, same-endpoint resilience.retry route (no aggregate cluster / retry-source involved, unlike model-failover's unconditional case). The dev-only body-attempt-echo policy (gateway/dev-policies/body-attempt-echo) rewrites the outgoing JSON body's \"attempt\" field to Envoy's x-envoy-attempt-count on every upstream dial. mock-echo-backend keeps a full request HISTORY (not just the last request), so this proves attempt 1's original body and attempt 2's mutated body distinctly.\n\nRequires SSL verification disabled for gatewayBaseUrl (Postman GUI: Settings > General > SSL certificate verification = OFF; newman: --insecure, already passed by run-e2e.sh).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090",
+      "description": "gateway-controller REST management API, base path /api/management/v1",
+      "type": "string"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094",
+      "description": "gateway-controller admin/health API",
+      "type": "string"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443",
+      "description": "gateway-runtime (Envoy) data-plane traffic - self-signed cert",
+      "type": "string"
+    },
+    {
+      "key": "backendBaseUrl",
+      "value": "localhost:9720",
+      "description": "mock-echo-backend (run natively on host via go run, ADDR=:9720)",
+      "type": "string"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4=",
+      "description": "admin:admin, matches gateway/it/test-config.toml",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "description": "Confirm the mock and the gateway stack are up before registering anything.",
+      "item": [
+        {
+          "name": "mock-echo-backend healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/healthz",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway-controller admin health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ],
+              "protocol": "http"
+            },
+            "description": "gateway-controller admin API readiness."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway-runtime reachable (Envoy)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [],
+              "protocol": "https"
+            },
+            "description": "Any response (even 404/401) proves Envoy is up and terminating TLS. Requires SSL verification disabled - see collection description."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Register body-attempt-echo-test",
+      "item": [
+        {
+          "name": "Register: body-attempt-echo-test",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "rest-apis"
+              ],
+              "protocol": "http"
+            },
+            "description": "Plain resilience.retry route (via body-attempt-echo's own x-wso2-retry-conditions - no operator resilience.retry block needed, and deliberately NOT a model-failover/retry-source route) with the x-wso2-upstream-attempt: {body: true} opt-in.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: RestApi\nmetadata:\n  name: body-attempt-echo-test\nspec:\n  displayName: Body Attempt Echo Test\n  version: v1.0\n  context: /body-attempt-echo-test/$version\n  upstream:\n    main:\n      url: http://host.docker.internal:9720\n  operations:\n    - method: POST\n      path: /echo\n      policies:\n        - name: body-attempt-echo\n          version: v0\n          params:\n            retryStatusCodes: [503]\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /echo\n        methods:\n          - POST\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Baseline: attempt 1 body is still rewritten, even with no retry",
+      "description": "OnUpstreamAttemptRequest fires on EVERY dial, including the first - proves the mutation is not retry-conditional on its own.",
+      "item": [
+        {
+          "name": "Reset mock backend",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Call gateway (no forced failure)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/body-attempt-echo-test/v1.0/echo",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "body-attempt-echo-test",
+                "v1.0",
+                "echo"
+              ],
+              "protocol": "https"
+            },
+            "description": "Expect 200 and receivedAttempt=1 - the backend saw attempt:1 injected into the body it echoes back.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"message\": \"hello\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('receivedAttempt is 1', function () { pm.expect(json.receivedAttempt).to.eql(1); });",
+                  "pm.test('original message field preserved', function () { pm.expect(json.receivedBody).to.include('\"message\":\"hello\"'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify mock history: exactly 1 request, attempt=1",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/history",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "history"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('exactly one request recorded', function () { pm.expect(json.length).to.eql(1); });",
+                  "pm.test('that request had attempt=1', function () { pm.expect(json[0].parsedAttempt).to.eql(1); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Retry: forced 503 on attempt 1 triggers Envoy retry, body rewritten to attempt 2",
+      "description": "This is the actual proof of the x-wso2-upstream-attempt: {body: true} opt-in: attempt 1 is forced to fail with 503 (in body-attempt-echo's retryStatusCodes), Envoy retries against the SAME cluster (no aggregate cluster involved), and OnUpstreamAttemptRequest rewrites the body's \"attempt\" field to 2 on the retried dial.",
+      "item": [
+        {
+          "name": "Reset mock backend",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Force 503 on next request only",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/force-status?code=503",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status?code=503"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('force-status ok (204)', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Call gateway (attempt 1 fails 503, Envoy retries, attempt 2 succeeds)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/body-attempt-echo-test/v1.0/echo",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "body-attempt-echo-test",
+                "v1.0",
+                "echo"
+              ],
+              "protocol": "https"
+            },
+            "description": "Client sees only the FINAL response: 200, receivedAttempt=2.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"message\": \"retry-me\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('final response is 200 (retry succeeded)', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('final receivedAttempt is 2', function () { pm.expect(json.receivedAttempt).to.eql(2); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify mock history: 2 requests, attempt 1 forced-503 then attempt 2 succeeded",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/history",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "history"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('exactly two requests recorded', function () { pm.expect(json.length).to.eql(2); });",
+                  "pm.test('request 1 had attempt=1 and was force-failed with 503', function () {",
+                  "    pm.expect(json[0].parsedAttempt).to.eql(1);",
+                  "    pm.expect(json[0].forcedStatusHit).to.eql(503);",
+                  "});",
+                  "pm.test('request 2 had attempt=2 and was not force-failed', function () {",
+                  "    pm.expect(json[1].parsedAttempt).to.eql(2);",
+                  "    pm.expect(json[1].forcedStatusHit).to.eql(0);",
+                  "});",
+                  "pm.test('original message field survived the mutation on BOTH attempts', function () {",
+                  "    pm.expect(json[0].body).to.include('\"message\":\"retry-me\"');",
+                  "    pm.expect(json[1].body).to.include('\"message\":\"retry-me\"');",
+                  "});",
+                  "pm.test('body was genuinely rewritten, not resent unchanged (attempt field differs)', function () {",
+                  "    pm.expect(json[0].body).to.not.eql(json[1].body);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Cleanup",
+      "item": [
+        {
+          "name": "Delete body-attempt-echo-test",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis/body-attempt-echo-test",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "rest-apis",
+                "body-attempt-echo-test"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted (204 or 200 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset mock backend",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reset ok (204)', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

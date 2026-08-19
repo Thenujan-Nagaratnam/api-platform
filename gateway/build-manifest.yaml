@@ -27,6 +27,9 @@ policies:
     - name: basic-ratelimit
       version: v1.1.1
       gomodule: github.com/wso2/gateway-controllers/policies/basic-ratelimit@v1
+    - name: body-attempt-echo
+      version: v0.1.0
+      filePath: ./dev-policies/body-attempt-echo
     - name: content-length-guardrail
       version: v1.0.1
       gomodule: github.com/wso2/gateway-controllers/policies/content-length-guardrail@v1

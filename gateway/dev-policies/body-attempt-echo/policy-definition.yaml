@@ -1,0 +1,28 @@
+name: body-attempt-echo
+version: v0.1.0
+displayName: Body Attempt Echo (dev/test only)
+description: |
+  Dev-only policy that exercises the x-wso2-upstream-attempt: {body: true}
+  opt-in for a plain, same-endpoint (non-aggregate-cluster) resilience.retry
+  route. On every upstream dial attempt it rewrites the outgoing JSON body's
+  "attempt" field to Envoy's current x-envoy-attempt-count, so an e2e test can
+  assert the mutation actually reached the backend on retry - not just that
+  the gateway eventually returned a clean response. Not for production use.
+x-wso2-retry-conditions:
+  statusCodes: {fromParam: retryStatusCodes}
+  minAttempts: 2
+x-wso2-upstream-attempt:
+  body: true
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    retryStatusCodes:
+      type: array
+      items:
+        type: integer
+        minimum: 400
+        maximum: 599
+      minItems: 1
+      default: [503]
+      description: Upstream response status codes that make Envoy retry this route.

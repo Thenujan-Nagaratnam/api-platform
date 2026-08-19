@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="body-attempt-echo dev policy - x-wso2-upstream-attempt body opt-in" tests="3" time="0.033">
+  <testsuite name="02 - Baseline: attempt 1 body is still rewritten, even with no retry / Reset mock backend" id="8d0d2f10-d288-4b1b-b906-0eee66ca2971" timestamp="2026-08-19T04:19:03.532Z" tests="1" failures="0" errors="0" time="0.013">
+    <testcase name="reset ok (204)" time="0.013" classname="02BaselineAttempt1BodyIsStillRewrittenEvenWithNoRetryResetMockBackend"/>
+  </testsuite>
+  <testsuite name="02 - Baseline: attempt 1 body is still rewritten, even with no retry / Call gateway (no forced failure)" id="30a02683-754f-47b1-b209-e10529587d4c" timestamp="2026-08-19T04:19:03.532Z" tests="3" failures="0" errors="0" time="0.019">
+    <testcase name="status is 200" time="0.019" classname="02BaselineAttempt1BodyIsStillRewrittenEvenWithNoRetryCallGatewayNoForcedFailure"/>
+    <testcase name="receivedAttempt is 1" time="0.019" classname="02BaselineAttempt1BodyIsStillRewrittenEvenWithNoRetryCallGatewayNoForcedFailure"/>
+    <testcase name="original message field preserved" time="0.019" classname="02BaselineAttempt1BodyIsStillRewrittenEvenWithNoRetryCallGatewayNoForcedFailure"/>
+  </testsuite>
+  <testsuite name="02 - Baseline: attempt 1 body is still rewritten, even with no retry / Verify mock history: exactly 1 request, attempt=1" id="d93f4062-f7b9-46ff-9746-2af20f0e1a48" timestamp="2026-08-19T04:19:03.532Z" tests="2" failures="0" errors="0" time="0.001">
+    <testcase name="exactly one request recorded" time="0.001" classname="02BaselineAttempt1BodyIsStillRewrittenEvenWithNoRetryVerifyMockHistoryExactly1RequestAttempt1"/>
+    <testcase name="that request had attempt=1" time="0.001" classname="02BaselineAttempt1BodyIsStillRewrittenEvenWithNoRetryVerifyMockHistoryExactly1RequestAttempt1"/>
+  </testsuite>
+</testsuites>
