@@ -105,5 +105,6 @@ func newTestMCPDeploymentServiceWithHub(
 		hub,
 		gatewayID,
 		nil,
+		nil,
 	)
 }
