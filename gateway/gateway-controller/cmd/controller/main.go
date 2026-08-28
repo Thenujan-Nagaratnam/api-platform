@@ -337,6 +337,9 @@ func main() {
 		policyDefinitions[key] = def
 	}
 
+	// Built early so the startup rehydration below can use it too.
+	policyVersionResolver := utils.NewLoadedPolicyVersionResolver(policyDefinitions)
+
 	// MCP proxies and LLM artifacts are stored in source form and need to be
 	// rehydrated into their derived RestAPI representations before startup
 	// snapshot and policy work.
@@ -345,6 +348,7 @@ func main() {
 		db,
 		&cfg.Router,
 		policyDefinitions,
+		policyVersionResolver,
 		log,
 		cfg.Controller.Server.SkipInvalidDeploymentsOnStartup,
 	); err != nil {
@@ -427,7 +431,6 @@ func main() {
 	policyManager.SetRuntimeStore(runtimeStore)
 
 	// Build transformer registry for StoredConfig → RuntimeDeployConfig conversion
-	policyVersionResolver := utils.NewLoadedPolicyVersionResolver(policyDefinitions)
 	restTransformer := transform.NewRestAPITransformer(&cfg.Router, cfg, policyDefinitions)
 	llmTransformer := transform.NewLLMTransformer(configStore, db, &cfg.Router, cfg, policyDefinitions, policyVersionResolver)
 	transformerRegistry := transform.NewRegistry(restTransformer, llmTransformer)
@@ -604,6 +607,7 @@ func main() {
 		cfg,
 		policyDefinitions,
 		secretsService,
+		policyVersionResolver,
 	)
 	if err := evtListener.Start(); err != nil {
 		log.Error("Failed to start event listener", slog.Any("error", err))
