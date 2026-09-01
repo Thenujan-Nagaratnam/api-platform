@@ -81,6 +81,9 @@ policies:
     - name: mcp-rewrite
       version: v1.0.3
       gomodule: github.com/wso2/gateway-controllers/policies/mcp-rewrite@v1
+    - name: model-failover
+      version: v0.1.0
+      filePath: ./dev-policies/model-failover
     - name: model-round-robin
       version: v1.1.1
       gomodule: github.com/wso2/gateway-controllers/policies/model-round-robin@v1
