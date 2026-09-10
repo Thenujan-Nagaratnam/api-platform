@@ -1,0 +1,869 @@
+{
+  "info": {
+    "_postman_id": "301d8fc5-eaa7-456c-8d24-690f0667167e",
+    "name": "pii-masking-regex",
+    "description": "e2e coverage-behavior tests for the pii-masking-regex gateway policy, focused on how the `jsonPath` param determines what actually reaches the LLM provider. Reuses the model-failover e2e mock-model-backend (dev-policies/model-failover/e2e/mocks/mock-model-backend) as a generic OpenAI-shaped echo target whose GET /debug/last-request exposes exactly what it received - this is what lets these tests confirm PII reached upstream masked, raw, or not scanned at all, independent of the client-facing response.\n\nNOTE: mock-model-backend only echoes the `model` field in its response, not message content, so it cannot be used to verify response-side PII restoration - these tests only verify request-side masking coverage, which is what `jsonPath` actually controls.\n\nEach scenario is split into its own Register folder followed by its own Test folder (mirroring model-failover's e2e convention) so run-e2e.sh can wait for gateway-runtime's xDS propagation between registering a provider and exercising it.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "id": "3de22354-ed0c-48ad-b0bd-9e546d8fd03b",
+      "item": [
+        {
+          "name": "Controller admin health",
+          "id": "c890a60b-db92-4009-a23c-3537f9fd6a58",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ],
+              "protocol": "http"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gateway-controller is healthy', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Register: pii-poc-default ($.messages[-1].content)",
+      "id": "f562c3d4-7e00-4a1d-9586-f805272099cf",
+      "item": [
+        {
+          "name": "Register: pii-poc-default",
+          "id": "608dee64-5878-479d-be4c-1ba7f9c2184a",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: pii-poc-default\nspec:\n  displayName: PII Masking POC - pii-poc-default\n  version: v1.0\n  template: openai\n  context: /pii-poc-default/latest\n  upstream:\n    url: http://host.docker.internal:{{backendPort}}\n  policies:\n    - name: pii-masking-regex\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            email: true\n            phone: true\n            redactPII: false\n            jsonPath: \"$.messages[-1].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registered (200 or 201)', () => {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Test: default jsonPath masks last message only",
+      "id": "bf7809f3-55b8-4357-af6a-0ec4f680d335",
+      "item": [
+        {
+          "name": "Reset backend",
+          "id": "ef599f5a-03ee-46bd-9646-e5b771529914",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send PII in the LAST message",
+          "id": "d27d03d3-81b0-4b6e-8020-ca8952a78006",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/pii-poc-default/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "pii-poc-default",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4\", \"messages\": [{\"role\": \"user\", \"content\": \"Contact me at john.doe@example.com\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('client-facing response has the real email restored', () => {",
+                  "  const content = pm.response.json().choices[0].message.content;",
+                  "  pm.expect(content).to.include('john.doe@example.com');",
+                  "});",
+                  "pm.test('client-facing response no longer shows the placeholder', () => {",
+                  "  const content = pm.response.json().choices[0].message.content;",
+                  "  pm.expect(content).to.not.include('[EMAIL_');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Verify upstream received a masked placeholder, not the raw email",
+          "id": "6d143a62-2364-4812-b09b-75de4464ffef",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json().body || '';",
+                  "pm.test('upstream never saw the raw email', () => { pm.expect(body).to.not.include('john.doe@example.com'); });",
+                  "pm.test('upstream saw an EMAIL placeholder instead', () => { pm.expect(body).to.include('[EMAIL_'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Reset backend",
+          "id": "e0ec259b-5899-46dd-b9d8-0f1eaff24d05",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send PII in an EARLIER message only (multi-turn)",
+          "id": "d56f7c0f-9a34-4846-8369-0e88dfaa19b0",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/pii-poc-default/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "pii-poc-default",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4\", \"messages\": [{\"role\": \"user\", \"content\": \"My email is john.doe@example.com, remember it.\"}, {\"role\": \"assistant\", \"content\": \"Got it.\"}, {\"role\": \"user\", \"content\": \"What did I just tell you?\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Confirm the gap: earlier-turn email reaches upstream RAW",
+          "id": "9c05b5b0-0541-49e4-86d8-d3fc880a7e57",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json().body || '';",
+                  "pm.test('earlier-turn email reached upstream unmasked (known gap)', () => { pm.expect(body).to.include('john.doe@example.com'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - Register: pii-poc-wildcard ($.messages[*].content)",
+      "id": "8ca88c6c-ee39-4c33-b259-c0032dbf2eab",
+      "item": [
+        {
+          "name": "Register: pii-poc-wildcard",
+          "id": "122961c9-5a21-4387-818f-5d5fc3e4db8d",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: pii-poc-wildcard\nspec:\n  displayName: PII Masking POC - pii-poc-wildcard\n  version: v1.0\n  template: openai\n  context: /pii-poc-wildcard/latest\n  upstream:\n    url: http://host.docker.internal:{{backendPort}}\n  policies:\n    - name: pii-masking-regex\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            email: true\n            phone: true\n            redactPII: false\n            jsonPath: \"$.messages[*].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registered (200 or 201)', () => {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - Test: wildcard jsonPath is invalid syntax, hard failure",
+      "id": "35cfa2b8-fe3f-4ddf-be24-e7cecf7a3ab2",
+      "item": [
+        {
+          "name": "Send any request - expect a hard 500",
+          "id": "f08da2e6-44eb-444f-b5e7-8bac7f675f05",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/pii-poc-wildcard/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "pii-poc-wildcard",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4\", \"messages\": [{\"role\": \"user\", \"content\": \"Contact me at john.doe@example.com\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 500', () => pm.response.to.have.status(500));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 - Register: pii-poc-messages ($.messages)",
+      "id": "ffe9c606-0511-48c7-b9fe-3f265f492b9f",
+      "item": [
+        {
+          "name": "Register: pii-poc-messages",
+          "id": "bf763ccc-8d57-48cd-beb4-8d23ff1d7577",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: pii-poc-messages\nspec:\n  displayName: PII Masking POC - pii-poc-messages\n  version: v1.0\n  template: openai\n  context: /pii-poc-messages/latest\n  upstream:\n    url: http://host.docker.internal:{{backendPort}}\n  policies:\n    - name: pii-masking-regex\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            email: true\n            phone: true\n            redactPII: false\n            jsonPath: \"$.messages\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registered (200 or 201)', () => {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "06 - Test: $.messages is a valid key but non-scalar, silent bypass",
+      "id": "4b32e5cc-067e-4425-b769-0079f9082681",
+      "item": [
+        {
+          "name": "Reset backend",
+          "id": "3424806f-d891-4079-9a11-be8d1851a107",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send PII - expect 200, NOT 500",
+          "id": "13016c4f-8bd4-4461-a105-75f4a1b41292",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/pii-poc-messages/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "pii-poc-messages",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4\", \"messages\": [{\"role\": \"user\", \"content\": \"Contact me at john.doe@example.com\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Confirm silent bypass: raw PII reached upstream, no masking, no error",
+          "id": "7f21035f-546d-43c2-ac1b-caf2626350f8",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json().body || '';",
+                  "pm.test('raw email reached upstream completely unmasked', () => { pm.expect(body).to.include('john.doe@example.com'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "07 - Register: pii-poc-empty (jsonPath: \"\")",
+      "id": "a66b7106-df2c-4749-9e61-1ee3b2742679",
+      "item": [
+        {
+          "name": "Register: pii-poc-empty",
+          "id": "9ade4840-21c1-4a7d-b8a3-669bb4052f2f",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: pii-poc-empty\nspec:\n  displayName: PII Masking POC - pii-poc-empty\n  version: v1.0\n  template: openai\n  context: /pii-poc-empty/latest\n  upstream:\n    url: http://host.docker.internal:{{backendPort}}\n  policies:\n    - name: pii-masking-regex\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            email: true\n            phone: true\n            redactPII: false\n            jsonPath: \"\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registered (200 or 201)', () => {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "08 - Test: empty jsonPath covers the whole payload",
+      "id": "a49e5f22-7a08-4eb0-ab06-73aa68111f04",
+      "item": [
+        {
+          "name": "Reset backend",
+          "id": "b15442c3-b6f1-49ac-bb7d-cada81ab8032",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send PII in an EARLIER message (multi-turn)",
+          "id": "fb714269-3295-40f5-a5b2-4735a4c948fb",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/pii-poc-empty/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "pii-poc-empty",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4\", \"messages\": [{\"role\": \"user\", \"content\": \"My email is john.doe@example.com, remember it.\"}, {\"role\": \"assistant\", \"content\": \"Got it.\"}, {\"role\": \"user\", \"content\": \"What did I just tell you?\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('client-facing response has the earlier-turn email restored', () => {",
+                  "  const content = pm.response.json().choices[0].message.content;",
+                  "  pm.expect(content).to.include('john.doe@example.com');",
+                  "});",
+                  "pm.test('client-facing response no longer shows the placeholder', () => {",
+                  "  const content = pm.response.json().choices[0].message.content;",
+                  "  pm.expect(content).to.not.include('[EMAIL_');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Confirm full coverage: earlier-turn email is masked before reaching upstream",
+          "id": "2b9280ee-fdde-4e65-9114-f1043f712790",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json().body || '';",
+                  "pm.test('earlier-turn email is NOT raw upstream', () => { pm.expect(body).to.not.include('john.doe@example.com'); });",
+                  "pm.test('upstream saw an EMAIL placeholder instead', () => { pm.expect(body).to.include('[EMAIL_'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "09 - Cleanup",
+      "id": "241559b9-68c4-4b6e-8805-183e5a510180",
+      "item": [
+        {
+          "name": "Delete: pii-poc-default",
+          "id": "c642a94a-51fd-4852-bcf2-25e912738ca1",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/pii-poc-default",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "pii-poc-default"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: pii-poc-wildcard",
+          "id": "1f6ef289-cfd0-41e8-8621-3223aeeee28a",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/pii-poc-wildcard",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "pii-poc-wildcard"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: pii-poc-messages",
+          "id": "8398ae3e-66e6-4452-b1d3-db4e32c79618",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/pii-poc-messages",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "pii-poc-messages"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: pii-poc-empty",
+          "id": "7dc4f168-0e1e-4aff-9a4c-0b488d1c32e8",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/pii-poc-empty",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "pii-poc-empty"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443"
+    },
+    {
+      "key": "backendBaseUrl",
+      "value": "localhost:9720"
+    },
+    {
+      "key": "backendPort",
+      "value": "9720"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4="
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="AI Gateway - oauth2 policy" tests="3" time="0.039">
+  <testsuite name="E.21 - Mcp server with oauth2 upstream auth (MCPProxyConfigData.upstream.auth) / Reset IdP stats" id="28696fbb-aa63-4c73-a180-b80bc611cae9" timestamp="2026-09-01T03:42:01.700Z" tests="1" failures="0" errors="0" time="0.014">
+    <testcase name="reset ok (204)" time="0.014" classname="E21McpServerWithOauth2UpstreamAuthMcpProxyConfigDataUpstreamAuthResetIdPStats"/>
+  </testsuite>
+  <testsuite name="E.21 - Mcp server with oauth2 upstream auth (MCPProxyConfigData.upstream.auth) / Send MCP request" id="c6a0a41e-d4c3-4010-afb0-fadc6e5282a5" timestamp="2026-09-01T03:42:01.700Z" tests="2" failures="0" errors="0" time="0.024">
+    <testcase name="status is 200" time="0.024" classname="E21McpServerWithOauth2UpstreamAuthMcpProxyConfigDataUpstreamAuthSendMcpRequest"/>
+    <testcase name="content shows an injected bearer token" time="0.024" classname="E21McpServerWithOauth2UpstreamAuthMcpProxyConfigDataUpstreamAuthSendMcpRequest"/>
+  </testsuite>
+  <testsuite name="E.21 - Mcp server with oauth2 upstream auth (MCPProxyConfigData.upstream.auth) / Verify the IdP was called" id="94553fe8-74b1-4292-8f6b-c87a9f9fa94b" timestamp="2026-09-01T03:42:01.700Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="exactly one token request recorded" time="0.001" classname="E21McpServerWithOauth2UpstreamAuthMcpProxyConfigDataUpstreamAuthVerifyTheIdPWasCalled"/>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="1" time="0.875">
+  <testsuite name="30 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config / Reject: a fallback-having target group using loopback aliases" id="72c38f33-7f1a-4e50-b3d8-8800b22650e9" timestamp="2026-08-18T03:14:17.513Z" tests="2" failures="0" errors="0" time="0.875">
+    <testcase name="status is 4xx, not 201" time="0.875" classname="30LlmProxyRegistrationTimeRejectionOfAnUnsafeLoopbackFallbackConfigRejectAFallbackHavingTargetGroupUsingLoopbackAliases"/>
+    <testcase name="error message explains the basePath/aggregate-cluster conflict" time="0.875" classname="30LlmProxyRegistrationTimeRejectionOfAnUnsafeLoopbackFallbackConfigRejectAFallbackHavingTargetGroupUsingLoopbackAliases"/>
+  </testsuite>
+</testsuites>

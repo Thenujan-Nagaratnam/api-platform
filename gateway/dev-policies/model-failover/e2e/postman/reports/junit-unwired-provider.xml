@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e (response-path retry + additionalProviders reuse)" tests="4" time="0.766">
+  <testsuite name="11b - LlmProvider: Provider-scoped target with no catch-all - unmatched provider passes a real failure through unchanged / Force backend A to fail once" id="3e0e07bc-0122-4392-ba6e-c78cbb9be48b" timestamp="2026-09-08T04:31:45.371Z" tests="0" failures="0" errors="0" time="0.012"/>
+  <testsuite name="11b - LlmProvider: Provider-scoped target with no catch-all - unmatched provider passes a real failure through unchanged / Invoke claude-3-5-sonnet - no x-provider header, so the provider-scoped target never matches" id="c346807b-b052-4879-8c95-200e0ae2d56f" timestamp="2026-09-08T04:31:45.371Z" tests="1" failures="0" errors="0" time="0.020">
+    <testcase name="status is 500 - the forced primary failure passes straight through, no fallback matched" time="0.020" classname="11BLlmProviderProviderScopedTargetWithNoCatchAllUnmatchedProviderPassesARealFailureThroughUnchangedInvokeClaude35SonnetNoXProviderHeaderSoTheProviderScopedTargetNeverMatches"/>
+  </testsuite>
+  <testsuite name="11b - LlmProvider: Provider-scoped target with no catch-all - unmatched provider passes a real failure through unchanged / Verify backend A received exactly one request, with the model unchanged" id="95399926-9573-4603-a237-09194c7d83a3" timestamp="2026-09-08T04:31:45.371Z" tests="2" failures="0" errors="0" time="0.001">
+    <testcase name="backend A received the ORIGINAL, un-rewritten model - no fallback ever ran" time="0.001" classname="11BLlmProviderProviderScopedTargetWithNoCatchAllUnmatchedProviderPassesARealFailureThroughUnchangedVerifyBackendAReceivedExactlyOneRequestWithTheModelUnchanged"/>
+    <testcase name="no self-redial ever happened - the (model, 'anthropic-backup') target has no matching provider on this request, and no (model, '') catch-all exists" time="0.001" classname="11BLlmProviderProviderScopedTargetWithNoCatchAllUnmatchedProviderPassesARealFailureThroughUnchangedVerifyBackendAReceivedExactlyOneRequestWithTheModelUnchanged"/>
+  </testsuite>
+  <testsuite name="11b - LlmProvider: Provider-scoped target with no catch-all - unmatched provider passes a real failure through unchanged / Cleanup: delete mf-poc-unwired-provider" id="9da9ab92-2141-4b6f-b32f-f2b72bd9b867" timestamp="2026-09-08T04:31:45.371Z" tests="0" failures="0" errors="0" time="0.733"/>
+</testsuites>

@@ -1,0 +1,3099 @@
+{
+	"info": {
+		"name": "model-failover e2e (response-path retry + additionalProviders reuse)",
+		"description": "End-to-end suite for the model-failover policy - response-path retry mechanism, plus provider: reuse of an LlmProxy's own already-configured additionalProviders (auth + template, never re-typed on the policy itself). Run via run-e2e.sh, not directly.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "00 - Health Checks",
+			"item": [
+				{
+					"name": "mock-model-backend-a healthz",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/healthz",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"healthz"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "mock-model-backend-b healthz",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/healthz",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"healthz"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "mock-model-backend-c healthz",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendCBaseUrl}}/healthz",
+							"host": [
+								"{{backendCBaseUrl}}"
+							],
+							"path": [
+								"healthz"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "mock-anthropic-backend healthz",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/healthz",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"healthz"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "mock-model-backend-p (proxy primary) healthz",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/healthz",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"healthz"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "gateway-controller admin health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+							"host": [
+								"{{controllerAdminUrl}}"
+							],
+							"path": [
+								"api",
+								"admin",
+								"v1",
+								"health"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "gateway-runtime reachable (Envoy)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [],
+							"protocol": "https"
+						},
+						"description": ""
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "01 - LlmProvider: Register mf-poc-provider (bare fallback)",
+			"item": [
+				{
+					"name": "Reset backend A",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Register: mf-poc-provider",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-poc-provider\nspec:\n  displayName: Model Failover POC Provider\n  version: v1.0\n  template: openai\n  context: /mf-poc-provider/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            statusCodes: [500]\n            suspendDuration: 10s\n            requestTimeout: 5s\n            targets:\n              - model: gpt-4o\n                fallbacks:\n                  - model: gpt-4o-mini\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 201', () => pm.response.to.have.status(201));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "02 - LlmProvider: Unmatched model passes through untouched",
+			"item": [
+				{
+					"name": "Reset backend A",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke with a model no target group declares",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-provider/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-provider",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"some-unrelated-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend A received the request byte-for-byte unmodified",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('backend A received the untouched model', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('some-unrelated-model');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "03 - LlmProvider: Bare same-provider fallback recovers a transient failure",
+			"item": [
+				{
+					"name": "Reset backend A",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend A to fail once (primary attempt)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o - primary fails once, bare fallback re-dials the SAME backend",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-provider/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-provider",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200 despite the primary attempt failing', () => pm.response.to.have.status(200));",
+									"pm.test('response shows the rewritten fallback model', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.choices[0].message.content).to.include('gpt-4o-mini');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend A's second attempt (the bare fallback) landed with the rewritten model",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"backend A's last request shows gpt-4o-mini\", () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('gpt-4o-mini');",
+									"});",
+									"pm.test('bare fallback is a self-redial, not a raw direct dial', () => {",
+									"  const record = pm.response.json();",
+									"  const redial = record.headers['X-Wso2-Model-Failover-Redial'] || record.headers['x-wso2-model-failover-redial'];",
+									"  const loopback = record.headers['X-Wso2-Internal-Loopback'] || record.headers['x-wso2-internal-loopback'];",
+									"  pm.expect(redial, 'recursion-guard header on the redialed request').to.not.be.undefined;",
+									"  pm.expect(loopback, 'loopback marker on the redialed request').to.not.be.undefined;",
+									"  pm.expect(record.headers['X-Provider'] || record.headers['x-provider'], 'no provider header on a same-provider redial').to.be.undefined;",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "04 - LlmProvider: Register mf-poc-chain-test (same-provider url overrides via upstreamDefinitions)",
+			"item": [
+				{
+					"name": "Reset backend A",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend B",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend C",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendCBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendCBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Register: mf-poc-chain-test",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-poc-chain-test\nspec:\n  displayName: Model Failover POC Chain Test\n  version: v1.0\n  template: openai\n  context: /mf-poc-chain-test/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  upstreamDefinitions:\n    - name: backend-b\n      upstreams:\n        - url: http://host.docker.internal:9712\n    - name: backend-c\n      upstreams:\n        - url: http://host.docker.internal:9713\n    - name: backend-dead\n      upstreams:\n        - url: http://host.docker.internal:9799\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            statusCodes: [500, 502, 503, 504]\n            # 502/503/504 included because a self-redial to an unreachable fallback (see\n            # gpt-4o-neterr below) is dialed by Envoy itself, which returns ITS OWN\n            # gateway-error status for a failed upstream connection - not a Go-level\n            # network error this policy would otherwise catch unconditionally.\n            suspendDuration: 10s\n            targets:\n              - model: gpt-4o-chain\n                fallbacks:\n                  - model: gpt-4o-chain-b\n                    upstreamDefinition: backend-b\n                  - model: gpt-4o-chain-c\n                    upstreamDefinition: backend-c\n              - model: gpt-4o-neterr\n                fallbacks:\n                  - model: gpt-4o-neterr-dead\n                    upstreamDefinition: backend-dead\n                  - model: gpt-4o-neterr-b\n                    upstreamDefinition: backend-b\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 201', () => pm.response.to.have.status(201));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "05 - LlmProvider: Ordered same-provider chain - first fails, second succeeds",
+			"item": [
+				{
+					"name": "Force backend A (primary) to fail",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend B (first fallback) to fail",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o-chain - expect success via the SECOND fallback (backend C)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-chain-test/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-chain-test",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o-chain\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('response shows the second fallback model', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.choices[0].message.content).to.include('gpt-4o-chain-c');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend B was tried and received the rewritten model before failing",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('backend B received gpt-4o-chain-b', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('gpt-4o-chain-b');",
+									"});",
+									"pm.test('upstreamDefinition fallback is a self-redial carrying the chosen name', () => {",
+									"  const record = pm.response.json();",
+									"  const upstreamDef = record.headers['X-Wso2-Model-Failover-Upstream-Definition'] || record.headers['x-wso2-model-failover-upstream-definition'];",
+									"  pm.expect(upstreamDef, 'upstream-definition header on the redialed request').to.not.be.undefined;",
+									"  pm.expect(upstreamDef[0]).to.eql('backend-b');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend C received the rewritten model and succeeded",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendCBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendCBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('backend C received gpt-4o-chain-c', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('gpt-4o-chain-c');",
+									"});",
+									"pm.test('upstreamDefinition fallback is a self-redial carrying the chosen name', () => {",
+									"  const record = pm.response.json();",
+									"  const upstreamDef = record.headers['X-Wso2-Model-Failover-Upstream-Definition'] || record.headers['x-wso2-model-failover-upstream-definition'];",
+									"  pm.expect(upstreamDef, 'upstream-definition header on the redialed request').to.not.be.undefined;",
+									"  pm.expect(upstreamDef[0]).to.eql('backend-c');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "06 - LlmProvider: Suspend deprioritizes a recently-failed fallback",
+			"item": [
+				{
+					"name": "Reset backend B (clears last-request AND force-status - B is healthy again)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend C (clears last-request only - C stays healthy)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendCBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendCBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend A (primary) to fail again",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o-chain again - both fallbacks are healthy this time",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-chain-test/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-chain-test",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o-chain\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend C (not suspended) was dialed",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendCBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendCBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('backend C received a fresh request', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('gpt-4o-chain-c');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend B (suspended) was NEVER dialed",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('backend B received no request at all - deprioritized behind C', () => {",
+									"  const record = pm.response.json();",
+									"  pm.expect(record.body).to.eql('');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through",
+			"item": [
+				{
+					"name": "Reset backend A",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend B",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend C",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendCBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendCBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend A to fail (sticky - stays down for the whole chain)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/force-status?code=500&sticky=true",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								},
+								{
+									"key": "sticky",
+									"value": "true"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend B to fail (sticky)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/force-status?code=500&sticky=true",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								},
+								{
+									"key": "sticky",
+									"value": "true"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend C to fail (sticky)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendCBaseUrl}}/debug/force-status?code=500&sticky=true",
+							"host": [
+								"{{backendCBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								},
+								{
+									"key": "sticky",
+									"value": "true"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o-chain - every fallback is down, expect the ORIGINAL failing response",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-chain-test/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-chain-test",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o-chain\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 500 (the primary\\'s own failure, not fabricated)', () => pm.response.to.have.status(500));",
+									"pm.test('body is the primary\\'s own forced-status error shape', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.error).to.eql('forced_status_for_test');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Reset backend A (clear sticky force-status)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend B (clear sticky force-status)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend C (clear sticky force-status)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendCBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendCBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "08 - LlmProvider: Network-unreachable fallback falls through to the next",
+			"item": [
+				{
+					"name": "Reset backend A",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset backend B",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend A (primary) to fail",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o-neterr - first fallback is a dead port, second is backend B",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-chain-test/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-chain-test",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o-neterr\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200 despite the first fallback being unreachable', () => pm.response.to.have.status(200));",
+									"pm.test('response shows the second fallback model', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.choices[0].message.content).to.include('gpt-4o-neterr-b');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend B received the rewritten model",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendBBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendBBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('backend B received gpt-4o-neterr-b', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('gpt-4o-neterr-b');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Cleanup: delete mf-poc-chain-test",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-poc-chain-test",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"mf-poc-chain-test"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "09 - LlmProvider: Register mf-poc-sizelimit (tiny maxResponseBytes)",
+			"item": [
+				{
+					"name": "Reset backend A",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Register: mf-poc-sizelimit",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-poc-sizelimit\nspec:\n  displayName: Model Failover POC Size Limit Test\n  version: v1.0\n  template: openai\n  context: /mf-poc-sizelimit/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            statusCodes: [500]\n            maxResponseBytes: 10\n            targets:\n              - model: gpt-4o\n                fallbacks:\n                  - model: gpt-4o-mini\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 201', () => pm.response.to.have.status(201));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "10 - LlmProvider: Oversized fallback response is rejected",
+			"item": [
+				{
+					"name": "Force backend A (primary) to fail",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o - the only fallback's normal response exceeds maxResponseBytes=10",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-sizelimit/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-sizelimit",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 500 - the oversized fallback response was rejected', () => pm.response.to.have.status(500));",
+									"pm.test('body is the primary\\'s own forced-status error shape', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.error).to.eql('forced_status_for_test');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Cleanup: delete mf-poc-sizelimit",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-poc-sizelimit",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"mf-poc-sizelimit"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "11 - LlmProvider: Register mf-poc-unwired-provider (provider reference with no selector attached)",
+			"item": [
+				{
+					"name": "Reset backend A",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/reset",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Register: mf-poc-unwired-provider",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-poc-unwired-provider\nspec:\n  displayName: Model Failover Unwired Provider Test\n  version: v1.0\n  template: openai\n  context: /mf-poc-unwired-provider/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            statusCodes: [500]\n            targets:\n              # provider here is a MATCH qualifier, not a redirect (see\n              # model_failover.go's package doc) - this target only ever\n              # applies to a primary request whose OWN x-provider header\n              # equals anthropic-backup. No selector policy is attached to\n              # this plain LlmProvider, so a genuine client request never\n              # carries that header for real routing purposes; with no\n              # provider-agnostic (model, \"\") catch-all declared either, a\n              # primary failure here has nothing to match against at all.\n              - model: claude-3-5-sonnet\n                provider: anthropic-backup\n                fallbacks:\n                  - model: claude-3-5-sonnet-retry\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 201 - provider is an opaque string, zero gateway-controller validation regardless of resource kind', () => {",
+									"  pm.expect(pm.response.code).to.eql(201);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "11b - LlmProvider: Provider-scoped target with no catch-all - unmatched provider passes a real failure through unchanged",
+			"item": [
+				{
+					"name": "Force backend A to fail once",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke claude-3-5-sonnet - no x-provider header, so the provider-scoped target never matches",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-unwired-provider/latest/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-unwired-provider",
+								"latest",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"claude-3-5-sonnet\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 500 - the forced primary failure passes straight through, no fallback matched', () => pm.response.to.have.status(500));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend A received exactly one request, with the model unchanged",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendABaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendABaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('backend A received the ORIGINAL, un-rewritten model - no fallback ever ran', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('claude-3-5-sonnet');",
+									"});",
+									"pm.test('no self-redial ever happened - the (model, \\'anthropic-backup\\') target has no matching provider on this request, and no (model, \\'\\') catch-all exists', () => {",
+									"  const record = pm.response.json();",
+									"  const redial = record.headers['X-Wso2-Model-Failover-Redial'] || record.headers['x-wso2-model-failover-redial'];",
+									"  pm.expect(redial).to.be.undefined;",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Cleanup: delete mf-poc-unwired-provider",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-poc-unwired-provider",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"mf-poc-unwired-provider"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "12 - LlmProvider: Register anthropic-provider (real backing target for additionalProviders)",
+			"item": [
+				{
+					"name": "Reset anthropic backend",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Register: anthropic-provider",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: anthropic-provider\nspec:\n  displayName: Anthropic Provider (additionalProviders backing target)\n  version: v1.0\n  template: anthropic\n  context: /anthropic-provider/latest\n  upstream:\n    url: http://host.docker.internal:9714\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /v1/messages\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 201', () => pm.response.to.have.status(201));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "13 - LlmProxy: Register base provider + proxy (additionalProviders + model-failover)",
+			"item": [
+				{
+					"name": "Reset backend P (proxy primary)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset anthropic backend",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Register: mf-poc-proxy-provider",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers"
+							],
+							"protocol": "http"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-poc-proxy-provider\nspec:\n  displayName: Model Failover POC Proxy Base Provider\n  version: v1.0\n  template: openai\n  context: /mf-poc-proxy-provider/latest\n  upstream:\n    url: http://host.docker.internal:9715\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 201', () => pm.response.to.have.status(201));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Register: mf-poc-proxy",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-proxies"
+							],
+							"protocol": "http"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: mf-poc-proxy\nspec:\n  displayName: Model Failover POC Proxy\n  version: v1.0\n  context: /mf-poc-proxy\n  provider:\n    id: mf-poc-proxy-provider\n  additionalProviders:\n    - id: anthropic-provider\n      as: anthropic-backup\n      auth:\n        type: api-key\n        header: x-api-key\n        value: anthropic-static-key\n      transformer:\n        type: openai-to-anthropic-transformer\n        version: v0\n        params: {}\n        # No static 'model' param: openai-to-anthropic-transformer now resolves\n        # the model from the request body first (falling back to a configured\n        # one only when the request doesn't carry it) - so each target/fallback\n        # below reaches Anthropic with its OWN declared model, not a single\n        # provider-wide override.\n  policies:\n    # llm-header-router reads x-provider (the header model-failover sets on a\n    # provider-crossing self-redial) and publishes SharedContext.Metadata\n    # [\"selected_provider\"], which gateway-controller's own\n    # additionalProviders-conditional auth/transformer policies key off of.\n    # Without this attached, a provider reference on model-failover silently\n    # reaches the proxy's own default upstream unchanged (see scenario 11).\n    - name: llm-header-router\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            mappings:\n              - headerValue: anthropic-backup\n                provider: anthropic-backup\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            statusCodes: [500]\n            targets:\n              # Fallback-level provider: the primary attempt is untouched (dials\n              # mf-poc-proxy-provider as normal); only a FAILURE triggers the\n              # response-path retry against the anthropic-backup loopback.\n              - model: gpt-4o\n                fallbacks:\n                  - model: claude-3-5-sonnet\n                    provider: anthropic-backup\n              # Provider-disambiguated targets: the SAME model name, matched\n              # against which provider the PRIMARY request actually went to -\n              # its own x-provider header (see groupByModel/requestedProvider\n              # in model_failover.go), never anything this policy redirects.\n              # No pre-dial redirect of any kind: the primary always dials\n              # whatever llm-header-router/default routing already resolved\n              # for it; only a genuine FAILURE triggers either chain below.\n              - model: dual-provider-model\n                provider: anthropic-backup\n                fallbacks:\n                  # Bare reuse: replays the client's own original headers,\n                  # which already carry x-provider: anthropic-backup (the\n                  # CLIENT set it, not model-failover), so the redial\n                  # naturally reaches anthropic-backup again.\n                  - model: dual-provider-model-anthropic-retry\n              - model: dual-provider-model\n                fallbacks:\n                  # Bare reuse again - this (model, \"\") catch-all only\n                  # matches when the primary's own provider didn't match the\n                  # target above (absent x-provider, or one no mapping\n                  # recognizes), so its primary dialed the proxy's own\n                  # default upstream (mf-poc-proxy-provider / backend P);\n                  # the redial reaches backend P again the same way.\n                  - model: dual-provider-model-default-retry\n              # Regression coverage for the fix verified in 16b below: this\n              # fallback's own 'model' must reach Anthropic unmodified. Uses a\n              # deliberately distinct model name so a pass can't be a\n              # coincidence (e.g. matching some other target's model).\n              - model: gpt-4o-mini\n                fallbacks:\n                  - model: claude-3-opus-should-be-used\n                    provider: anthropic-backup\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 201', () => pm.response.to.have.status(201));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "14 - LlmProxy: Fallback-level provider - template + auth reuse on a response-path retry",
+			"item": [
+				{
+					"name": "Reset backend P",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset anthropic backend",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend P (primary) to fail once",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o - primary fails, cross-provider fallback should succeed",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer client-side-token"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-proxy/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-proxy",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"system\",\"content\":\"be nice\"},{\"role\":\"user\",\"content\":\"hi\"}],\"temperature\":0.5}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('client-visible response is OpenAI-shaped', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.object).to.eql('chat.completion');",
+									"  pm.expect(body.choices[0].message.content).to.include('claude-3-5-sonnet');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify the anthropic backend received a correctly-converted, correctly-authenticated request",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('request body was converted to anthropic shape', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('claude-3-5-sonnet');",
+									"  pm.expect(body.max_tokens).to.be.a('number');",
+									"  pm.expect(body.messages).to.have.lengthOf(1);",
+									"});",
+									"pm.test('the fallback\\'s own api-key auth was applied', () => {",
+									"  const record = pm.response.json();",
+									"  const apiKey = record.headers['X-Api-Key'] || record.headers['x-api-key'];",
+									"  pm.expect(apiKey[0]).to.eql('anthropic-static-key');",
+									"});",
+									"pm.test('internal loopback header is set', () => {",
+									"  const record = pm.response.json();",
+									"  pm.expect(record.headers['X-Wso2-Internal-Loopback'] || record.headers['x-wso2-internal-loopback']).to.not.be.undefined;",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "15 - LlmProxy: Provider-scoped target - exact (model, provider) match wins over the provider-agnostic target",
+			"item": [
+				{
+					"name": "Reset backend P",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset anthropic backend",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force anthropic backend to fail once",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke dual-provider-model with x-provider: anthropic-backup - primary fails, the provider-scoped fallback retries anthropic",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-provider",
+								"value": "anthropic-backup"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-proxy/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-proxy",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"dual-provider-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('client-visible response is OpenAI-shaped', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.object).to.eql('chat.completion');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend P (the default primary) was never dialed",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('backend P received no request at all - the client\\'s own x-provider header routed the primary straight to anthropic', () => {",
+									"  const record = pm.response.json();",
+									"  pm.expect(record.body).to.eql('');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify the anthropic backend's SECOND request used the (model, provider)-specific fallback",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('the exact-match target\\'s own fallback model reached anthropic, not the provider-agnostic target\\'s', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('dual-provider-model-anthropic-retry');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "15b - LlmProxy: No matching provider falls back to the provider-agnostic target",
+			"item": [
+				{
+					"name": "Reset backend P",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend P (primary) to fail once",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke dual-provider-model with no x-provider header - primary dials the default upstream, fails, catch-all fallback retries it",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-proxy/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-proxy",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"dual-provider-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('client-visible response is OpenAI-shaped', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.object).to.eql('chat.completion');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend P's SECOND request used the provider-agnostic target's own fallback",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('the (model, \"\") catch-all target\\'s own fallback model reached backend P', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('dual-provider-model-default-retry');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Reset backend P",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend P (primary) to fail once (unmapped provider header variant)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke dual-provider-model with an unrecognized x-provider value - llm-header-router has no mapping for it, so the primary still dials the default upstream",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-provider",
+								"value": "some-unmapped-provider"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-proxy/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-proxy",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"dual-provider-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify backend P's SECOND request again used the provider-agnostic target's own fallback",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('an x-provider value no target declares still falls back to the (model, \"\") catch-all, exactly like no header at all', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('dual-provider-model-default-retry');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "16 - LlmProxy: Malformed body fails the cross-provider adapter - passthrough",
+			"item": [
+				{
+					"name": "Reset backend P",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend P (primary) to fail",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o with no messages array - the fallback's template adapter can't convert it",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-proxy/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-proxy",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o\"}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 400 - the transformer rejects the malformed body and that becomes the final answer', () => pm.response.to.have.status(400));",
+									"pm.test('body is the transformer\\'s own conversion-failure shape, not a crash', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.error).to.exist;",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "16b - LlmProxy: model-failover's own fallback model reaches a cross-provider translator (fix regression test)",
+			"item": [
+				{
+					"name": "Reset backend P",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Reset anthropic backend",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/reset",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"reset"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Force backend P (primary) to fail once",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendPBaseUrl}}/debug/force-status?code=500",
+							"host": [
+								"{{backendPBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"force-status"
+							],
+							"protocol": "http",
+							"query": [
+								{
+									"key": "code",
+									"value": "500"
+								}
+							]
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Invoke gpt-4o-mini - primary fails, fallback's OWN model must reach Anthropic",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer client-side-token"
+							}
+						],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/mf-poc-proxy/chat/completions",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"mf-poc-proxy",
+								"chat",
+								"completions"
+							],
+							"protocol": "https"
+						},
+						"description": "",
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('client-visible response is OpenAI-shaped', () => {",
+									"  const body = pm.response.json();",
+									"  pm.expect(body.object).to.eql('chat.completion');",
+									"  pm.expect(body.choices[0].message.content).to.include('claude-3-opus-should-be-used');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Anthropic received model-failover's own fallback model, not a provider-wide override",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://{{backendAnthBaseUrl}}/debug/last-request",
+							"host": [
+								"{{backendAnthBaseUrl}}"
+							],
+							"path": [
+								"debug",
+								"last-request"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Regression test for the cross-provider model-override bug: model-failover's",
+									"// own fallback declares model: claude-3-opus-should-be-used (see this proxy's",
+									"// registration, folder 13), and mf-poc-proxy's anthropic-backup transformer",
+									"// entry deliberately carries NO static 'model' param any more - so this can",
+									"// only pass if openai-to-anthropic-transformer actually resolved the model",
+									"// from the self-redial's payload (resolveModel in openaitoanthropic.go),",
+									"// instead of erroring (old required-param behavior) or silently overriding it",
+									"// with an operator-pinned model (old static-only behavior).",
+									"pm.test('the fallback\\'s own configured model reached Anthropic', () => {",
+									"  const body = JSON.parse(pm.response.json().body);",
+									"  pm.expect(body.model).to.eql('claude-3-opus-should-be-used');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "17 - Cleanup",
+			"item": [
+				{
+					"name": "Delete: mf-poc-proxy",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/mf-poc-proxy",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-proxies",
+								"mf-poc-proxy"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: mf-poc-proxy-provider",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-poc-proxy-provider",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"mf-poc-proxy-provider"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: anthropic-provider",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/anthropic-provider",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"anthropic-provider"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: mf-poc-provider",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-poc-provider",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"llm-providers",
+								"mf-poc-provider"
+							],
+							"protocol": "http"
+						},
+						"description": ""
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "controllerBaseUrl",
+			"value": "localhost:9090"
+		},
+		{
+			"key": "controllerAdminUrl",
+			"value": "localhost:9094"
+		},
+		{
+			"key": "gatewayBaseUrl",
+			"value": "localhost:8443"
+		},
+		{
+			"key": "backendABaseUrl",
+			"value": "localhost:9711"
+		},
+		{
+			"key": "backendBBaseUrl",
+			"value": "localhost:9712"
+		},
+		{
+			"key": "backendCBaseUrl",
+			"value": "localhost:9713"
+		},
+		{
+			"key": "backendAnthBaseUrl",
+			"value": "localhost:9714"
+		},
+		{
+			"key": "backendPBaseUrl",
+			"value": "localhost:9715"
+		},
+		{
+			"key": "adminAuthHeader",
+			"value": "Basic YWRtaW46YWRtaW4="
+		}
+	]
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="4" time="0.064">
+  <testsuite name="18 - LlmProvider: 3-level fallback chain cascades through every member / Force backend A (primary) to fail" id="2bcad062-ff2f-465c-a154-5196a9943192" timestamp="2026-08-18T08:08:37.668Z" tests="0" failures="0" errors="0" time="0.014"/>
+  <testsuite name="18 - LlmProvider: 3-level fallback chain cascades through every member / Force backend B (fallback-1) to fail" id="c962f8e9-516b-4ec4-9d81-a5e4310e9902" timestamp="2026-08-18T08:08:37.668Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="18 - LlmProvider: 3-level fallback chain cascades through every member / Invoke gpt-4o - primary AND fallback-1 both fail, expect success via fallback-2" id="63a370a0-3627-444d-af04-46ad56e03b0d" timestamp="2026-08-18T08:08:37.668Z" tests="2" failures="0" errors="0" time="0.047">
+    <testcase name="status is 200 via the SECOND fallback" time="0.047" classname="18LlmProvider3LevelFallbackChainCascadesThroughEveryMemberInvokeGpt4OPrimaryAndFallback1BothFailExpectSuccessViaFallback2"/>
+    <testcase name="model rewritten to gpt-4o-nano (fallback-2)" time="0.047" classname="18LlmProvider3LevelFallbackChainCascadesThroughEveryMemberInvokeGpt4OPrimaryAndFallback1BothFailExpectSuccessViaFallback2"/>
+  </testsuite>
+  <testsuite name="18 - LlmProvider: 3-level fallback chain cascades through every member / Verify each backend received its own correctly-rewritten model" id="3969dc29-4b2b-44d4-8bea-252357714e07" timestamp="2026-08-18T08:08:37.668Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="fallback-2 (backend C) received gpt-4o-nano" time="0.001" classname="18LlmProvider3LevelFallbackChainCascadesThroughEveryMemberVerifyEachBackendReceivedItsOwnCorrectlyRewrittenModel"/>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e (response-path retry + additionalProviders reuse)" tests="3" time="0.685">
+  <testsuite name="10 - LlmProvider: Oversized fallback response is rejected / Force backend A (primary) to fail" id="d6516c75-6521-48db-8471-a1e1071d4504" timestamp="2026-09-08T04:31:39.070Z" tests="0" failures="0" errors="0" time="0.015"/>
+  <testsuite name="10 - LlmProvider: Oversized fallback response is rejected / Invoke gpt-4o - the only fallback's normal response exceeds maxResponseBytes=10" id="0e8b099f-c27f-499f-afb3-12d294a4649d" timestamp="2026-09-08T04:31:39.070Z" tests="2" failures="0" errors="0" time="0.021">
+    <testcase name="status is 500 - the oversized fallback response was rejected" time="0.021" classname="10LlmProviderOversizedFallbackResponseIsRejectedInvokeGpt4OTheOnlyFallbacksNormalResponseExceedsMaxResponseBytes10"/>
+    <testcase name="body is the primary's own forced-status error shape" time="0.021" classname="10LlmProviderOversizedFallbackResponseIsRejectedInvokeGpt4OTheOnlyFallbacksNormalResponseExceedsMaxResponseBytes10"/>
+  </testsuite>
+  <testsuite name="10 - LlmProvider: Oversized fallback response is rejected / Cleanup: delete mf-poc-sizelimit" id="bbce6f9d-ffd8-43ad-a246-2cd9e3d0496c" timestamp="2026-09-08T04:31:39.070Z" tests="0" failures="0" errors="0" time="0.649"/>
+</testsuites>

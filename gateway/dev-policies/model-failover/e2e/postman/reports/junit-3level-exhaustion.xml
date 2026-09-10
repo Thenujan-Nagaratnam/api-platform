@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="9" time="1.200">
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Reset backend A" id="8b56ca73-083d-47b2-a4cb-b4181638e109" timestamp="2026-08-18T08:08:38.106Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Reset backend B" id="3020f047-6138-4c0a-9839-3e2f721c326c" timestamp="2026-08-18T08:08:38.106Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Reset backend C" id="be812e99-f728-437a-ba84-4f137032cf8b" timestamp="2026-08-18T08:08:38.106Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Force backend A (primary) to fail" id="44c14f42-81ef-46c1-8491-2d96ebc04533" timestamp="2026-08-18T08:08:38.106Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Force backend B (fallback-1) to fail" id="57077a10-af87-4436-8eec-7b47ea3e4b31" timestamp="2026-08-18T08:08:38.106Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Force backend C (fallback-2) to fail" id="b4ef341c-bd03-43e9-8024-5785bbb3c43e" timestamp="2026-08-18T08:08:38.106Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Invoke gpt-4o - every member of the chain fails" id="2314f649-c3db-428d-aaa9-8f99df128109" timestamp="2026-08-18T08:08:38.106Z" tests="1" failures="0" errors="0" time="0.062">
+    <testcase name="the final attempt error surfaces cleanly - not a hang, not a mangled/swallowed response" time="0.062" classname="19LlmProviderFullyExhaustedChainSurfacesTheFinalAttemptsErrorInvokeGpt4OEveryMemberOfTheChainFails"/>
+  </testsuite>
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Verify all three members were actually dialed, each with its own rewritten model" id="3e76b7f8-a5e6-4b3b-84ba-b7434cdacd79" timestamp="2026-08-18T08:08:38.106Z" tests="1" failures="0" errors="0" time="0.000">
+    <testcase name="the last member (fallback-2) received the request too" time="0.000" classname="19LlmProviderFullyExhaustedChainSurfacesTheFinalAttemptsErrorVerifyAllThreeMembersWereActuallyDialedEachWithItsOwnRewrittenModel"/>
+  </testsuite>
+  <testsuite name="19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error / Cleanup: delete mf-3level-test" id="cd2a20a6-607c-49ce-9b89-4c3869ba9c50" timestamp="2026-08-18T08:08:38.106Z" tests="0" failures="0" errors="0" time="1.121"/>
+</testsuites>

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="Word Count Guardrail - vendor-shaped rejection e2e" tests="21" time="1.122">
+  <testsuite name="01 - Register Providers / Register: wcg-openai" id="72f4506c-40ec-47c9-a3e0-9e5d7564aa17" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.088">
+    <testcase name="created (200 or 201)" time="0.088" classname="01RegisterProvidersRegisterWcgOpenai"/>
+  </testsuite>
+  <testsuite name="01 - Register Providers / Register: wcg-anthropic" id="027a9767-a765-4870-be2d-534126cfab00" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.075">
+    <testcase name="created (200 or 201)" time="0.075" classname="01RegisterProvidersRegisterWcgAnthropic"/>
+  </testsuite>
+  <testsuite name="01 - Register Providers / Register: wcg-azureopenai" id="280b1ffd-a6a9-4245-b58d-1379abd9a503" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.075">
+    <testcase name="created (200 or 201)" time="0.075" classname="01RegisterProvidersRegisterWcgAzureopenai"/>
+  </testsuite>
+  <testsuite name="01 - Register Providers / Register: wcg-azureaifoundry" id="96dc0b36-3fdb-4d38-8a79-ec3cc5bbe2ed" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.075">
+    <testcase name="created (200 or 201)" time="0.075" classname="01RegisterProvidersRegisterWcgAzureaifoundry"/>
+  </testsuite>
+  <testsuite name="01 - Register Providers / Register: wcg-mistral" id="e2e604f8-7496-425a-8d38-021093da6afc" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.069">
+    <testcase name="created (200 or 201)" time="0.069" classname="01RegisterProvidersRegisterWcgMistral"/>
+  </testsuite>
+  <testsuite name="01 - Register Providers / Register: wcg-bedrock" id="e31f7765-1ab8-44d6-ba93-542ccd2bcd08" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.072">
+    <testcase name="created (200 or 201)" time="0.072" classname="01RegisterProvidersRegisterWcgBedrock"/>
+  </testsuite>
+  <testsuite name="01 - Register Providers / Register: wcg-gemini" id="a69be468-4b1e-48bd-a131-9dedac266feb" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.075">
+    <testcase name="created (200 or 201)" time="0.075" classname="01RegisterProvidersRegisterWcgGemini"/>
+  </testsuite>
+  <testsuite name="02 - Generate API Keys / Generate API key: wcg-openai" id="17b4b28f-550e-404c-8566-9e480de7fffc" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.073">
+    <testcase name="status is 200 or 201" time="0.073" classname="02GenerateApiKeysGenerateApiKeyWcgOpenai"/>
+  </testsuite>
+  <testsuite name="02 - Generate API Keys / Generate API key: wcg-anthropic" id="0c26d4d6-feb5-4ca0-82e7-22f8b5efe2f1" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.073">
+    <testcase name="status is 200 or 201" time="0.073" classname="02GenerateApiKeysGenerateApiKeyWcgAnthropic"/>
+  </testsuite>
+  <testsuite name="02 - Generate API Keys / Generate API key: wcg-azureopenai" id="2aff9f3c-f274-45af-a54b-8508c35eca8b" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.074">
+    <testcase name="status is 200 or 201" time="0.074" classname="02GenerateApiKeysGenerateApiKeyWcgAzureopenai"/>
+  </testsuite>
+  <testsuite name="02 - Generate API Keys / Generate API key: wcg-azureaifoundry" id="3887c237-27af-4a31-a58d-8281af13e389" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.076">
+    <testcase name="status is 200 or 201" time="0.076" classname="02GenerateApiKeysGenerateApiKeyWcgAzureaifoundry"/>
+  </testsuite>
+  <testsuite name="02 - Generate API Keys / Generate API key: wcg-mistral" id="5d2dc8cb-5921-4dd1-9c5e-84a64133eb57" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.073">
+    <testcase name="status is 200 or 201" time="0.073" classname="02GenerateApiKeysGenerateApiKeyWcgMistral"/>
+  </testsuite>
+  <testsuite name="02 - Generate API Keys / Generate API key: wcg-bedrock" id="407f365e-985d-491e-ae97-d96b7ef85d6e" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.075">
+    <testcase name="status is 200 or 201" time="0.075" classname="02GenerateApiKeysGenerateApiKeyWcgBedrock"/>
+  </testsuite>
+  <testsuite name="02 - Generate API Keys / Generate API key: wcg-gemini" id="9d98c2ae-4d56-4ac6-a57a-e2a200dbff89" timestamp="2026-09-01T06:49:40.500Z" tests="1" failures="0" errors="0" time="0.068">
+    <testcase name="status is 200 or 201" time="0.068" classname="02GenerateApiKeysGenerateApiKeyWcgGemini"/>
+  </testsuite>
+  <testsuite name="03 - Trigger Guardrail &amp; Verify Vendor Shape / Trigger guardrail: wcg-openai (expect openai-shaped rejection)" id="55dcbd74-0db8-4c51-89ef-e8ebc7fd1213" timestamp="2026-09-01T06:49:40.500Z" tests="3" failures="0" errors="0" time="0.015">
+    <testcase name="status is 200" time="0.015" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgOpenaiExpectOpenaiShapedRejection"/>
+    <testcase name="body contains vendor-shaped marker" time="0.015" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgOpenaiExpectOpenaiShapedRejection"/>
+    <testcase name="body does NOT contain default WSO2 shape marker" time="0.015" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgOpenaiExpectOpenaiShapedRejection"/>
+  </testsuite>
+  <testsuite name="03 - Trigger Guardrail &amp; Verify Vendor Shape / Trigger guardrail: wcg-anthropic (expect anthropic-shaped rejection)" id="4fa0ecec-df23-44b8-b159-a7cf1873e00c" timestamp="2026-09-01T06:49:40.500Z" tests="3" failures="0" errors="0" time="0.013">
+    <testcase name="status is 400" time="0.013" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAnthropicExpectAnthropicShapedRejection"/>
+    <testcase name="body contains vendor-shaped marker" time="0.013" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAnthropicExpectAnthropicShapedRejection"/>
+    <testcase name="body does NOT contain default WSO2 shape marker" time="0.013" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAnthropicExpectAnthropicShapedRejection"/>
+  </testsuite>
+  <testsuite name="03 - Trigger Guardrail &amp; Verify Vendor Shape / Trigger guardrail: wcg-azureopenai (expect azure-openai-shaped rejection)" id="5abac415-3ac4-4a30-8e04-892592914f2b" timestamp="2026-09-01T06:49:40.500Z" tests="3" failures="0" errors="0" time="0.014">
+    <testcase name="status is 200" time="0.014" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAzureopenaiExpectAzureOpenaiShapedRejection"/>
+    <testcase name="body contains vendor-shaped marker" time="0.014" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAzureopenaiExpectAzureOpenaiShapedRejection"/>
+    <testcase name="body does NOT contain default WSO2 shape marker" time="0.014" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAzureopenaiExpectAzureOpenaiShapedRejection"/>
+  </testsuite>
+  <testsuite name="03 - Trigger Guardrail &amp; Verify Vendor Shape / Trigger guardrail: wcg-azureaifoundry (expect azureai-foundry-shaped rejection)" id="dabab3b6-faa8-4a9b-826e-65022ce846b5" timestamp="2026-09-01T06:49:40.500Z" tests="3" failures="0" errors="0" time="0.011">
+    <testcase name="status is 200" time="0.011" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAzureaifoundryExpectAzureaiFoundryShapedRejection"/>
+    <testcase name="body contains vendor-shaped marker" time="0.011" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAzureaifoundryExpectAzureaiFoundryShapedRejection"/>
+    <testcase name="body does NOT contain default WSO2 shape marker" time="0.011" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgAzureaifoundryExpectAzureaiFoundryShapedRejection"/>
+  </testsuite>
+  <testsuite name="03 - Trigger Guardrail &amp; Verify Vendor Shape / Trigger guardrail: wcg-mistral (expect mistralai-shaped rejection)" id="3ac03f47-22b3-4b26-8326-cbcdf28bb5e2" timestamp="2026-09-01T06:49:40.500Z" tests="3" failures="0" errors="0" time="0.012">
+    <testcase name="status is 200" time="0.012" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgMistralExpectMistralaiShapedRejection"/>
+    <testcase name="body contains vendor-shaped marker" time="0.012" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgMistralExpectMistralaiShapedRejection"/>
+    <testcase name="body does NOT contain default WSO2 shape marker" time="0.012" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgMistralExpectMistralaiShapedRejection"/>
+  </testsuite>
+  <testsuite name="03 - Trigger Guardrail &amp; Verify Vendor Shape / Trigger guardrail: wcg-bedrock (expect awsbedrock-shaped rejection)" id="46782a32-9fca-4321-a0b8-1a2c60c53197" timestamp="2026-09-01T06:49:40.500Z" tests="3" failures="0" errors="0" time="0.007">
+    <testcase name="status is 200" time="0.007" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgBedrockExpectAwsbedrockShapedRejection"/>
+    <testcase name="body contains vendor-shaped marker" time="0.007" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgBedrockExpectAwsbedrockShapedRejection"/>
+    <testcase name="body does NOT contain default WSO2 shape marker" time="0.007" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgBedrockExpectAwsbedrockShapedRejection"/>
+  </testsuite>
+  <testsuite name="03 - Trigger Guardrail &amp; Verify Vendor Shape / Trigger guardrail: wcg-gemini (expect gemini-shaped rejection)" id="0b9a97bc-54fb-4e46-b273-f49804deb3ba" timestamp="2026-09-01T06:49:40.500Z" tests="3" failures="0" errors="0" time="0.009">
+    <testcase name="status is 200" time="0.009" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgGeminiExpectGeminiShapedRejection"/>
+    <testcase name="body contains vendor-shaped marker" time="0.009" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgGeminiExpectGeminiShapedRejection"/>
+    <testcase name="body does NOT contain default WSO2 shape marker" time="0.009" classname="03TriggerGuardrailAmpVerifyVendorShapeTriggerGuardrailWcgGeminiExpectGeminiShapedRejection"/>
+  </testsuite>
+</testsuites>

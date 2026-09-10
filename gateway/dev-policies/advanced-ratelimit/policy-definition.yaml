@@ -1,0 +1,547 @@
+name: advanced-ratelimit
+version: v1.1.0
+description: |
+  Applies advanced rate limits using fixed-window (default) or GCRA algorithms with multi-quota controls,
+  configurable key and cost extraction, and memory or Redis storage.
+
+parameters:
+  type: object
+  additionalProperties: false
+  required: ["quotas"]
+  properties:
+    quotas:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: |
+        Defines quota entries. Each quota applies independent limits with its own keyExtraction
+        and costExtraction settings.
+      minItems: 1
+      maxItems: 10
+      items:
+        type: object
+        x-wso2-policy-advanced-param: false
+        additionalProperties: false
+        required: ["limits"]
+        properties:
+          name:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: |
+              Specifies a quota name for logs and X-RateLimit-Quota responses.
+            minLength: 1
+            maxLength: 128
+
+          limits:
+            type: array
+            x-wso2-policy-advanced-param: false
+            description: |
+              Defines one or more limits for the quota. The strictest limit is enforced.
+            minItems: 1
+            maxItems: 10
+            items:
+              type: object
+              x-wso2-policy-advanced-param: false
+              additionalProperties: false
+              required: ["limit", "duration"]
+              properties:
+                limit:
+                  type: integer
+                  x-wso2-policy-advanced-param: false
+                  description: Specifies the maximum allowed requests or tokens within the duration.
+                  minimum: 1
+                  maximum: 1000000000
+                duration:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Specifies the limit window as a Go duration string.
+                    Supports units ns, us, µs, ms, s, m, h, including
+                    composite and fractional values (for example "500ms",
+                    "1.5s", "1m30s", "24h").
+                  pattern: "^[-+]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h))+$"
+                burst:
+                  type: integer
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Specifies burst capacity. If omitted, the policy uses the same value as limit.
+                  minimum: 1
+                  maximum: 1000000000
+
+          keyExtraction:
+            type: array
+            x-wso2-policy-advanced-param: true
+            description: |
+              Defines per-quota key extraction. If omitted, the policy uses global keyExtraction
+              or defaults to routename.
+            minItems: 0
+            maxItems: 5
+            items:
+              type: object
+              x-wso2-policy-advanced-param: false
+              additionalProperties: false
+              required: ["type"]
+              properties:
+                type:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Specifies which key component to extract: header, metadata, ip, apiname,
+                    apiversion, routename, cel, or constant.
+                  enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+                key:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: Specifies the header name or metadata key for header and metadata types.
+                  minLength: 1
+                  maxLength: 256
+                expression:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Specifies the CEL expression for cel type and requires a string result.
+                  maxLength: 1024
+              allOf:
+                - if:
+                    properties:
+                      type:
+                        enum: ["header", "metadata", "constant"]
+                    required: ["type"]
+                  then:
+                    required: ["key"]
+                - if:
+                    properties:
+                      type:
+                        const: "cel"
+                    required: ["type"]
+                  then:
+                    required: ["expression"]
+                    properties:
+                      expression:
+                        minLength: 1
+
+          costExtraction:
+            type: object
+            x-wso2-policy-advanced-param: true
+            description: |
+              Configures per-quota dynamic cost extraction from request or response data.
+              Values from successful sources are summed after multipliers.
+            additionalProperties: false
+            properties:
+              enabled:
+                type: boolean
+                x-wso2-policy-advanced-param: false
+                description: Enables dynamic cost extraction for the quota.
+                default: false
+
+              sources:
+                type: array
+                x-wso2-policy-advanced-param: false
+                description: |
+                  Defines cost extraction sources. Successful values are summed with multipliers.
+                  If all sources fail, default is used.
+                minItems: 0
+                maxItems: 10
+                items:
+                  type: object
+                  x-wso2-policy-advanced-param: false
+                  additionalProperties: false
+                  required: ["type"]
+                  properties:
+                    type:
+                      type: string
+                      x-wso2-policy-advanced-param: false
+                      description: |
+                        Specifies the cost source type: request_header, request_metadata,
+                        request_body, response_header, response_metadata, response_body,
+                        request_cel, or response_cel.
+                      enum: ["request_header", "request_metadata", "request_body",
+                             "response_header", "response_metadata", "response_body",
+                             "request_cel", "response_cel"]
+
+                    key:
+                      type: string
+                      x-wso2-policy-advanced-param: false
+                      description: |
+                        Specifies the header name or metadata key for header and metadata sources.
+                      maxLength: 256
+
+                    jsonPath:
+                      type: string
+                      x-wso2-policy-advanced-param: false
+                      description: |
+                        Specifies the JSONPath expression for request_body or response_body sources.
+                      maxLength: 512
+
+                    expression:
+                      type: string
+                      x-wso2-policy-advanced-param: false
+                      description: |
+                        Specifies the CEL expression for request_cel or response_cel and requires
+                        a numeric result.
+                      maxLength: 1024
+
+                    multiplier:
+                      type: number
+                      x-wso2-policy-advanced-param: false
+                      description: |
+                        Specifies a multiplier applied to the extracted cost value.
+                      minimum: 0
+                      default: 1.0
+                  allOf:
+                    - if:
+                        properties:
+                          type:
+                            enum: ["request_header", "request_metadata", "response_header", "response_metadata"]
+                        required: ["type"]
+                      then:
+                        required: ["key"]
+                        properties:
+                          key:
+                            minLength: 1
+                    - if:
+                        properties:
+                          type:
+                            enum: ["request_body", "response_body"]
+                        required: ["type"]
+                      then:
+                        required: ["jsonPath"]
+                        properties:
+                          jsonPath:
+                            minLength: 1
+                    - if:
+                        properties:
+                          type:
+                            enum: ["request_cel", "response_cel"]
+                        required: ["type"]
+                      then:
+                        required: ["expression"]
+                        properties:
+                          expression:
+                            minLength: 1
+
+              default:
+                type: number
+                x-wso2-policy-advanced-param: false
+                description: Specifies the fallback cost when all source extractions fail.
+                minimum: 0
+                maximum: 1000000000
+                default: 1
+
+    keyExtraction:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: |
+        Defines global key extraction for quotas that do not set keyExtraction.
+        If omitted or empty, the policy defaults to routename.
+      minItems: 0
+      maxItems: 5
+      items:
+        type: object
+        x-wso2-policy-advanced-param: false
+        additionalProperties: false
+        required: ["type"]
+        properties:
+          type:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: |
+              Specifies which key component to extract: header, metadata, ip, apiname,
+              apiversion, routename, cel, or constant.
+            enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+          key:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: Specifies the header name or metadata key for header and metadata types.
+            minLength: 1
+            maxLength: 256
+          expression:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: |
+              Specifies the CEL expression for cel type and requires a string result.
+            maxLength: 1024
+        allOf:
+          - if:
+              properties:
+                type:
+                  enum: ["header", "metadata", "constant"]
+              required: ["type"]
+            then:
+              required: ["key"]
+          - if:
+              properties:
+                type:
+                  const: "cel"
+              required: ["type"]
+            then:
+              required: ["expression"]
+              properties:
+                expression:
+                  minLength: 1
+
+    onRateLimitExceeded:
+      type: object
+      x-wso2-policy-advanced-param: true
+      description: Customizes the response returned when a request exceeds rate limits.
+      additionalProperties: false
+      properties:
+        statusCode:
+          type: integer
+          x-wso2-policy-advanced-param: false
+          description: Specifies the HTTP status code returned for rate-limited requests.
+          minimum: 400
+          maximum: 599
+          default: 429
+
+        body:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: Specifies the response body returned for rate-limited requests.
+          maxLength: 8192
+          default: '{"error": "Too Many Requests", "message": "Rate limit exceeded. Please try again later."}'
+
+        bodyFormat:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: Specifies the rate-limit response body format.
+          enum: ["json", "plain"]
+          default: "json"
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    algorithm:
+      type: string
+      description: |
+        Specifies the rate-limiting algorithm: gcra for smoother burst handling or
+        fixed-window for simple interval counting.
+      enum: ["gcra", "fixed-window"]
+      default: "fixed-window"
+      "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.algorithm}"
+
+    backend:
+      type: string
+      description: |
+        Specifies the storage backend: memory for single-instance limits, redis for
+        exact distributed limits (one Redis call per request), or redis-local-async for
+        distributed limits with a local-first hot path that reconciles with Redis
+        asynchronously (lower latency and Redis load, with bounded overshoot). For
+        either Redis backend, uses the gateway-wide default Redis client (the
+        top-level config.redis section) by default, or this policy's own
+        connection when systemParameters.redis.host is explicitly set.
+      enum: ["memory", "redis", "redis-local-async"]
+      default: "memory"
+      "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.backend}"
+
+    redis:
+      type: object
+      description: >
+        Configures Redis settings when backend is redis or redis-local-async.
+        host/port/username/password/db/poolSize are an OPTIONAL per-policy
+        connection override: left unset (the default), this policy instance
+        uses the gateway-wide default Redis client instead (the top-level
+        config.redis section - see redisclient.Shared() in
+        sdk/core/utils/redisclient). Configure an override only when this
+        policy genuinely needs a distinct Redis instance/database from that
+        gateway default. keyPrefix/failureMode/the timeouts apply regardless
+        of which client backs the tier.
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+          description: >
+            Optional per-policy Redis host override. Unset (the default)
+            means: use the gateway-wide default Redis client instead of
+            connecting separately. Deliberately has no schema default - see
+            this object's own description.
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.host}"
+
+        port:
+          type: integer
+          description: >
+            Redis server port for the per-policy override above. Only
+            meaningful when host is set; has no effect on the gateway-wide
+            default client.
+          minimum: 1
+          maximum: 65535
+          default: 6379
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.port}"
+
+        password:
+          type: string
+          description: Specifies the optional Redis authentication password.
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.password}"
+
+        username:
+          type: string
+          description: Specifies the optional Redis ACL username.
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.username}"
+
+        db:
+          type: integer
+          description: >
+            Redis database index for the per-policy override above. Only
+            meaningful when host is set.
+          minimum: 0
+          maximum: 15
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.db}"
+
+        keyPrefix:
+          type: string
+          description: Specifies the prefix used for all Redis keys.
+          default: "ratelimit:v1:"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.key_prefix}"
+
+        failureMode:
+          type: string
+          description: |
+            Specifies behavior when Redis is unavailable: open allows requests,
+            closed blocks requests.
+          enum: ["open", "closed"]
+          default: "open"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.failure_mode}"
+
+        connectionTimeout:
+          type: string
+          description: Connection timeout for the per-policy override above, as
+            a Go duration string. Supports units ns, us, µs, ms, s, m, h,
+            including composite and fractional values (for example "500ms",
+            "1.5s", "1m30s"). Only meaningful when host is set - has no
+            effect on the gateway-wide default client, which is bound by its
+            own connection_timeout under config.toml's top-level [redis]
+            section instead.
+          default: "5s"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.connection_timeout}"
+
+        readTimeout:
+          type: string
+          description: Read timeout for the per-policy override above, as a Go
+            duration string. Supports units ns, us, µs, ms, s, m, h, including
+            composite and fractional values (for example "500ms", "1.5s",
+            "1m30s"). Only meaningful when host is set - has no effect on the
+            gateway-wide default client, which is bound by its own
+            read_timeout under config.toml's top-level [redis] section
+            instead.
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.read_timeout}"
+
+        writeTimeout:
+          type: string
+          description: Write timeout for the per-policy override above, as a Go
+            duration string. Supports units ns, us, µs, ms, s, m, h, including
+            composite and fractional values (for example "500ms", "1.5s",
+            "1m30s"). Only meaningful when host is set - has no effect on the
+            gateway-wide default client, which is bound by its own
+            write_timeout under config.toml's top-level [redis] section
+            instead.
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.write_timeout}"
+
+        poolSize:
+          type: integer
+          description: >
+            Connection pool size for the per-policy override above. Only
+            meaningful when host is set - has no effect on the gateway-wide
+            default client's own pool size. 0 = go-redis default (10 x
+            GOMAXPROCS).
+          minimum: 0
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.pool_size}"
+
+    memory:
+      type: object
+      description: Configures in-memory storage settings when backend is memory.
+      additionalProperties: false
+      properties:
+        maxEntries:
+          type: integer
+          description: |
+            Specifies the maximum in-memory rate-limit entries before eviction.
+          minimum: 100
+          maximum: 10000000
+          default: 10000
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.memory.max_entries}"
+
+        cleanupInterval:
+          type: string
+          description: |
+            Specifies how often expired in-memory entries are cleaned up.
+            Supports units ns, us, µs, ms, s, m, h, including composite and
+            fractional values (for example "500ms", "1.5s", "1m30s").
+            Use "0" to disable cleanup.
+          default: "5m"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.memory.cleanup_interval}"
+
+    local:
+      type: object
+      description: Configures the local-first hot path when backend is redis-local-async.
+      additionalProperties: false
+      properties:
+        syncInterval:
+          type: string
+          description: |
+            Specifies how often locally counted requests are flushed to Redis and the
+            authoritative count is read back. Lower values tighten accuracy (less
+            overshoot) at the cost of more Redis operations. Supports units ns, us, µs,
+            ms, s, m, h, including composite and fractional values (for example "500ms",
+            "1.5s", "1m30s").
+          default: "50ms"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.local.sync_interval}"
+
+        flushWorkers:
+          type: integer
+          description: |
+            Number of background flush workers shared by all redis-local-async limiters
+            in the process. 0 = auto (GOMAXPROCS/2, capped at 8). Only the first
+            registrant's value takes effect; a restart is required to change it.
+          minimum: 0
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.local.flush_workers}"
+
+        maxPipelineCommands:
+          type: integer
+          description: |
+            Maximum INCRBYs issued in a single Redis pipeline per flush; excess dirty keys
+            spill to the next flush tick.
+          minimum: 0
+          default: 5000
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.local.max_pipeline_commands}"
+
+        maxLocalEntries:
+          type: integer
+          description: |
+            Maximum local key-state entries per limiter before eviction (carrying any
+            unflushed delta to Redis). Bounds memory under high/adversarial key
+            cardinality.
+          minimum: 0
+          default: 100000
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.local.max_local_entries}"
+
+    headers:
+      type: object
+      description: Configures which rate-limit headers are added to responses.
+      additionalProperties: false
+      properties:
+        includeXRateLimit:
+          type: boolean
+          description: |
+            Includes X-RateLimit-Limit, X-RateLimit-Remaining, and X-RateLimit-Reset headers.
+          default: true
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.headers.include_x_rate_limit}"
+
+        includeIETF:
+          type: boolean
+          description: |
+            Includes RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, and
+            RateLimit-Policy headers.
+          default: true
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.headers.include_ietf}"
+
+        includeRetryAfter:
+          type: boolean
+          description: |
+            Includes the Retry-After header on 429 responses.
+          default: true
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.headers.include_retry_after}"

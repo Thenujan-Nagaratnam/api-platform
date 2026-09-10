@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e (response-path retry + additionalProviders reuse)" tests="7" time="0.046">
+  <testsuite name="02 - LlmProvider: Unmatched model passes through untouched / Reset backend A" id="9be50402-b5dc-4e69-984b-673deff238a7" timestamp="2026-09-08T04:31:24.111Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="02 - LlmProvider: Unmatched model passes through untouched / Invoke with a model no target group declares" id="44c5cd24-68e2-460a-a855-f2296d9deca9" timestamp="2026-09-08T04:31:24.111Z" tests="1" failures="0" errors="0" time="0.022">
+    <testcase name="status is 200" time="0.022" classname="02LlmProviderUnmatchedModelPassesThroughUntouchedInvokeWithAModelNoTargetGroupDeclares"/>
+  </testsuite>
+  <testsuite name="02 - LlmProvider: Unmatched model passes through untouched / Verify backend A received the request byte-for-byte unmodified" id="719facf7-2f0d-4839-b2e4-59a44114d6bf" timestamp="2026-09-08T04:31:24.111Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend A received the untouched model" time="0.001" classname="02LlmProviderUnmatchedModelPassesThroughUntouchedVerifyBackendAReceivedTheRequestByteForByteUnmodified"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Bare same-provider fallback recovers a transient failure / Reset backend A" id="04e29eef-5ac9-4ecb-8555-147ef96a82ee" timestamp="2026-09-08T04:31:24.111Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="03 - LlmProvider: Bare same-provider fallback recovers a transient failure / Force backend A to fail once (primary attempt)" id="54c9f95c-6083-48f6-9197-887fa711af1a" timestamp="2026-09-08T04:31:24.111Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="03 - LlmProvider: Bare same-provider fallback recovers a transient failure / Invoke gpt-4o - primary fails once, bare fallback re-dials the SAME backend" id="7c8912e9-ccdb-4515-9b72-d28ee3ced215" timestamp="2026-09-08T04:31:24.111Z" tests="2" failures="0" errors="0" time="0.009">
+    <testcase name="status is 200 despite the primary attempt failing" time="0.009" classname="03LlmProviderBareSameProviderFallbackRecoversATransientFailureInvokeGpt4OPrimaryFailsOnceBareFallbackReDialsTheSameBackend"/>
+    <testcase name="response shows the rewritten fallback model" time="0.009" classname="03LlmProviderBareSameProviderFallbackRecoversATransientFailureInvokeGpt4OPrimaryFailsOnceBareFallbackReDialsTheSameBackend"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Bare same-provider fallback recovers a transient failure / Verify backend A's second attempt (the bare fallback) landed with the rewritten model" id="3837fa40-a3a3-42a6-af9c-92c60ccff3ce" timestamp="2026-09-08T04:31:24.111Z" tests="2" failures="0" errors="0" time="0.000">
+    <testcase name="backend A's last request shows gpt-4o-mini" time="0.000" classname="03LlmProviderBareSameProviderFallbackRecoversATransientFailureVerifyBackendAsSecondAttemptTheBareFallbackLandedWithTheRewrittenModel"/>
+    <testcase name="bare fallback is a self-redial, not a raw direct dial" time="0.000" classname="03LlmProviderBareSameProviderFallbackRecoversATransientFailureVerifyBackendAsSecondAttemptTheBareFallbackLandedWithTheRewrittenModel"/>
+  </testsuite>
+</testsuites>

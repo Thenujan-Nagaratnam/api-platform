@@ -1,0 +1,1449 @@
+{
+  "info": {
+    "name": "Word Count Guardrail - vendor-shaped rejection e2e",
+    "_postman_id": "b9abd787-a2b5-4400-9692-d631a1c96a4d",
+    "description": "End-to-end verification that word-count-guardrail renders its rejection in each LLM vendor's own convention (guardrailResponse, read live from the backing LlmProviderTemplate via policy.GetLazyResourceStoreInstance()) instead of the default WSO2 JSON shape.\n\nCompanion to gateway/dev-policies/word-count-guardrail/e2e/TESTING.md - read that doc for the full narrative; this collection is the same flows as importable requests.\n\nPrerequisites:\n1. Build the gateway with word-count-guardrail wired via gateway/build.yaml's filePath entry (see TESTING.md Part A).\n2. Bring up gateway-controller + gateway-runtime (TESTING.md Part B).\n\nNo mock LLM backend is needed: every request-phase guardrail rejection here fires BEFORE the request would ever reach an upstream, so upstream.url is a placeholder and is never dialed.\n\nRun folders in order: 00 (health) -> 01 (register) -> 02 (api keys) -> 03 (trigger + assert vendor shape) -> 04 (cleanup).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090",
+      "description": "gateway-controller REST management API, base path /api/management/v1"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8080",
+      "description": "gateway-runtime (Envoy) data-plane traffic"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "description": "Confirm the gateway stack is up before registering anything.",
+      "item": [
+        {
+          "name": "gateway-controller mgmt API reachable",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 401', function () { pm.expect([200, 401]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "rest-apis"
+              ],
+              "protocol": "http"
+            },
+            "description": "Any response (even 401 without creds) proves the controller is up."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Register Providers",
+      "item": [
+        {
+          "name": "Register: wcg-openai",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: wcg-openai\nspec:\n  displayName: Word Count Guardrail Test (openai)\n  version: v1.0\n  template: openai\n  context: /wcg-openai\n  upstream:\n    url: https://example.invalid\n    auth:\n      type: none\n  policies:\n    - name: api-key-auth\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            key: Authorization\n            in: header\n            valuePrefix: \"Bearer \"\n    - name: word-count-guardrail\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            request:\n              enabled: true\n              min: 5\n              max: 1000\n              jsonPath: \"$.messages[-1].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: wcg-anthropic",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: wcg-anthropic\nspec:\n  displayName: Word Count Guardrail Test (anthropic)\n  version: v1.0\n  template: anthropic\n  context: /wcg-anthropic\n  upstream:\n    url: https://example.invalid\n    auth:\n      type: none\n  policies:\n    - name: api-key-auth\n      version: v1\n      paths:\n        - path: /v1/messages\n          methods: [POST]\n          params:\n            key: x-api-key\n            in: header\n    - name: word-count-guardrail\n      version: v1\n      paths:\n        - path: /v1/messages\n          methods: [POST]\n          params:\n            request:\n              enabled: true\n              min: 5\n              max: 1000\n              jsonPath: \"$.messages[-1].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /v1/messages\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: wcg-azureopenai",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: wcg-azureopenai\nspec:\n  displayName: Word Count Guardrail Test (azure-openai)\n  version: v1.0\n  template: azure-openai\n  context: /wcg-azureopenai\n  upstream:\n    url: https://example.invalid\n    auth:\n      type: none\n  policies:\n    - name: api-key-auth\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            key: api-key\n            in: header\n    - name: word-count-guardrail\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            request:\n              enabled: true\n              min: 5\n              max: 1000\n              jsonPath: \"$.messages[-1].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: wcg-azureaifoundry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: wcg-azureaifoundry\nspec:\n  displayName: Word Count Guardrail Test (azureai-foundry)\n  version: v1.0\n  template: azureai-foundry\n  context: /wcg-azureaifoundry\n  upstream:\n    url: https://example.invalid\n    auth:\n      type: none\n  policies:\n    - name: api-key-auth\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            key: api-key\n            in: header\n    - name: word-count-guardrail\n      version: v1\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            request:\n              enabled: true\n              min: 5\n              max: 1000\n              jsonPath: \"$.messages[-1].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: wcg-mistral",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: wcg-mistral\nspec:\n  displayName: Word Count Guardrail Test (mistralai)\n  version: v1.0\n  template: mistralai\n  context: /wcg-mistral\n  upstream:\n    url: https://example.invalid\n    auth:\n      type: none\n  policies:\n    - name: api-key-auth\n      version: v1\n      paths:\n        - path: /v1/chat/completions\n          methods: [POST]\n          params:\n            key: Authorization\n            in: header\n            valuePrefix: \"Bearer \"\n    - name: word-count-guardrail\n      version: v1\n      paths:\n        - path: /v1/chat/completions\n          methods: [POST]\n          params:\n            request:\n              enabled: true\n              min: 5\n              max: 1000\n              jsonPath: \"$.messages[-1].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /v1/chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: wcg-bedrock",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: wcg-bedrock\nspec:\n  displayName: Word Count Guardrail Test (awsbedrock)\n  version: v1.0\n  template: awsbedrock\n  context: /wcg-bedrock\n  upstream:\n    url: https://example.invalid\n    auth:\n      type: none\n  policies:\n    - name: api-key-auth\n      version: v1\n      paths:\n        - path: /model/test-model/converse\n          methods: [POST]\n          params:\n            key: Authorization\n            in: header\n            valuePrefix: \"Bearer \"\n    - name: word-count-guardrail\n      version: v1\n      paths:\n        - path: /model/test-model/converse\n          methods: [POST]\n          params:\n            request:\n              enabled: true\n              min: 5\n              max: 1000\n              jsonPath: \"$.messages[-1].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /model/test-model/converse\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: wcg-gemini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: wcg-gemini\nspec:\n  displayName: Word Count Guardrail Test (gemini)\n  version: v1.0\n  template: gemini\n  context: /wcg-gemini\n  upstream:\n    url: https://example.invalid\n    auth:\n      type: none\n  policies:\n    - name: api-key-auth\n      version: v1\n      paths:\n        - path: /v1beta/models/test-model:generateContent\n          methods: [POST]\n          params:\n            key: x-goog-api-key\n            in: header\n    - name: word-count-guardrail\n      version: v1\n      paths:\n        - path: /v1beta/models/test-model:generateContent\n          methods: [POST]\n          params:\n            request:\n              enabled: true\n              min: 5\n              max: 1000\n              jsonPath: \"$.messages[-1].content\"\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /v1beta/models/test-model:generateContent\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Generate API Keys",
+      "item": [
+        {
+          "name": "Generate API key: wcg-openai",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('wcg_openai_apiKey', json.apiKey.apiKey);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-openai/api-keys",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-openai",
+                "api-keys"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-key\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Generate API key: wcg-anthropic",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('wcg_anthropic_apiKey', json.apiKey.apiKey);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-anthropic/api-keys",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-anthropic",
+                "api-keys"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-key\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Generate API key: wcg-azureopenai",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('wcg_azureopenai_apiKey', json.apiKey.apiKey);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-azureopenai/api-keys",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-azureopenai",
+                "api-keys"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-key\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Generate API key: wcg-azureaifoundry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('wcg_azureaifoundry_apiKey', json.apiKey.apiKey);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-azureaifoundry/api-keys",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-azureaifoundry",
+                "api-keys"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-key\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Generate API key: wcg-mistral",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('wcg_mistral_apiKey', json.apiKey.apiKey);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-mistral/api-keys",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-mistral",
+                "api-keys"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-key\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Generate API key: wcg-bedrock",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('wcg_bedrock_apiKey', json.apiKey.apiKey);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-bedrock/api-keys",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-bedrock",
+                "api-keys"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-key\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Generate API key: wcg-gemini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('wcg_gemini_apiKey', json.apiKey.apiKey);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-gemini/api-keys",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-gemini",
+                "api-keys"
+              ],
+              "protocol": "http"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-key\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - Trigger Guardrail & Verify Vendor Shape",
+      "item": [
+        {
+          "name": "Trigger guardrail: wcg-openai (expect openai-shaped rejection)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.text();",
+                  "pm.test(\"body contains vendor-shaped marker\", function () { pm.expect(body).to.include(\"content_filter\"); });",
+                  "pm.test('body does NOT contain default WSO2 shape marker', function () { pm.expect(body).to.not.include(\"WORD_COUNT_GUARDRAIL\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{wcg_openai_apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{gatewayBaseUrl}}/wcg-openai/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "wcg-openai",
+                "chat",
+                "completions"
+              ],
+              "protocol": "http"
+            },
+            "description": "Sends a 1-word message (below word-count-guardrail's min=5) to the openai-templated test provider. Expects the rejection rendered in openai's own convention (guardrailResponse read live from the LlmProviderTemplate), not the default WSO2 shape.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger guardrail: wcg-anthropic (expect anthropic-shaped rejection)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+                  "const body = pm.response.text();",
+                  "pm.test(\"body contains vendor-shaped marker\", function () { pm.expect(body).to.include(\"\\\"type\\\":\\\"error\\\"\"); });",
+                  "pm.test('body does NOT contain default WSO2 shape marker', function () { pm.expect(body).to.not.include(\"WORD_COUNT_GUARDRAIL\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{wcg_anthropic_apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{gatewayBaseUrl}}/wcg-anthropic/v1/messages",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "wcg-anthropic",
+                "v1",
+                "messages"
+              ],
+              "protocol": "http"
+            },
+            "description": "Sends a 1-word message (below word-count-guardrail's min=5) to the anthropic-templated test provider. Expects the rejection rendered in anthropic's own convention (guardrailResponse read live from the LlmProviderTemplate), not the default WSO2 shape.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger guardrail: wcg-azureopenai (expect azure-openai-shaped rejection)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.text();",
+                  "pm.test(\"body contains vendor-shaped marker\", function () { pm.expect(body).to.include(\"content_filter\"); });",
+                  "pm.test('body does NOT contain default WSO2 shape marker', function () { pm.expect(body).to.not.include(\"WORD_COUNT_GUARDRAIL\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "api-key",
+                "value": "{{wcg_azureopenai_apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{gatewayBaseUrl}}/wcg-azureopenai/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "wcg-azureopenai",
+                "chat",
+                "completions"
+              ],
+              "protocol": "http"
+            },
+            "description": "Sends a 1-word message (below word-count-guardrail's min=5) to the azure-openai-templated test provider. Expects the rejection rendered in azure-openai's own convention (guardrailResponse read live from the LlmProviderTemplate), not the default WSO2 shape.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger guardrail: wcg-azureaifoundry (expect azureai-foundry-shaped rejection)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.text();",
+                  "pm.test(\"body contains vendor-shaped marker\", function () { pm.expect(body).to.include(\"content_filter\"); });",
+                  "pm.test('body does NOT contain default WSO2 shape marker', function () { pm.expect(body).to.not.include(\"WORD_COUNT_GUARDRAIL\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "api-key",
+                "value": "{{wcg_azureaifoundry_apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{gatewayBaseUrl}}/wcg-azureaifoundry/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "wcg-azureaifoundry",
+                "chat",
+                "completions"
+              ],
+              "protocol": "http"
+            },
+            "description": "Sends a 1-word message (below word-count-guardrail's min=5) to the azureai-foundry-templated test provider. Expects the rejection rendered in azureai-foundry's own convention (guardrailResponse read live from the LlmProviderTemplate), not the default WSO2 shape.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger guardrail: wcg-mistral (expect mistralai-shaped rejection)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.text();",
+                  "pm.test(\"body contains vendor-shaped marker\", function () { pm.expect(body).to.include(\"\\\"finish_reason\\\":\\\"error\\\"\"); });",
+                  "pm.test('body does NOT contain default WSO2 shape marker', function () { pm.expect(body).to.not.include(\"WORD_COUNT_GUARDRAIL\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{wcg_mistral_apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{gatewayBaseUrl}}/wcg-mistral/v1/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "wcg-mistral",
+                "v1",
+                "chat",
+                "completions"
+              ],
+              "protocol": "http"
+            },
+            "description": "Sends a 1-word message (below word-count-guardrail's min=5) to the mistralai-templated test provider. Expects the rejection rendered in mistralai's own convention (guardrailResponse read live from the LlmProviderTemplate), not the default WSO2 shape.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger guardrail: wcg-bedrock (expect awsbedrock-shaped rejection)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.text();",
+                  "pm.test(\"body contains vendor-shaped marker\", function () { pm.expect(body).to.include(\"guardrail_intervened\"); });",
+                  "pm.test('body does NOT contain default WSO2 shape marker', function () { pm.expect(body).to.not.include(\"WORD_COUNT_GUARDRAIL\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{wcg_bedrock_apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{gatewayBaseUrl}}/wcg-bedrock/model/test-model/converse",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "wcg-bedrock",
+                "model",
+                "test-model",
+                "converse"
+              ],
+              "protocol": "http"
+            },
+            "description": "Sends a 1-word message (below word-count-guardrail's min=5) to the awsbedrock-templated test provider. Expects the rejection rendered in awsbedrock's own convention (guardrailResponse read live from the LlmProviderTemplate), not the default WSO2 shape.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger guardrail: wcg-gemini (expect gemini-shaped rejection)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.text();",
+                  "pm.test(\"body contains vendor-shaped marker\", function () { pm.expect(body).to.include(\"SAFETY\"); });",
+                  "pm.test('body does NOT contain default WSO2 shape marker', function () { pm.expect(body).to.not.include(\"WORD_COUNT_GUARDRAIL\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{wcg_gemini_apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{gatewayBaseUrl}}/wcg-gemini/v1beta/models/test-model:generateContent",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "wcg-gemini",
+                "v1beta",
+                "models",
+                "test-model:generateContent"
+              ],
+              "protocol": "http"
+            },
+            "description": "Sends a 1-word message (below word-count-guardrail's min=5) to the gemini-templated test provider. Expects the rejection rendered in gemini's own convention (guardrailResponse read live from the LlmProviderTemplate), not the default WSO2 shape.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - Cleanup",
+      "item": [
+        {
+          "name": "Delete: wcg-openai",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted (200/204/404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-openai",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-openai"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: wcg-anthropic",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted (200/204/404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-anthropic",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-anthropic"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: wcg-azureopenai",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted (200/204/404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-azureopenai",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-azureopenai"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: wcg-azureaifoundry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted (200/204/404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-azureaifoundry",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-azureaifoundry"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: wcg-mistral",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted (200/204/404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-mistral",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-mistral"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: wcg-bedrock",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted (200/204/404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-bedrock",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-bedrock"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete: wcg-gemini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted (200/204/404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/wcg-gemini",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "wcg-gemini"
+              ],
+              "protocol": "http"
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

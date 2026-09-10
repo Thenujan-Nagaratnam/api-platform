@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="4" time="0.043">
+  <testsuite name="27 - LlmProxy: Model-keyed dispatch across provider aliases / gpt-4o -> openai-alias (backend A, via loopback)" id="1d22f604-f54d-49bc-ba37-523ea3d7b860" timestamp="2026-08-18T03:14:10.683Z" tests="2" failures="0" errors="0" time="0.035">
+    <testcase name="status is 200" time="0.035" classname="27LlmProxyModelKeyedDispatchAcrossProviderAliasesGpt4OOpenaiAliasBackendAViaLoopback"/>
+    <testcase name="routed to the openai alias" time="0.035" classname="27LlmProxyModelKeyedDispatchAcrossProviderAliasesGpt4OOpenaiAliasBackendAViaLoopback"/>
+  </testsuite>
+  <testsuite name="27 - LlmProxy: Model-keyed dispatch across provider aliases / Verify backend A received it via the loopback path (not a direct client hit)" id="6a584973-f70e-487a-9d15-372c8ae411ee" timestamp="2026-08-18T03:14:10.683Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="request carries the internal loopback marker" time="0.001" classname="27LlmProxyModelKeyedDispatchAcrossProviderAliasesVerifyBackendAReceivedItViaTheLoopbackPathNotADirectClientHit"/>
+  </testsuite>
+  <testsuite name="27 - LlmProxy: Model-keyed dispatch across provider aliases / claude-3-haiku -> anthropic-alias (backend C, via loopback)" id="08e3439f-2b74-473d-982c-be12b50d55cf" timestamp="2026-08-18T03:14:10.683Z" tests="2" failures="0" errors="0" time="0.006">
+    <testcase name="status is 200" time="0.006" classname="27LlmProxyModelKeyedDispatchAcrossProviderAliasesClaude3HaikuAnthropicAliasBackendCViaLoopback"/>
+    <testcase name="routed to the anthropic alias, not the openai one" time="0.006" classname="27LlmProxyModelKeyedDispatchAcrossProviderAliasesClaude3HaikuAnthropicAliasBackendCViaLoopback"/>
+  </testsuite>
+  <testsuite name="27 - LlmProxy: Model-keyed dispatch across provider aliases / Verify backend C (anthropic) received it, not backend A" id="47a4cc07-5873-4cf3-b17c-c6cba9efb9b6" timestamp="2026-08-18T03:14:10.683Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="anthropic backend was dialed via the loopback path" time="0.001" classname="27LlmProxyModelKeyedDispatchAcrossProviderAliasesVerifyBackendCAnthropicReceivedItNotBackendA"/>
+  </testsuite>
+</testsuites>

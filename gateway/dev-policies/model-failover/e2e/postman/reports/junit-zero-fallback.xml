@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="2" time="1.154">
+  <testsuite name="08 - LlmProvider: Zero-fallback target group / Invoke gpt-4o - must route directly, not through a nonexistent aggregate cluster" id="3daa82d3-ad87-49cb-8bac-4ccc342ffa55" timestamp="2026-08-18T08:07:49.908Z" tests="2" failures="0" errors="0" time="0.035">
+    <testcase name="status is 200, NOT 503 (regression test: a zero-fallback group used to 503 - no such cluster)" time="0.035" classname="08LlmProviderZeroFallbackTargetGroupInvokeGpt4OMustRouteDirectlyNotThroughANonexistentAggregateCluster"/>
+    <testcase name="model unchanged" time="0.035" classname="08LlmProviderZeroFallbackTargetGroupInvokeGpt4OMustRouteDirectlyNotThroughANonexistentAggregateCluster"/>
+  </testsuite>
+  <testsuite name="08 - LlmProvider: Zero-fallback target group / Cleanup: delete mf-zero-fallback-test" id="58576e76-5ebc-479e-bc17-9eb8d80bdda7" timestamp="2026-08-18T08:07:49.908Z" tests="0" failures="0" errors="0" time="1.119"/>
+</testsuites>

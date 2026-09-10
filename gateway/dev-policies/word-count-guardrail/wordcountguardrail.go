@@ -1,0 +1,949 @@
+/*
+ *  Copyright (c) 2026, WSO2 LLC. (http://www.wso2.org) All Rights Reserved.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ */
+
+package wordcountguardrail
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"regexp"
+	"strconv"
+	"strings"
+	"text/template"
+
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
+)
+
+const (
+	GuardrailErrorCode           = 422
+	TextCleanRegex               = "^\"|\"$"
+	WordSplitRegex               = "\\s+"
+	DefaultJSONPath              = "$.messages[-1].content"
+	DefaultResponseJSONPath      = "$.choices[0].message.content"
+	RequestFlowEnabledByDefault  = true
+	ResponseFlowEnabledByDefault = false
+
+	sseDataPrefix            = "data: "
+	sseDone                  = "[DONE]"
+	sseEventPrefix           = "event:"
+	metaKeyAccContent        = "wordcountguardrail:accumulated_content"
+	metaKeyAccJsonBody       = "wordcountguardrail:json_body"
+	DefaultStreamingJsonPath = "$.choices[0].delta.content"
+
+	// metadataKeyTemplateHandle is the SharedContext.Metadata key the kernel
+	// populates from route metadata, identifying which LlmProviderTemplate
+	// (openai, anthropic, awsbedrock, ...) backs the current request.
+	metadataKeyTemplateHandle = "template_handle"
+
+	// lazyResourceTypeLLMProviderTemplate is the resource type LlmProviderTemplate
+	// documents are stored under in the shared in-process lazy resource store
+	// (the same store the built-in analytics system policy reads from).
+	lazyResourceTypeLLMProviderTemplate = "LlmProviderTemplate"
+)
+
+var (
+	textCleanRegexCompiled = regexp.MustCompile(TextCleanRegex)
+	wordSplitRegexCompiled = regexp.MustCompile(WordSplitRegex)
+)
+
+// WordCountGuardrailPolicy implements word count validation
+type WordCountGuardrailPolicy struct {
+	hasRequestParams  bool
+	hasResponseParams bool
+	requestParams     WordCountGuardrailPolicyParams
+	responseParams    WordCountGuardrailPolicyParams
+}
+
+// templateHandleFromMetadata safely reads template_handle from a (possibly
+// nil) SharedContext. Request/response contexts built without one -- tests,
+// or any future caller that never populates it -- must not panic; they
+// simply behave as if no template applies (fetchGuardrailResponseConfig
+// already treats an empty handle as "not configured").
+func templateHandleFromMetadata(sc *policy.SharedContext) string {
+	if sc == nil || sc.Metadata == nil {
+		return ""
+	}
+	handle, _ := sc.Metadata[metadataKeyTemplateHandle].(string)
+	return handle
+}
+
+// guardrailResponseConfig is the optional vendor/provider-specific rejection
+// rendering read live from the backing LlmProviderTemplate's guardrailResponse
+// section (see fetchGuardrailResponseConfig). Not policy config -- nothing on
+// WordCountGuardrailPolicy itself carries this; it's re-fetched per violation
+// so a template update takes effect without redeploying the policy.
+type guardrailResponseConfig struct {
+	StatusCode    int
+	Body          string
+	StreamingBody string
+}
+
+// fetchGuardrailResponseConfig looks up the LlmProviderTemplate backing this
+// request/response live from the shared in-process lazy resource store --
+// the same store and lookup the built-in analytics system policy uses
+// (store.GetResourceByIDAndType(handle, "LlmProviderTemplate")) -- and reads
+// its optional guardrailResponse section. Returns ok=false whenever the
+// handle is empty, the template isn't found, or no guardrailResponse is
+// declared -- all treated as "not configured," never as an error: the caller
+// falls back to the policy's own default WSO2 shape.
+func fetchGuardrailResponseConfig(templateHandle string) (guardrailResponseConfig, bool) {
+	if templateHandle == "" {
+		return guardrailResponseConfig{}, false
+	}
+
+	store := policy.GetLazyResourceStoreInstance()
+	if store == nil {
+		return guardrailResponseConfig{}, false
+	}
+
+	resource, err := store.GetResourceByIDAndType(templateHandle, lazyResourceTypeLLMProviderTemplate)
+	if err != nil || resource == nil || resource.Resource == nil {
+		return guardrailResponseConfig{}, false
+	}
+
+	spec, ok := resource.Resource["spec"].(map[string]interface{})
+	if !ok {
+		return guardrailResponseConfig{}, false
+	}
+
+	gr, ok := spec["guardrailResponse"].(map[string]interface{})
+	if !ok {
+		return guardrailResponseConfig{}, false
+	}
+
+	cfg := guardrailResponseConfig{StatusCode: 200}
+	if body, ok := gr["body"].(string); ok {
+		cfg.Body = body
+	}
+	if streamingBody, ok := gr["streamingBody"].(string); ok {
+		cfg.StreamingBody = streamingBody
+	}
+	if statusCodeRaw, ok := gr["statusCode"]; ok {
+		if statusCode, err := extractInt(statusCodeRaw); err == nil {
+			cfg.StatusCode = statusCode
+		}
+	}
+
+	if cfg.Body == "" && cfg.StreamingBody == "" {
+		return guardrailResponseConfig{}, false
+	}
+	return cfg, true
+}
+
+// guardrailResponseTemplateData is the substitution set available to a
+// configured guardrailResponse.body/streamingBody template. Rendered with
+// Go's text/template, which -- with no FuncMap registered -- can only read
+// these exported fields; it cannot call functions, so a configured template
+// can't reach files/secrets/network regardless of who authored it.
+type guardrailResponseTemplateData struct {
+	Message   string
+	Category  string
+	RequestID string
+	Model     string
+	UnixTime  int64
+}
+
+// guardrailResponseTemplateLeftDelim/RightDelim use "<<"/">>" instead of
+// text/template's default "{{"/"}}". The LlmProviderTemplate this data comes
+// from also passes through gateway-controller's OWN "{{ secret \"handle\" }}"
+// / "{{ env \"NAME\" }}" templating pass (pkg/templateengine) before it ever
+// reaches this policy -- that pass recursively renders any spec string
+// containing "{{", with a nil data root. A body/streamingBody written with
+// the default "{{ }}" delimiters gets swept into that unrelated pass and its
+// placeholders come out empty or erroring, never reaching here intact. Using
+// a delimiter pair the controller's pass has no reason to touch keeps this
+// policy's templating fully independent of that one.
+const (
+	guardrailResponseTemplateLeftDelim  = "<<"
+	guardrailResponseTemplateRightDelim = ">>"
+)
+
+func renderGuardrailResponseTemplate(tmplText string, data guardrailResponseTemplateData) ([]byte, error) {
+	tmpl, err := template.New("guardrailResponse").
+		Delims(guardrailResponseTemplateLeftDelim, guardrailResponseTemplateRightDelim).
+		Parse(tmplText)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+type WordCountGuardrailPolicyParams struct {
+	Enabled           bool
+	Min               int
+	Max               int
+	JsonPath          string
+	StreamingJsonPath string
+	Invert            bool
+	ShowAssessment    bool
+}
+
+// GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
+func GetPolicy(
+	metadata policy.PolicyMetadata,
+	params map[string]interface{},
+) (policy.Policy, error) {
+	return newPolicy(params)
+}
+
+func (p *WordCountGuardrailPolicy) Mode() policy.ProcessingMode {
+	return policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeStream,
+	}
+}
+
+func newPolicy(params map[string]interface{}) (*WordCountGuardrailPolicy, error) {
+	p := &WordCountGuardrailPolicy{}
+
+	requestParamsRaw, hasRequest, err := getFlowParams(params, "request")
+	if err != nil {
+		return nil, err
+	}
+	if hasRequest {
+		requestParams, err := parseParams(requestParamsRaw, false)
+		if err != nil {
+			return nil, fmt.Errorf("invalid request parameters: %w", err)
+		}
+		p.hasRequestParams = true
+		p.requestParams = requestParams
+	}
+
+	responseParamsRaw, hasResponse, err := getFlowParams(params, "response")
+	if err != nil {
+		return nil, err
+	}
+	if hasResponse {
+		responseParams, err := parseParams(responseParamsRaw, true)
+		if err != nil {
+			return nil, fmt.Errorf("invalid response parameters: %w", err)
+		}
+		p.hasResponseParams = true
+		p.responseParams = responseParams
+	}
+
+	// At least one of request or response must be present
+	if !p.hasRequestParams && !p.hasResponseParams {
+		return nil, fmt.Errorf("at least one of 'request' or 'response' parameters must be provided")
+	}
+
+	slog.Debug("WordCountGuardrail: Policy initialized", "hasRequestParams", p.hasRequestParams, "hasResponseParams", p.hasResponseParams)
+
+	return p, nil
+}
+
+func getFlowParams(params map[string]interface{}, flow string) (map[string]interface{}, bool, error) {
+	raw, exists := params[flow]
+	if !exists {
+		return nil, false, nil
+	}
+	flowParams, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, false, fmt.Errorf("'%s' must be an object", flow)
+	}
+	if len(flowParams) == 0 {
+		return nil, false, nil
+	}
+	return flowParams, true, nil
+}
+
+// parseParams parses and validates parameters from map to struct
+func parseParams(params map[string]interface{}, isResponse bool) (WordCountGuardrailPolicyParams, error) {
+	result := WordCountGuardrailPolicyParams{
+		JsonPath:          DefaultJSONPath,
+		StreamingJsonPath: DefaultStreamingJsonPath,
+		Enabled:           RequestFlowEnabledByDefault,
+	}
+	enabledExplicitlyFalse := false
+	if isResponse {
+		result.JsonPath = DefaultResponseJSONPath
+		result.Enabled = ResponseFlowEnabledByDefault
+	}
+
+	// Extract optional enabled parameter
+	if enabledRaw, ok := params["enabled"]; ok {
+		enabled, ok := enabledRaw.(bool)
+		if !ok {
+			return result, fmt.Errorf("'enabled' must be a boolean")
+		}
+		result.Enabled = enabled
+		enabledExplicitlyFalse = !enabled
+	}
+
+	minRaw, hasMin := params["min"]
+	maxRaw, hasMax := params["max"]
+
+	if !enabledExplicitlyFalse {
+		if !hasMin {
+			return result, fmt.Errorf("'min' parameter is required")
+		}
+		if !hasMax {
+			return result, fmt.Errorf("'max' parameter is required")
+		}
+
+		if hasMin {
+			min, err := extractInt(minRaw)
+			if err != nil {
+				return result, fmt.Errorf("'min' must be a number: %w", err)
+			}
+			if min < 0 {
+				return result, fmt.Errorf("'min' cannot be negative")
+			}
+			result.Min = min
+		}
+
+		if hasMax {
+			max, err := extractInt(maxRaw)
+			if err != nil {
+				return result, fmt.Errorf("'max' must be a number: %w", err)
+			}
+			if max <= 0 {
+				return result, fmt.Errorf("'max' must be greater than 0")
+			}
+			result.Max = max
+		}
+
+		if hasMin && hasMax && result.Min > result.Max {
+			return result, fmt.Errorf("'min' cannot be greater than 'max'")
+		}
+	}
+
+	// Extract optional jsonPath parameter
+	if jsonPathRaw, ok := params["jsonPath"]; ok {
+		if jsonPath, ok := jsonPathRaw.(string); ok {
+			result.JsonPath = jsonPath
+		} else {
+			return result, fmt.Errorf("'jsonPath' must be a string")
+		}
+	}
+
+	// Extract optional streamingJsonPath parameter
+	if streamingJsonPathRaw, ok := params["streamingJsonPath"]; ok {
+		if streamingJsonPath, ok := streamingJsonPathRaw.(string); ok {
+			result.StreamingJsonPath = streamingJsonPath
+		} else {
+			return result, fmt.Errorf("'streamingJsonPath' must be a string")
+		}
+	}
+
+	// Extract optional invert parameter
+	if invertRaw, ok := params["invert"]; ok {
+		if invert, ok := invertRaw.(bool); ok {
+			result.Invert = invert
+		} else {
+			return result, fmt.Errorf("'invert' must be a boolean")
+		}
+	}
+
+	// Extract optional showAssessment parameter
+	if showAssessmentRaw, ok := params["showAssessment"]; ok {
+		if showAssessment, ok := showAssessmentRaw.(bool); ok {
+			result.ShowAssessment = showAssessment
+		} else {
+			return result, fmt.Errorf("'showAssessment' must be a boolean")
+		}
+	}
+
+	return result, nil
+}
+
+// extractInt safely extracts an integer from various types
+func extractInt(value interface{}) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case int64:
+		return int(v), nil
+	case float64:
+		if v != float64(int(v)) {
+			return 0, fmt.Errorf("expected an integer but got %v", v)
+		}
+		return int(v), nil
+	case string:
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, err
+		}
+		if parsed != float64(int(parsed)) {
+			return 0, fmt.Errorf("expected an integer but got %v", v)
+		}
+		return int(parsed), nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to int", value)
+	}
+}
+
+func extractStringFromJSONPath(payload []byte, jsonPath string) (string, error) {
+	value, err := utils.ExtractStringValueFromJsonpath(payload, jsonPath)
+	if err == nil {
+		return value, nil
+	}
+
+	var jsonData map[string]interface{}
+	if unmarshalErr := json.Unmarshal(payload, &jsonData); unmarshalErr != nil {
+		return "", unmarshalErr
+	}
+
+	extracted, extractErr := utils.ExtractValueFromJsonpath(jsonData, jsonPath)
+	if extractErr != nil {
+		return "", extractErr
+	}
+
+	normalized, normalizeErr := normalizeExtractedValue(extracted)
+	if normalizeErr != nil {
+		return "", normalizeErr
+	}
+
+	return normalized, nil
+}
+
+func normalizeExtractedValue(value interface{}) (string, error) {
+	// 1. Handle nil immediately to avoid pointer panics
+	if value == nil {
+		return "", nil
+	}
+	switch v := value.(type) {
+	case string:
+		return v, nil
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), nil
+	case int:
+		return strconv.Itoa(v), nil
+	case bool:
+		return strconv.FormatBool(v), nil
+	case map[string]interface{}:
+		if content, ok := v["content"]; ok {
+			return normalizeExtractedValue(content)
+		}
+		if text, ok := v["text"]; ok {
+			return normalizeExtractedValue(text)
+		}
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(encoded), nil
+	case []interface{}:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			part, itemErr := normalizeExtractedValue(item)
+			if itemErr != nil {
+				continue
+			}
+			part = strings.TrimSpace(part)
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+		if len(parts) == 0 {
+			return "", fmt.Errorf("value at JSONPath is an empty array")
+		}
+		return strings.Join(parts, " "), nil
+	default:
+		return "", fmt.Errorf("value at JSONPath is not a supported type")
+	}
+}
+
+// buildAssessmentObject builds the assessment object
+func (p *WordCountGuardrailPolicy) buildAssessmentObject(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) map[string]interface{} {
+	assessment := map[string]interface{}{
+		"action":               "GUARDRAIL_INTERVENED",
+		"interveningGuardrail": "word-count-guardrail",
+	}
+
+	if isResponse {
+		assessment["direction"] = "RESPONSE"
+	} else {
+		assessment["direction"] = "REQUEST"
+	}
+
+	if validationError != nil {
+		assessment["actionReason"] = reason
+	} else {
+		assessment["actionReason"] = "Violation of applied word count constraints detected"
+	}
+
+	if showAssessment {
+		if validationError != nil {
+			assessment["assessments"] = validationError.Error()
+		} else {
+			var assessmentMessage string
+			if strings.Contains(reason, "excluded range") {
+				assessmentMessage = fmt.Sprintf("Violation of word count detected. Expected word count to be outside the range of %d to %d words.", min, max)
+			} else {
+				assessmentMessage = fmt.Sprintf("Violation of word count detected. Expected word count to be between %d and %d words.", min, max)
+			}
+			assessment["assessments"] = assessmentMessage
+		}
+	}
+
+	return assessment
+}
+
+func (p *WordCountGuardrailPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+	if !p.hasRequestParams || !p.requestParams.Enabled {
+		return policy.UpstreamRequestModifications{}
+	}
+
+	var content []byte
+	if reqCtx.Body != nil {
+		content = reqCtx.Body.Content
+	}
+	templateHandle := templateHandleFromMetadata(reqCtx.SharedContext)
+	return p.validatePayload(content, p.requestParams, false, templateHandle).(policy.RequestAction)
+}
+
+// OnResponseBody validates the word count of the response body.
+//
+// SSE (stream: true) responses are also handled here
+// response headers are not yet committed, so a normal 422 error
+// response can still be returned (no SSE error-event workaround needed).
+func (p *WordCountGuardrailPolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
+	if !p.hasResponseParams || !p.responseParams.Enabled {
+		return policy.DownstreamResponseModifications{}
+	}
+
+	var content []byte
+	if respCtx.ResponseBody != nil {
+		content = respCtx.ResponseBody.Content
+	}
+	templateHandle := templateHandleFromMetadata(respCtx.SharedContext)
+
+	// For SSE responses, reconstruct the full assistant text from delta events
+	// and count words on that, bypassing the JSONPath extraction (which targets
+	// the non-streaming response structure). Use isSSEChunk for detection so that
+	// SSE responses with all-null delta content (e.g. tool-call responses) are not
+	// incorrectly routed to JSONPath extraction.
+	contentStr := string(content)
+	if isSSEChunk(contentStr) {
+		text := extractSSEDeltaContent(contentStr, p.responseParams.StreamingJsonPath)
+		return p.validateWordCount(text, p.responseParams, true, templateHandle)
+	}
+
+	return p.validatePayload(content, p.responseParams, true, templateHandle).(policy.ResponseAction)
+}
+
+// isSSEChunk reports whether s looks like SSE data (has at least one "data: " or "event:" line).
+func isSSEChunk(s string) bool {
+	for _, line := range strings.SplitN(s, "\n", 5) {
+		if strings.HasPrefix(line, sseDataPrefix) || strings.HasPrefix(line, sseEventPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractSSEDeltaContent extracts and concatenates content values from every
+// complete SSE data line in s using the provided streamingJsonPath.
+// Returns "" for non-SSE content or when no content is found.
+func extractSSEDeltaContent(s string, streamingJsonPath string) string {
+	var sb strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimRight(line, "\r")
+		var value string
+		if strings.HasPrefix(line, sseDataPrefix) {
+			value = strings.TrimPrefix(line, sseDataPrefix)
+		} else if strings.HasPrefix(line, sseEventPrefix) {
+			value = strings.TrimSpace(strings.TrimPrefix(line, sseEventPrefix))
+		} else {
+			continue
+		}
+		if value == sseDone || value == "" {
+			continue
+		}
+		// Try extracting from streamingJsonPath
+		if text, err := utils.ExtractStringValueFromJsonpath([]byte(value), streamingJsonPath); err == nil {
+			sb.WriteString(text)
+			continue
+		}
+		var jsonData map[string]interface{}
+		if err := json.Unmarshal([]byte(value), &jsonData); err != nil {
+			// Not JSON — use the entire value as content
+			sb.WriteString(value)
+			continue
+		}
+		val, err := utils.ExtractValueFromJsonpath(jsonData, streamingJsonPath)
+		if err != nil {
+			sb.WriteString(value)
+			continue
+		}
+		sb.WriteString(joinSSEFragments(val))
+	}
+	return sb.String()
+}
+
+// joinSSEFragments converts an extracted JSONPath value to a string.
+// Array elements are concatenated without a separator because SSE delta
+// fragments must be joined as-is without artificial whitespace.
+func joinSSEFragments(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []interface{}:
+		var sb strings.Builder
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				sb.WriteString(s)
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
+}
+
+// buildErrorResponse builds a v1alpha2 error response for both request and
+// response phases. templateHandle identifies which LlmProviderTemplate backs
+// this request, if any -- used to look up an optional vendor-specific
+// rendering live from the shared template store (fetchGuardrailResponseConfig).
+func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int, templateHandle string) interface{} {
+	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
+	analyticsMetadata := map[string]interface{}{
+		"isGuardrailHit": true,
+		"guardrailName":  "word-count-guardrail",
+	}
+
+	statusCode := GuardrailErrorCode
+	bodyBytes := p.defaultErrorBody(assessment)
+
+	// A guardrailResponse.body declared on the backing template replaces the
+	// default WSO2 shape so the rejection renders in that provider's own
+	// convention. A render failure falls back to the default shape rather
+	// than passing the request/response through -- the violation was already
+	// decided; only how it's rendered is at stake here.
+	if cfg, ok := fetchGuardrailResponseConfig(templateHandle); ok && cfg.Body != "" {
+		if rendered, err := renderGuardrailResponseTemplate(cfg.Body, guardrailResponseTemplateData{
+			Message:  reason,
+			Category: "word_count",
+		}); err == nil {
+			bodyBytes = rendered
+			statusCode = cfg.StatusCode
+		} else {
+			slog.Warn("WordCountGuardrail: failed to render guardrailResponse.body from template, using default shape",
+				"error", err, "templateHandle", templateHandle)
+		}
+	}
+
+	if isResponse {
+		return policy.DownstreamResponseModifications{
+			StatusCode:        &statusCode,
+			Body:              bodyBytes,
+			AnalyticsMetadata: analyticsMetadata,
+			HeadersToSet: map[string]string{
+				"Content-Type": "application/json",
+			},
+		}
+	}
+
+	return policy.ImmediateResponse{
+		StatusCode:        statusCode,
+		AnalyticsMetadata: analyticsMetadata,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+		Body: bodyBytes,
+	}
+}
+
+// defaultErrorBody builds the policy's own WSO2-shaped rejection body, used
+// whenever the backing template declares no guardrailResponse.body (or its
+// render fails).
+func (p *WordCountGuardrailPolicy) defaultErrorBody(assessment map[string]interface{}) []byte {
+	responseBody := map[string]interface{}{
+		"type":    "WORD_COUNT_GUARDRAIL",
+		"message": assessment,
+	}
+	bodyBytes, err := json.Marshal(responseBody)
+	if err != nil {
+		return []byte(`{"type":"WORD_COUNT_GUARDRAIL","message":"Internal error"}`)
+	}
+	return bodyBytes
+}
+
+// validateWordCount counts words in text and validates against params, returning a v1alpha2 response action.
+func (p *WordCountGuardrailPolicy) validateWordCount(text string, params WordCountGuardrailPolicyParams, isResponse bool, templateHandle string) policy.ResponseAction {
+	text = textCleanRegexCompiled.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+
+	words := wordSplitRegexCompiled.Split(text, -1)
+	wordCount := 0
+	for _, w := range words {
+		if w != "" {
+			wordCount++
+		}
+	}
+
+	isWithinRange := wordCount >= params.Min && wordCount <= params.Max
+	validationPassed := isWithinRange
+	if params.Invert {
+		validationPassed = !isWithinRange
+	}
+
+	if !validationPassed {
+		var reason string
+		if params.Invert {
+			reason = fmt.Sprintf("word count %d is within the excluded range %d-%d words", wordCount, params.Min, params.Max)
+		} else {
+			reason = fmt.Sprintf("word count %d is outside the allowed range %d-%d words", wordCount, params.Min, params.Max)
+		}
+		slog.Debug("WordCountGuardrail: validation failed",
+			"wordCount", wordCount, "min", params.Min, "max", params.Max, "invert", params.Invert)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max, templateHandle).(policy.ResponseAction)
+	}
+
+	return policy.DownstreamResponseModifications{}
+}
+
+// validatePayload validates payload word count returning v1alpha2 actions.
+func (p *WordCountGuardrailPolicy) validatePayload(payload []byte, params WordCountGuardrailPolicyParams, isResponse bool, templateHandle string) interface{} {
+	extractedValue, err := extractStringFromJSONPath(payload, params.JsonPath)
+	if err != nil {
+		slog.Debug("WordCountGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max, templateHandle)
+	}
+
+	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
+	extractedValue = strings.TrimSpace(extractedValue)
+
+	words := wordSplitRegexCompiled.Split(extractedValue, -1)
+	wordCount := 0
+	for _, w := range words {
+		if w != "" {
+			wordCount++
+		}
+	}
+
+	isWithinRange := wordCount >= params.Min && wordCount <= params.Max
+
+	var validationPassed bool
+	if params.Invert {
+		validationPassed = !isWithinRange
+	} else {
+		validationPassed = isWithinRange
+	}
+
+	if !validationPassed {
+		slog.Debug("WordCountGuardrail: Validation failed", "wordCount", wordCount, "min", params.Min, "max", params.Max, "invert", params.Invert, "isResponse", isResponse)
+		var reason string
+		if params.Invert {
+			reason = fmt.Sprintf("word count %d is within the excluded range %d-%d words", wordCount, params.Min, params.Max)
+		} else {
+			reason = fmt.Sprintf("word count %d is outside the allowed range %d-%d words", wordCount, params.Min, params.Max)
+		}
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max, templateHandle)
+	}
+
+	slog.Debug("WordCountGuardrail: Validation passed", "wordCount", wordCount, "min", params.Min, "max", params.Max, "isResponse", isResponse)
+	if isResponse {
+		return policy.DownstreamResponseModifications{}
+	}
+	return policy.UpstreamRequestModifications{}
+}
+
+// ─── Streaming (SSE) support ──────────────────────────────────────────────────
+//
+// NeedsMoreResponseData and OnResponseBodyChunk together implement
+// StreamingResponsePolicy using a gate-then-stream approach.
+//
+// min enforcement (gate-then-stream):
+//   NeedsMoreResponseData buffers silently until the accumulated word count
+//   reaches min, then flushes. From that point OnResponseBodyChunk processes
+//   each subsequent chunk individually, using ctx.Metadata to track the
+//   cumulative word count for max enforcement.
+//
+// invert enforcement:
+//   NeedsMoreResponseData buffers until the word count exceeds max
+//   (guaranteed outside the excluded range). If [DONE] arrives while still
+//   gated, the full accumulated content is validated in OnResponseBodyChunk.
+
+// countWords counts non-empty word segments in accumulated text.
+func countWords(text string) int {
+	text = textCleanRegexCompiled.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	words := wordSplitRegexCompiled.Split(text, -1)
+	count := 0
+	for _, w := range words {
+		if strings.TrimSpace(w) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// buildSSEErrorEvent formats a guardrail intervention as a single SSE data
+// event. When the backing template declares guardrailResponse.streamingBody,
+// it replaces this default WSO2-shaped event entirely -- the configured
+// template already contains the full SSE framing (e.g. "data: {...}\n\n" or a
+// named "event: error" frame for a vendor with no in-band filter slot), so
+// the rendered bytes are returned as-is rather than wrapped again. A render
+// failure falls back to the default event: the client still sees the stream
+// terminate, just not vendor-shaped.
+func (p *WordCountGuardrailPolicy) buildSSEErrorEvent(reason string, rp WordCountGuardrailPolicyParams, templateHandle string) []byte {
+	if cfg, ok := fetchGuardrailResponseConfig(templateHandle); ok && cfg.StreamingBody != "" {
+		if rendered, err := renderGuardrailResponseTemplate(cfg.StreamingBody, guardrailResponseTemplateData{
+			Message:  reason,
+			Category: "word_count",
+		}); err == nil {
+			return rendered
+		}
+		slog.Warn("WordCountGuardrail: failed to render guardrailResponse.streamingBody from template, using default SSE shape",
+			"templateHandle", templateHandle)
+	}
+
+	assessment := p.buildAssessmentObject(reason, nil, true, rp.ShowAssessment, rp.Min, rp.Max)
+	responseBody := map[string]interface{}{
+		"type":    "WORD_COUNT_GUARDRAIL",
+		"message": assessment,
+	}
+	bodyBytes, err := json.Marshal(responseBody)
+	if err != nil {
+		bodyBytes = []byte(`{"type":"WORD_COUNT_GUARDRAIL","message":"Internal error"}`)
+	}
+	return []byte(sseDataPrefix + string(bodyBytes) + "\n\n")
+}
+
+// NeedsMoreResponseData implements StreamingResponsePolicy.
+// Buffers until the gate condition is satisfied — no bytes sent to the client
+// during accumulation. Always flushes when [DONE] arrives.
+func (p *WordCountGuardrailPolicy) NeedsMoreResponseData(accumulated []byte) bool {
+	if !p.hasResponseParams || !p.responseParams.Enabled {
+		return false
+	}
+	s := string(accumulated)
+	if !isSSEChunk(s) {
+		return false
+	}
+	// Stream is complete — flush for final validation.
+	if strings.Contains(s, sseDataPrefix+sseDone) {
+		return false
+	}
+	count := countWords(extractSSEDeltaContent(s, p.responseParams.StreamingJsonPath))
+	rp := p.responseParams
+	if rp.Invert {
+		// Invert mode: buffer while still within or below the excluded range.
+		return count <= rp.Max
+	}
+	// Normal mode: buffer while below the required minimum.
+	return rp.Min > 0 && count < rp.Min
+}
+
+// OnResponseBodyChunk implements StreamingResponsePolicy.
+// Receives flushed batches from the kernel accumulator and validates them.
+// ctx.Metadata tracks the full accumulated text across windows for accuracy.
+func (p *WordCountGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, respCtx *policy.ResponseStreamContext, chunk *policy.StreamBody, params map[string]interface{}) policy.StreamingResponseAction {
+	if !p.hasResponseParams || !p.responseParams.Enabled {
+		return policy.ForwardResponseChunk{}
+	}
+	if chunk == nil || len(chunk.Chunk) == 0 {
+		return policy.ForwardResponseChunk{}
+	}
+	chunkStr := string(chunk.Chunk)
+	if respCtx.SharedContext == nil {
+		respCtx.SharedContext = &policy.SharedContext{}
+	}
+	if respCtx.Metadata == nil {
+		respCtx.Metadata = make(map[string]interface{})
+	}
+	templateHandle := templateHandleFromMetadata(respCtx.SharedContext)
+	if !isSSEChunk(chunkStr) {
+		// Plain JSON via chunked transfer (e.g. OpenAI stream:false with Transfer-Encoding: chunked).
+		// Accumulate all chunks and validate the complete body at end of stream.
+		prev, _ := respCtx.Metadata[metaKeyAccJsonBody].(string)
+		full := prev + chunkStr
+		respCtx.Metadata[metaKeyAccJsonBody] = full
+		if !chunk.EndOfStream {
+			return policy.ForwardResponseChunk{}
+		}
+		// An empty or whitespace-only EndOfStream chunk is a bare sentinel that arrives after
+		// the SSE [DONE] event. All content was already processed by the SSE path, so perform
+		// the final SSE min/invert check on accumulated SSE content instead of JSONPath extraction.
+		if strings.TrimSpace(full) == "" {
+			rp := p.responseParams
+			accContent, _ := respCtx.Metadata[metaKeyAccContent].(string)
+			count := countWords(accContent)
+			if !rp.Invert {
+				if count < rp.Min {
+					reason := fmt.Sprintf("word count %d is below minimum of %d words", count, rp.Min)
+					return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, templateHandle)}
+				}
+			} else if count >= rp.Min && count <= rp.Max {
+				reason := fmt.Sprintf("word count %d is within the excluded range %d-%d words", count, rp.Min, rp.Max)
+				return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, templateHandle)}
+			}
+			return policy.ForwardResponseChunk{}
+		}
+		result := p.validatePayload([]byte(full), p.responseParams, true, templateHandle)
+		if mod, ok := result.(policy.DownstreamResponseModifications); ok && mod.StatusCode != nil {
+			return policy.TerminateResponseChunk{Body: mod.Body}
+		}
+		return policy.ForwardResponseChunk{}
+	}
+
+	rp := p.responseParams
+
+	// Append this batch's delta content to the running total stored in metadata
+	// so that countWords always operates on the full text seen so far,
+	// avoiding off-by-one errors at flush-window boundaries.
+	prev := ""
+	if v, ok := respCtx.Metadata[metaKeyAccContent]; ok {
+		if s, ok := v.(string); ok {
+			prev = s
+		}
+	}
+	fullContent := prev + extractSSEDeltaContent(chunkStr, rp.StreamingJsonPath)
+	respCtx.Metadata[metaKeyAccContent] = fullContent
+	count := countWords(fullContent)
+	isDone := chunk.EndOfStream
+
+	if !rp.Invert {
+		// Normal mode: max violation at any point, or below min at [DONE].
+		if rp.Max > 0 && count > rp.Max {
+			slog.Debug("WordCountGuardrail: max exceeded",
+				"count", count, "max", rp.Max, "chunkIndex", chunk.Index)
+			reason := fmt.Sprintf("word count %d exceeded maximum of %d words", count, rp.Max)
+			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, templateHandle)}
+		}
+		if isDone && count < rp.Min {
+			slog.Debug("WordCountGuardrail: below min at stream end",
+				"count", count, "min", rp.Min, "chunkIndex", chunk.Index)
+			reason := fmt.Sprintf("word count %d is below minimum of %d words", count, rp.Min)
+			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, templateHandle)}
+		}
+		return policy.ForwardResponseChunk{}
+	}
+
+	// Invert mode: at [DONE], check if count falls within the excluded range.
+	if isDone {
+		if count >= rp.Min && count <= rp.Max {
+			slog.Debug("WordCountGuardrail: invert violation at stream end",
+				"count", count, "min", rp.Min, "max", rp.Max, "chunkIndex", chunk.Index)
+			reason := fmt.Sprintf("word count %d is within the excluded range %d-%d words", count, rp.Min, rp.Max)
+			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, templateHandle)}
+		}
+	}
+	return policy.ForwardResponseChunk{}
+}

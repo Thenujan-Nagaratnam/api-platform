@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e (response-path retry + additionalProviders reuse)" tests="27" time="0.951">
+  <testsuite name="05 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Force backend A (primary) to fail" id="8188d50b-371c-458d-8527-fb90ffd3c697" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.014"/>
+  <testsuite name="05 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Force backend B (first fallback) to fail" id="25ba2750-16d3-4014-9b7c-40297bc6b67e" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="05 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Invoke gpt-4o-chain - expect success via the SECOND fallback (backend C)" id="2ffb68dc-6831-4cc4-bcf2-eb1bce73b526" timestamp="2026-09-08T04:31:30.310Z" tests="2" failures="0" errors="0" time="0.027">
+    <testcase name="status is 200" time="0.027" classname="05LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsInvokeGpt4OChainExpectSuccessViaTheSecondFallbackBackendC"/>
+    <testcase name="response shows the second fallback model" time="0.027" classname="05LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsInvokeGpt4OChainExpectSuccessViaTheSecondFallbackBackendC"/>
+  </testsuite>
+  <testsuite name="05 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Verify backend B was tried and received the rewritten model before failing" id="fef70d4a-89b7-4663-92ca-306e71e6a612" timestamp="2026-09-08T04:31:30.310Z" tests="2" failures="0" errors="0" time="0.001">
+    <testcase name="backend B received gpt-4o-chain-b" time="0.001" classname="05LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsVerifyBackendBWasTriedAndReceivedTheRewrittenModelBeforeFailing"/>
+    <testcase name="upstreamDefinition fallback is a self-redial carrying the chosen name" time="0.001" classname="05LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsVerifyBackendBWasTriedAndReceivedTheRewrittenModelBeforeFailing"/>
+  </testsuite>
+  <testsuite name="05 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Verify backend C received the rewritten model and succeeded" id="cf736743-3008-4129-a3a3-4db0be24ee91" timestamp="2026-09-08T04:31:30.310Z" tests="2" failures="0" errors="0" time="0.001">
+    <testcase name="backend C received gpt-4o-chain-c" time="0.001" classname="05LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsVerifyBackendCReceivedTheRewrittenModelAndSucceeded"/>
+    <testcase name="upstreamDefinition fallback is a self-redial carrying the chosen name" time="0.001" classname="05LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsVerifyBackendCReceivedTheRewrittenModelAndSucceeded"/>
+  </testsuite>
+  <testsuite name="06 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Reset backend B (clears last-request AND force-status - B is healthy again)" id="152b05b9-2671-42c1-a4ba-180dcf1191fd" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="06 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Reset backend C (clears last-request only - C stays healthy)" id="6c945e31-08b8-4f5f-a6e7-3d2a361e7278" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="06 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Force backend A (primary) to fail again" id="bee8b333-2308-468f-a28b-44b5303aeec0" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Invoke gpt-4o-chain again - both fallbacks are healthy this time" id="bd150aca-c474-4064-88e6-c4a2b96f8994" timestamp="2026-09-08T04:31:30.310Z" tests="1" failures="0" errors="0" time="0.008">
+    <testcase name="status is 200" time="0.008" classname="06LlmProviderSuspendDeprioritizesARecentlyFailedFallbackInvokeGpt4OChainAgainBothFallbacksAreHealthyThisTime"/>
+  </testsuite>
+  <testsuite name="06 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Verify backend C (not suspended) was dialed" id="30ecb10f-70b2-4953-856f-4f07d77aff0f" timestamp="2026-09-08T04:31:30.310Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend C received a fresh request" time="0.001" classname="06LlmProviderSuspendDeprioritizesARecentlyFailedFallbackVerifyBackendCNotSuspendedWasDialed"/>
+  </testsuite>
+  <testsuite name="06 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Verify backend B (suspended) was NEVER dialed" id="bf066ae8-7e1c-4109-8ce7-068019a81451" timestamp="2026-09-08T04:31:30.310Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend B received no request at all - deprioritized behind C" time="0.001" classname="06LlmProviderSuspendDeprioritizesARecentlyFailedFallbackVerifyBackendBSuspendedWasNeverDialed"/>
+  </testsuite>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend A" id="944db2ad-60e3-48a3-90c7-cf65f99a3f4e" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend B" id="218fa520-b109-4d30-abd2-7b4cf96425d8" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend C" id="5a74699d-43d5-4b25-b567-e8f1773198c8" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Force backend A to fail (sticky - stays down for the whole chain)" id="5d9f6537-3285-48fe-b008-1e5c015afc1d" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Force backend B to fail (sticky)" id="690fd001-9793-4a53-adf4-422ed1738bd1" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Force backend C to fail (sticky)" id="06475ebc-582e-44a7-86d1-9efc3f545a5b" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Invoke gpt-4o-chain - every fallback is down, expect the ORIGINAL failing response" id="609f5c79-9ac4-4e73-bf9b-1d0077195c5b" timestamp="2026-09-08T04:31:30.310Z" tests="2" failures="0" errors="0" time="0.009">
+    <testcase name="status is 500 (the primary's own failure, not fabricated)" time="0.009" classname="07LlmProviderAllSameProviderFallbacksExhaustedOriginalResponsePassesThroughInvokeGpt4OChainEveryFallbackIsDownExpectTheOriginalFailingResponse"/>
+    <testcase name="body is the primary's own forced-status error shape" time="0.009" classname="07LlmProviderAllSameProviderFallbacksExhaustedOriginalResponsePassesThroughInvokeGpt4OChainEveryFallbackIsDownExpectTheOriginalFailingResponse"/>
+  </testsuite>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend A (clear sticky force-status)" id="4355674c-1505-4a14-b6e4-42d0010f6629" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend B (clear sticky force-status)" id="9166c93c-fbbe-46d7-b954-dac41331ff89" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="07 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend C (clear sticky force-status)" id="6540c696-6875-4523-b88f-4182ba371f11" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="08 - LlmProvider: Network-unreachable fallback falls through to the next / Reset backend A" id="7a4a8093-c939-49d5-bb8d-1f53a55281e3" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="08 - LlmProvider: Network-unreachable fallback falls through to the next / Reset backend B" id="f55261ae-b25e-481e-8a3d-73d6d22dece5" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="08 - LlmProvider: Network-unreachable fallback falls through to the next / Force backend A (primary) to fail" id="c41c984b-e5c5-4c02-8905-f100b7bd3f20" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="08 - LlmProvider: Network-unreachable fallback falls through to the next / Invoke gpt-4o-neterr - first fallback is a dead port, second is backend B" id="f09bab1e-4eff-4d6e-becc-298c39bdc5de" timestamp="2026-09-08T04:31:30.310Z" tests="2" failures="0" errors="0" time="0.011">
+    <testcase name="status is 200 despite the first fallback being unreachable" time="0.011" classname="08LlmProviderNetworkUnreachableFallbackFallsThroughToTheNextInvokeGpt4ONeterrFirstFallbackIsADeadPortSecondIsBackendB"/>
+    <testcase name="response shows the second fallback model" time="0.011" classname="08LlmProviderNetworkUnreachableFallbackFallsThroughToTheNextInvokeGpt4ONeterrFirstFallbackIsADeadPortSecondIsBackendB"/>
+  </testsuite>
+  <testsuite name="08 - LlmProvider: Network-unreachable fallback falls through to the next / Verify backend B received the rewritten model" id="d42fbd5e-1415-4fa5-9f8a-b2d7f590f602" timestamp="2026-09-08T04:31:30.310Z" tests="1" failures="0" errors="0" time="0.000">
+    <testcase name="backend B received gpt-4o-neterr-b" time="0.000" classname="08LlmProviderNetworkUnreachableFallbackFallsThroughToTheNextVerifyBackendBReceivedTheRewrittenModel"/>
+  </testsuite>
+  <testsuite name="08 - LlmProvider: Network-unreachable fallback falls through to the next / Cleanup: delete mf-poc-chain-test" id="11b8c025-df66-42a4-825e-b59ca9644f19" timestamp="2026-09-08T04:31:30.310Z" tests="0" failures="0" errors="0" time="0.870"/>
+</testsuites>

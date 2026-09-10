@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="pii-masking-regex" tests="3" time="0.084">
+  <testsuite name="06 - Test: $.messages is a valid key but non-scalar, silent bypass / Reset backend" id="3424806f-d891-4079-9a11-be8d1851a107" timestamp="2026-09-08T09:27:39.164Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="06 - Test: $.messages is a valid key but non-scalar, silent bypass / Send PII - expect 200, NOT 500" id="13016c4f-8bd4-4461-a105-75f4a1b41292" timestamp="2026-09-08T09:27:39.164Z" tests="1" failures="1" errors="0" time="0.070">
+    <testcase name="status is 200" time="0.070" classname="06TestMessagesIsAValidKeyButNonScalarSilentBypassSendPiiExpect200Not500">
+      <failure type="AssertionFailure" message="expected response to have status code 200 but got 500">
+        <![CDATA[Failed 1 times.]]>
+        <![CDATA[Collection JSON ID: 301d8fc5-eaa7-456c-8d24-690f0667167e.]]>
+        <![CDATA[Collection name: pii-masking-regex.]]>
+        <![CDATA[Request name: 06 - Test: $.messages is a valid key but non-scalar, silent bypass / Send PII - expect 200, NOT 500.]]>
+        <![CDATA[Test description: status is 200.]]>
+        <![CDATA[Error message: expected response to have status code 200 but got 500.]]>
+        <![CDATA[Stacktrace: AssertionError: expected response to have status code 200 but got 500
+   at Object.eval sandbox-script.js:1:2).]]>
+      </failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="06 - Test: $.messages is a valid key but non-scalar, silent bypass / Confirm silent bypass: raw PII reached upstream, no masking, no error" id="7f21035f-546d-43c2-ac1b-caf2626350f8" timestamp="2026-09-08T09:27:39.164Z" tests="1" failures="1" errors="0" time="0.001">
+    <testcase name="raw email reached upstream completely unmasked" time="0.001" classname="06TestMessagesIsAValidKeyButNonScalarSilentBypassConfirmSilentBypassRawPiiReachedUpstreamNoMaskingNoError">
+      <failure type="AssertionFailure" message="expected '' to include 'john.doe@example.com'">
+        <![CDATA[Failed 1 times.]]>
+        <![CDATA[Collection JSON ID: 301d8fc5-eaa7-456c-8d24-690f0667167e.]]>
+        <![CDATA[Collection name: pii-masking-regex.]]>
+        <![CDATA[Request name: 06 - Test: $.messages is a valid key but non-scalar, silent bypass / Confirm silent bypass: raw PII reached upstream, no masking, no error.]]>
+        <![CDATA[Test description: raw email reached upstream completely unmasked.]]>
+        <![CDATA[Error message: expected '' to include 'john.doe@example.com'.]]>
+        <![CDATA[Stacktrace: AssertionError: expected '' to include 'john.doe@example.com'
+   at Object.eval sandbox-script.js:1:3).]]>
+      </failure>
+    </testcase>
+  </testsuite>
+</testsuites>

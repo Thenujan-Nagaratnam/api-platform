@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="body-attempt-echo dev policy - x-wso2-upstream-attempt body opt-in" tests="4" time="0.041">
+  <testsuite name="03 - Retry: forced 503 on attempt 1 triggers Envoy retry, body rewritten to attempt 2 / Reset mock backend" id="4687f838-cecb-49d9-932b-754eff8547fc" timestamp="2026-08-19T04:19:03.888Z" tests="1" failures="0" errors="0" time="0.015">
+    <testcase name="reset ok (204)" time="0.015" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2ResetMockBackend"/>
+  </testsuite>
+  <testsuite name="03 - Retry: forced 503 on attempt 1 triggers Envoy retry, body rewritten to attempt 2 / Force 503 on next request only" id="ad5a1887-84c3-4f2c-9ea3-8a2ce6ccff3d" timestamp="2026-08-19T04:19:03.888Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="force-status ok (204)" time="0.001" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2Force503OnNextRequestOnly"/>
+  </testsuite>
+  <testsuite name="03 - Retry: forced 503 on attempt 1 triggers Envoy retry, body rewritten to attempt 2 / Call gateway (attempt 1 fails 503, Envoy retries, attempt 2 succeeds)" id="41c888ef-e64d-41cb-bce0-4024bd4fdd19" timestamp="2026-08-19T04:19:03.888Z" tests="2" failures="0" errors="0" time="0.025">
+    <testcase name="final response is 200 (retry succeeded)" time="0.025" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2CallGatewayAttempt1Fails503EnvoyRetriesAttempt2Succeeds"/>
+    <testcase name="final receivedAttempt is 2" time="0.025" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2CallGatewayAttempt1Fails503EnvoyRetriesAttempt2Succeeds"/>
+  </testsuite>
+  <testsuite name="03 - Retry: forced 503 on attempt 1 triggers Envoy retry, body rewritten to attempt 2 / Verify mock history: 2 requests, attempt 1 forced-503 then attempt 2 succeeded" id="21752cba-815e-4c7e-91d6-8948df5614fb" timestamp="2026-08-19T04:19:03.888Z" tests="5" failures="0" errors="0" time="0.000">
+    <testcase name="exactly two requests recorded" time="0.000" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2VerifyMockHistory2RequestsAttempt1Forced503ThenAttempt2Succeeded"/>
+    <testcase name="request 1 had attempt=1 and was force-failed with 503" time="0.000" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2VerifyMockHistory2RequestsAttempt1Forced503ThenAttempt2Succeeded"/>
+    <testcase name="request 2 had attempt=2 and was not force-failed" time="0.000" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2VerifyMockHistory2RequestsAttempt1Forced503ThenAttempt2Succeeded"/>
+    <testcase name="original message field survived the mutation on BOTH attempts" time="0.000" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2VerifyMockHistory2RequestsAttempt1Forced503ThenAttempt2Succeeded"/>
+    <testcase name="body was genuinely rewritten, not resent unchanged (attempt field differs)" time="0.000" classname="03RetryForced503OnAttempt1TriggersEnvoyRetryBodyRewrittenToAttempt2VerifyMockHistory2RequestsAttempt1Forced503ThenAttempt2Succeeded"/>
+  </testsuite>
+</testsuites>

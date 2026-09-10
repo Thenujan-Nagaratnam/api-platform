@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="pii-masking-regex" tests="1" time="0.064">
+  <testsuite name="04 - Test: wildcard jsonPath is invalid syntax, hard failure / Send any request - expect a hard 500" id="f08da2e6-44eb-444f-b5e7-8bac7f675f05" timestamp="2026-09-08T09:27:27.593Z" tests="1" failures="0" errors="0" time="0.064">
+    <testcase name="status is 500" time="0.064" classname="04TestWildcardJsonPathIsInvalidSyntaxHardFailureSendAnyRequestExpectAHard500"/>
+  </testsuite>
+</testsuites>

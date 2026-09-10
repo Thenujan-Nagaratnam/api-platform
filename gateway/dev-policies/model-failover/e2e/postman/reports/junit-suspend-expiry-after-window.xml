@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="4" time="1.169">
+  <testsuite name="23 - LlmProvider: Suspend expiry - verify primary is eligible again after the window elapses / Reset backend A (clear last-request only)" id="c70f0c98-fe96-45a2-a156-01a71724e166" timestamp="2026-08-18T03:13:53.969Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="23 - LlmProvider: Suspend expiry - verify primary is eligible again after the window elapses / Invoke again after waiting out the suspend window - expect backend A dialed again" id="7e0a1db3-2e13-4b2b-ae40-4911096714fb" timestamp="2026-08-18T03:13:53.969Z" tests="1" failures="0" errors="0" time="0.023">
+    <testcase name="status is 200" time="0.023" classname="23LlmProviderSuspendExpiryVerifyPrimaryIsEligibleAgainAfterTheWindowElapsesInvokeAgainAfterWaitingOutTheSuspendWindowExpectBackendADialedAgain"/>
+  </testsuite>
+  <testsuite name="23 - LlmProvider: Suspend expiry - verify primary is eligible again after the window elapses / Verify backend A WAS dialed - suspend correctly expired, not a permanent skip" id="7d6ce6ba-502a-46e5-a3b8-e8e43c6b333a" timestamp="2026-08-18T03:13:53.969Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend A received the request again after expiry" time="0.001" classname="23LlmProviderSuspendExpiryVerifyPrimaryIsEligibleAgainAfterTheWindowElapsesVerifyBackendAWasDialedSuspendCorrectlyExpiredNotAPermanentSkip"/>
+  </testsuite>
+  <testsuite name="23 - LlmProvider: Suspend expiry - verify primary is eligible again after the window elapses / Cleanup: delete mf-suspend-expiry-test" id="74a773ac-eb29-48b2-a6b4-40bc1fc144ea" timestamp="2026-08-18T03:13:53.969Z" tests="0" failures="0" errors="0" time="1.132"/>
+</testsuites>

@@ -1,0 +1,108 @@
+name: model-failover
+version: v0.1.0
+description: |
+  Keeps an LLM-backed operation responding when its usual model, backend, or provider fails.
+  The operator declares an ordered chain of fallback models per target model - on the same
+  backend, on a different same-provider backend (e.g. a backup region), or on an entirely
+  different provider - and this policy automatically retries against that chain when a
+  response comes back with a configured failure status, so a model/provider outage doesn't
+  reach the client and app developers don't need to build their own retry-and-fallback logic.
+  A target can also redirect its own primary attempt the same way, for a model the operation's
+  default upstream can't serve at all. A request for an undeclared model passes through
+  untouched.
+
+parameters:
+  type: object
+  additionalProperties: false
+  required:
+    - targets
+    - statusCodes
+  properties:
+    targets:
+      type: array
+      minItems: 1
+      x-wso2-policy-advanced-param: false
+      description: |
+        One entry per independently-selectable target model, matched against the client's
+        own model identifier (see requestModel).
+      items:
+        type: object
+        additionalProperties: false
+        required:
+          - model
+        properties:
+          model:
+            type: string
+            minLength: 1
+            description: The client-requested model name that selects this target.
+          provider:
+            type: string
+            description: |
+              Provider id to redirect this target's PRIMARY attempt to. Mutually exclusive
+              with upstreamDefinition; requires every fallback to set one too.
+          upstreamDefinition:
+            type: string
+            description: |
+              spec.upstreamDefinitions entry to redirect this target's PRIMARY attempt to.
+              Mutually exclusive with provider; same fallback requirement.
+          fallbacks:
+            type: array
+            x-wso2-policy-advanced-param: false
+            description: |
+              This target's own ordered fallback chain, tried in order if the primary
+              request fails. Omit for no failover.
+            items:
+              type: object
+              additionalProperties: false
+              required:
+                - model
+              properties:
+                model:
+                  type: string
+                  minLength: 1
+                  description: Model name to use for this fallback attempt.
+                provider:
+                  type: string
+                  description: |
+                    Provider id this fallback should cross to. Omit to reuse the target's own
+                    provider. Mutually exclusive with upstreamDefinition.
+                upstreamDefinition:
+                  type: string
+                  description: |
+                    spec.upstreamDefinitions entry this fallback should use instead of the
+                    target's own backend. Mutually exclusive with provider.
+    statusCodes:
+      type: array
+      minItems: 1
+      x-wso2-policy-advanced-param: false
+      description: |
+        Response status codes that trigger failover. Mandatory, no default - the right set
+        varies significantly by provider (see README).
+      items:
+        type: integer
+        minimum: 100
+        maximum: 599
+    requestTimeout:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: Per-attempt dial timeout (e.g. "10s"). Defaults to 10s when unset.
+    suspendDuration:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        How long a failed fallback is deprioritized (e.g. "30s"). Omit to disable; never
+        applies to a target's own primary attempt.
+    maxResponseBytes:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: Per-attempt response size ceiling in bytes. Defaults to 10MiB when unset.
+    selfBaseURL:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        Base URL this policy dials back to for a self-redial. Defaults to
+        http://127.0.0.1:8080, the router's own default listener address.
+
+systemParameters:
+  type: object
+  properties: {}

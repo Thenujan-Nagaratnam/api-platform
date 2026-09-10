@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e (response-path retry + additionalProviders reuse)" tests="1" time="1.063">
+  <testsuite name="11 - LlmProvider: Registration-time rejection - provider is not supported on an LlmProvider / Register: mf-reject-test (must be REJECTED, not accepted)" id="02c458ab-9a72-400e-93ce-cd3f8074fb66" timestamp="2026-09-02T06:26:27.410Z" tests="2" failures="2" errors="0" time="1.063">
+    <testcase name="status is NOT 201 - registration must fail synchronously" time="1.063" classname="11LlmProviderRegistrationTimeRejectionProviderIsNotSupportedOnAnLlmProviderRegisterMfRejectTestMustBeRejectedNotAccepted">
+      <failure type="AssertionFailure" message="expected 201 to not deeply equal 201">
+        <![CDATA[Failed 1 times.]]>
+        <![CDATA[Collection JSON ID: b1a4192b-f4b1-41cd-8ec6-a7c55506459c.]]>
+        <![CDATA[Collection name: model-failover e2e (response-path retry + additionalProviders reuse).]]>
+        <![CDATA[Request name: 11 - LlmProvider: Registration-time rejection - provider is not supported on an LlmProvider / Register: mf-reject-test (must be REJECTED, not accepted).]]>
+        <![CDATA[Test description: status is NOT 201 - registration must fail synchronously.]]>
+        <![CDATA[Error message: expected 201 to not deeply equal 201.]]>
+        <![CDATA[Stacktrace: AssertionError: expected 201 to not deeply equal 201
+   at Object.eval sandbox-script.js:1:1).]]>
+      </failure>
+    </testcase>
+    <testcase name="error message explains provider is unsupported on LlmProvider" time="1.063" classname="11LlmProviderRegistrationTimeRejectionProviderIsNotSupportedOnAnLlmProviderRegisterMfRejectTestMustBeRejectedNotAccepted">
+      <failure type="AssertionFailure" message="expected '{&quot;apiVersion&quot;:&quot;gateway.api-platform.w…' to include 'not supported on an LlmProvider'">
+        <![CDATA[Failed 1 times.]]>
+        <![CDATA[Collection JSON ID: b1a4192b-f4b1-41cd-8ec6-a7c55506459c.]]>
+        <![CDATA[Collection name: model-failover e2e (response-path retry + additionalProviders reuse).]]>
+        <![CDATA[Request name: 11 - LlmProvider: Registration-time rejection - provider is not supported on an LlmProvider / Register: mf-reject-test (must be REJECTED, not accepted).]]>
+        <![CDATA[Test description: error message explains provider is unsupported on LlmProvider.]]>
+        <![CDATA[Error message: expected '{"apiVersion":"gateway.api-platform.w…' to include 'not supported on an LlmProvider'.]]>
+        <![CDATA[Stacktrace: AssertionError: expected '{"apiVersion":"gateway.api-platform.w…' to include 'not supported on an LlmProvider'
+   at Object.eval sandbox-script.js:2:1).]]>
+      </failure>
+    </testcase>
+  </testsuite>
+</testsuites>

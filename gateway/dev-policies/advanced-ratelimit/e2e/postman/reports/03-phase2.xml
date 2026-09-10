@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="AI Gateway - advanced-ratelimit redis precedence" tests="3" time="0.034">
+  <testsuite name="03 - Phase 2: Working override -> policy-level Redis used / Request 1 (should succeed)" id="3294be9c-e71b-432d-ae05-1ad431617096" timestamp="2026-08-20T05:06:31.436Z" tests="1" failures="0" errors="0" time="0.022">
+    <testcase name="status is 200" time="0.022" classname="03Phase2WorkingOverridePolicyLevelRedisUsedRequest1ShouldSucceed"/>
+  </testsuite>
+  <testsuite name="03 - Phase 2: Working override -> policy-level Redis used / Request 2 (should succeed)" id="5a7b5a0a-f1ab-4ff6-ac3f-c5f48cf6a9f6" timestamp="2026-08-20T05:06:31.436Z" tests="1" failures="0" errors="0" time="0.008">
+    <testcase name="status is 200" time="0.008" classname="03Phase2WorkingOverridePolicyLevelRedisUsedRequest2ShouldSucceed"/>
+  </testsuite>
+  <testsuite name="03 - Phase 2: Working override -> policy-level Redis used / Request 3 (quota exhausted, expect 429)" id="e9a4ef41-8f0a-471c-81a9-a85fc6ef7a04" timestamp="2026-08-20T05:06:31.436Z" tests="1" failures="0" errors="0" time="0.004">
+    <testcase name="status is 429" time="0.004" classname="03Phase2WorkingOverridePolicyLevelRedisUsedRequest3QuotaExhaustedExpect429"/>
+  </testsuite>
+</testsuites>

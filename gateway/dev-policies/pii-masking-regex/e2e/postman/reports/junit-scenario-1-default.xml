@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="pii-masking-regex" tests="6" time="0.315">
+  <testsuite name="02 - Test: default jsonPath masks last message only / Reset backend" id="ef599f5a-03ee-46bd-9646-e5b771529914" timestamp="2026-09-08T09:27:14.787Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="02 - Test: default jsonPath masks last message only / Send PII in the LAST message" id="d27d03d3-81b0-4b6e-8020-ca8952a78006" timestamp="2026-09-08T09:27:14.787Z" tests="3" failures="0" errors="0" time="0.246">
+    <testcase name="status is 200" time="0.246" classname="02TestDefaultJsonPathMasksLastMessageOnlySendPiiInTheLastMessage"/>
+    <testcase name="client-facing response has the real email restored" time="0.246" classname="02TestDefaultJsonPathMasksLastMessageOnlySendPiiInTheLastMessage"/>
+    <testcase name="client-facing response no longer shows the placeholder" time="0.246" classname="02TestDefaultJsonPathMasksLastMessageOnlySendPiiInTheLastMessage"/>
+  </testsuite>
+  <testsuite name="02 - Test: default jsonPath masks last message only / Verify upstream received a masked placeholder, not the raw email" id="6d143a62-2364-4812-b09b-75de4464ffef" timestamp="2026-09-08T09:27:14.787Z" tests="2" failures="0" errors="0" time="0.001">
+    <testcase name="upstream never saw the raw email" time="0.001" classname="02TestDefaultJsonPathMasksLastMessageOnlyVerifyUpstreamReceivedAMaskedPlaceholderNotTheRawEmail"/>
+    <testcase name="upstream saw an EMAIL placeholder instead" time="0.001" classname="02TestDefaultJsonPathMasksLastMessageOnlyVerifyUpstreamReceivedAMaskedPlaceholderNotTheRawEmail"/>
+  </testsuite>
+  <testsuite name="02 - Test: default jsonPath masks last message only / Reset backend" id="e0ec259b-5899-46dd-b9d8-0f1eaff24d05" timestamp="2026-09-08T09:27:14.787Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="02 - Test: default jsonPath masks last message only / Send PII in an EARLIER message only (multi-turn)" id="d56f7c0f-9a34-4846-8369-0e88dfaa19b0" timestamp="2026-09-08T09:27:14.787Z" tests="1" failures="0" errors="0" time="0.051">
+    <testcase name="status is 200" time="0.051" classname="02TestDefaultJsonPathMasksLastMessageOnlySendPiiInAnEarlierMessageOnlyMultiTurn"/>
+  </testsuite>
+  <testsuite name="02 - Test: default jsonPath masks last message only / Confirm the gap: earlier-turn email reaches upstream RAW" id="9c05b5b0-0541-49e4-86d8-d3fc880a7e57" timestamp="2026-09-08T09:27:14.787Z" tests="1" failures="0" errors="0" time="0.002">
+    <testcase name="earlier-turn email reached upstream unmasked (known gap)" time="0.002" classname="02TestDefaultJsonPathMasksLastMessageOnlyConfirmTheGapEarlierTurnEmailReachesUpstreamRaw"/>
+  </testsuite>
+</testsuites>

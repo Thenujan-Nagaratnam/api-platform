@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="AI Gateway - advanced-ratelimit redis precedence" tests="1" time="0.020">
+  <testsuite name="04 - Phase 3: Unreachable override + failureMode closed -> proves precedence / Request (route fails to build, expect 500)" id="66342687-4b30-4df6-b3dd-b5fd135e41a2" timestamp="2026-08-20T05:06:46.530Z" tests="1" failures="0" errors="0" time="0.020">
+    <testcase name="status is 500" time="0.020" classname="04Phase3UnreachableOverrideFailureModeClosedProvesPrecedenceRequestRouteFailsToBuildExpect500"/>
+  </testsuite>
+</testsuites>

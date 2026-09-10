@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="5" time="1.122">
+  <testsuite name="14 - LlmProvider: Shared upstreamDefinition across two groups dedupes to one cluster / Reset backend A" id="bbbeb4fe-396f-4092-a72d-0554ed148239" timestamp="2026-08-18T08:08:19.912Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="14 - LlmProvider: Shared upstreamDefinition across two groups dedupes to one cluster / gpt-4o -> shared" id="8193760f-ba3d-4da4-b586-b62be5511aac" timestamp="2026-08-18T08:08:19.912Z" tests="2" failures="0" errors="0" time="0.023">
+    <testcase name="status is 200" time="0.023" classname="14LlmProviderSharedUpstreamDefinitionAcrossTwoGroupsDedupesToOneClusterGpt4OShared"/>
+    <testcase name="routed correctly" time="0.023" classname="14LlmProviderSharedUpstreamDefinitionAcrossTwoGroupsDedupesToOneClusterGpt4OShared"/>
+  </testsuite>
+  <testsuite name="14 - LlmProvider: Shared upstreamDefinition across two groups dedupes to one cluster / gpt-4o-mini -> shared (the SAME upstreamDefinition, a different group)" id="8c6d3cb1-b801-4988-b21c-f2cc057a7661" timestamp="2026-08-18T08:08:19.912Z" tests="2" failures="0" errors="0" time="0.005">
+    <testcase name="status is 200" time="0.005" classname="14LlmProviderSharedUpstreamDefinitionAcrossTwoGroupsDedupesToOneClusterGpt4OMiniSharedTheSameUpstreamDefinitionADifferentGroup"/>
+    <testcase name="routed correctly" time="0.005" classname="14LlmProviderSharedUpstreamDefinitionAcrossTwoGroupsDedupesToOneClusterGpt4OMiniSharedTheSameUpstreamDefinitionADifferentGroup"/>
+  </testsuite>
+  <testsuite name="14 - LlmProvider: Shared upstreamDefinition across two groups dedupes to one cluster / Verify exactly ONE 'shared' cluster exists, not two" id="2619c57a-48c8-401d-9939-b74842efec32" timestamp="2026-08-18T08:08:19.912Z" tests="1" failures="0" errors="0" time="0.037">
+    <testcase name="exactly one cluster named '..._shared' exists (deduped across both groups)" time="0.037" classname="14LlmProviderSharedUpstreamDefinitionAcrossTwoGroupsDedupesToOneClusterVerifyExactlyOneSharedClusterExistsNotTwo"/>
+  </testsuite>
+  <testsuite name="14 - LlmProvider: Shared upstreamDefinition across two groups dedupes to one cluster / Cleanup: delete mf-shared-upstream-test" id="a0732370-6413-4649-9904-b2e49a3e9d56" timestamp="2026-08-18T08:08:19.912Z" tests="0" failures="0" errors="0" time="1.044"/>
+</testsuites>

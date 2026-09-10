@@ -1,0 +1,932 @@
+{
+	"info": {
+		"name": "AI Gateway - oauth2 policy (real-world IdP)",
+		"_postman_id": "d3f7a6c0-9b1a-4a2e-8c2e-oauth2realworld",
+		"description": "Real-world OAuth2 verification against a REAL, live IdP (e.g. an Asgardeo tenant) - separate from oauth2.postman_collection.json's E.1-E.35 suite, which runs entirely against the local mock-oauth2-idp. Companion to TESTING.md; see run-e2e.sh's RUN_REALWORLD_FULL_TEST section for how this is wired into the automated run.\n\nUnlike E.33 (which this suite supersedes with a wider set of scenarios), NONE of realWorldTokenEndpoint/realWorldClientId/realWorldClientSecret/realWorldRevokeEndpoint/realWorldIntrospectEndpoint have a real default value baked into this file - they're intentionally left blank. Fill them in via a Postman ENVIRONMENT (not this collection's own variables) for manual/GUI runs, or via newman --env-var for automated runs (see run-e2e.sh) - never commit real values here.\n\nScenarios:\n- RW.1: basic client_credentials fetch + header injection, against a real IdP.\n- RW.2: token reuse/caching - two requests within the token's TTL get the identical cached Authorization header, proving no refetch happened.\n- RW.3: revoke the cached token at the real IdP (RFC 7009), then confirm via introspection (RFC 7662) that the IdP itself now rejects it. This does not exercise our gateway's own purge/retry path (postman-echo.com never validates the token, so nothing ever 401s on our side) - it proves the revoke call itself works against a token our cache is genuinely still holding.\n- RW.4: shared Redis cache - two RestApi instances with identical oauth2 config (cacheStrategy: redis) resolve to the SAME cached token from the real IdP, mirroring E.14 but end-to-end against a real token instead of the mock IdP's.\n- RW.5: a GENUINE purge test. RW.3 can't prove oauth2-generator's OnResponseHeaders purge logic ever fires, because postman-echo.com never rejects a bad token. RW.5's backend is instead mock-introspecting-backend (see mocks/mock-introspecting-backend) - a local server that actually calls realWorldIntrospectEndpoint before responding, so revoking the cached token at the real IdP produces a real 401 that our gateway genuinely has to react to: RW.5c proves the passthrough 401 (no self-retry implemented right now), and RW.5d proves the NEXT request purged the stale token and fetched a genuinely fresh one.\n\nRun order: Register -> RW.1 -> RW.2 -> RW.3a -> RW.3b -> Delete -> Register (shared-a) -> Register (shared-b) -> RW.4a -> RW.4b -> Delete (shared-a) -> Delete (shared-b) -> Register (purge) -> RW.5a -> RW.5b -> RW.5c -> RW.5d -> Delete (purge). Always run the Delete steps, even on failure - a registration holds your real client secret in the controller's store until removed.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "controllerBaseUrl",
+			"value": "localhost:9090",
+			"type": "string"
+		},
+		{
+			"key": "gatewayBaseUrl",
+			"value": "localhost:8443",
+			"type": "string"
+		},
+		{
+			"key": "adminAuthHeader",
+			"value": "Basic YWRtaW46YWRtaW4=",
+			"type": "string"
+		},
+		{
+			"key": "realWorldTokenEndpoint",
+			"value": "",
+			"description": "A REAL OAuth2 token endpoint (e.g. an Asgardeo tenant's https://api.<region>.asgardeo.io/t/<org>/oauth2/token). Leave empty to skip this suite. Set via a Postman environment or newman --env-var - never commit a real value here.",
+			"type": "string"
+		},
+		{
+			"key": "realWorldClientId",
+			"value": "",
+			"description": "The real IdP client_credentials Client ID. Set via a Postman environment or newman --env-var - never commit a real value here.",
+			"type": "string"
+		},
+		{
+			"key": "realWorldClientSecret",
+			"value": "",
+			"description": "The real IdP client_credentials Client Secret. Set via a Postman environment or newman --env-var - never commit a real value here.",
+			"type": "string"
+		},
+		{
+			"key": "realWorldRevokeEndpoint",
+			"value": "",
+			"description": "RFC 7009 token revocation endpoint for the same IdP (e.g. .../oauth2/revoke). Used by RW.3a.",
+			"type": "string"
+		},
+		{
+			"key": "realWorldIntrospectEndpoint",
+			"value": "",
+			"description": "RFC 7662 token introspection endpoint for the same IdP (e.g. .../oauth2/introspect). Used by RW.3b.",
+			"type": "string"
+		},
+		{
+			"key": "realWorldBackendUrl",
+			"value": "https://postman-echo.com",
+			"description": "The real backend the generated token is forwarded to. Default is Postman's own public echo service (no auth of its own - proves token fetch/injection/delivery, not IdP-side validation).",
+			"type": "string"
+		},
+		{
+			"key": "realWorldBackendPath",
+			"value": "/headers",
+			"description": "Path on realWorldBackendUrl to call - /headers on postman-echo.com echoes back the received Authorization header.",
+			"type": "string"
+		},
+		{
+			"key": "realWorldPurgeBackendUrl",
+			"value": "http://host.docker.internal:9612",
+			"description": "RW.5 only: mock-introspecting-backend's address - a local backend that actually validates the Bearer token by calling realWorldIntrospectEndpoint before responding, unlike postman-echo.com. Started by run-e2e.sh's RUN_REALWORLD_FULL_TEST block; for a manual/GUI run, start it yourself (see mocks/mock-introspecting-backend).",
+			"type": "string"
+		},
+		{
+			"key": "rw_token_1",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "rw_token_1_bare",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "rw_token_2",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "rw_shared_token_a",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "rw_shared_token_b",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "rw_token_5",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "rw_token_5_bare",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "rw_token_5b",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "RW - Real-world OAuth2 verification against a real IdP",
+			"description": "See the collection-level description for the full scenario list and setup instructions.",
+			"item": [
+				{
+					"name": "Register: oauth2-test-realworld",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"rest-apis"
+							],
+							"protocol": "http"
+						},
+						"description": "MANUAL/automated (RUN_REALWORLD_FULL_TEST=1) - requires realWorldTokenEndpoint/realWorldClientId/realWorldClientSecret filled in with YOUR OWN real IdP credentials.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: RestApi\nmetadata:\n  name: oauth2-test-realworld\nspec:\n  displayName: OAuth2 Test Real World oauth2-test-realworld\n  version: v1.0\n  context: /oauth2-test-realworld/$version\n  upstream:\n    main:\n      url: {{realWorldBackendUrl}}\n  policies:\n    - name: oauth2-generator\n      version: v0\n      params:\n        tokenEndpoint: {{realWorldTokenEndpoint}}\n        clientId: {{realWorldClientId}}\n        clientSecret: {{realWorldClientSecret}}\n  operations:\n    - method: GET\n      path: {{realWorldBackendPath}}\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "RW.1 - Send request (basic fetch + injection, prime cache)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"let json;",
+									"try { json = pm.response.json(); } catch (e) { json = {}; }",
+									"const authHeader = (json.headers && json.headers.authorization) || '';",
+									"pm.test('a real Bearer token was injected', function () { pm.expect(authHeader).to.match(/^Bearer /); });",
+									"pm.collectionVariables.set('rw_token_1', authHeader);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-realworld/v1.0{{realWorldBackendPath}}",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-realworld",
+								"v1.0{{realWorldBackendPath}}"
+							],
+							"protocol": "https"
+						},
+						"description": "Wait 5-10s after Register before running this - xDS propagation to gateway-runtime is variable, same as every other flow in this repo's e2e suites."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.2 - Send request again (expect the SAME cached token, no refetch)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"let json;",
+									"try { json = pm.response.json(); } catch (e) { json = {}; }",
+									"const authHeader = (json.headers && json.headers.authorization) || '';",
+									"pm.test('a real Bearer token was injected', function () { pm.expect(authHeader).to.match(/^Bearer /); });",
+									"pm.collectionVariables.set('rw_token_2', authHeader);",
+									"pm.test('same cached token reused (rw_token_2 === rw_token_1)', function () { pm.expect(authHeader).to.eql(pm.collectionVariables.get('rw_token_1')); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-realworld/v1.0{{realWorldBackendPath}}",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-realworld",
+								"v1.0{{realWorldBackendPath}}"
+							],
+							"protocol": "https"
+						},
+						"description": "Run immediately after RW.1, well within the real IdP's token TTL - proves our cache reused the token instead of fetching a new one from the real IdP."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.3a - Revoke the cached token at the real IdP",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const raw = pm.collectionVariables.get('rw_token_1') || '';",
+									"pm.collectionVariables.set('rw_token_1_bare', raw.replace(/^Bearer\\s+/i, ''));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('revoke accepted (200 or 204)', function () { pm.expect([200, 204]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{realWorldClientId}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{realWorldClientSecret}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "token",
+									"value": "{{rw_token_1_bare}}",
+									"type": "text"
+								},
+								{
+									"key": "token_type_hint",
+									"value": "access_token",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{realWorldRevokeEndpoint}}",
+							"host": [
+								"{{realWorldRevokeEndpoint}}"
+							]
+						},
+						"description": "RFC 7009 token revocation (e.g. Asgardeo's https://api.<region>.asgardeo.io/t/<org>/oauth2/revoke). Revokes the exact token our gateway is still holding cached from RW.1/RW.2 - proves the revoke call itself works against a live, currently-cached token. This does NOT test our gateway's own purge/retry behavior: postman-echo.com never validates the token, so nothing ever triggers a purge on our side (see RW.3b for the actual proof the token is now rejected by the IdP; see RW.5 for a genuine purge test against a backend that actually validates)."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.3b - Introspect the revoked token, expect active: false",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"let json;",
+									"try { json = pm.response.json(); } catch (e) { json = {}; }",
+									"pm.test('introspect responded 200', function () { pm.response.to.have.status(200); });",
+									"pm.test('token active is false', function () { pm.expect(json.active).to.eql(false); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{realWorldClientId}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{realWorldClientSecret}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "token",
+									"value": "{{rw_token_1_bare}}",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{realWorldIntrospectEndpoint}}",
+							"host": [
+								"{{realWorldIntrospectEndpoint}}"
+							]
+						},
+						"description": "RFC 7662 token introspection (e.g. Asgardeo's .../oauth2/introspect). This is the actual proof RW.3a's revoke call took effect - the IdP itself now reports the token inactive."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-realworld",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis/oauth2-test-realworld",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"rest-apis",
+								"oauth2-test-realworld"
+							],
+							"protocol": "http"
+						},
+						"description": "Always run this, even on failure - the registration holds your real IdP credentials in the controller's store until deleted."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.4 - Register: oauth2-test-realworld-shared-a",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"rest-apis"
+							],
+							"protocol": "http"
+						},
+						"description": "RW.4 (shared Redis cache) - identical oauth2 config to shared-b below, cacheStrategy: redis.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: RestApi\nmetadata:\n  name: oauth2-test-realworld-shared-a\nspec:\n  displayName: OAuth2 Test Real World oauth2-test-realworld-shared-a\n  version: v1.0\n  context: /oauth2-test-realworld-shared-a/$version\n  upstream:\n    main:\n      url: {{realWorldBackendUrl}}\n  policies:\n    - name: oauth2-generator\n      version: v0\n      params:\n        tokenEndpoint: {{realWorldTokenEndpoint}}\n        clientId: {{realWorldClientId}}\n        clientSecret: {{realWorldClientSecret}}\n        cacheStrategy: redis\n  operations:\n    - method: GET\n      path: {{realWorldBackendPath}}\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "RW.4 - Register: oauth2-test-realworld-shared-b",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"rest-apis"
+							],
+							"protocol": "http"
+						},
+						"description": "RW.4 (shared Redis cache) - identical oauth2 config to shared-a above, cacheStrategy: redis.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: RestApi\nmetadata:\n  name: oauth2-test-realworld-shared-b\nspec:\n  displayName: OAuth2 Test Real World oauth2-test-realworld-shared-b\n  version: v1.0\n  context: /oauth2-test-realworld-shared-b/$version\n  upstream:\n    main:\n      url: {{realWorldBackendUrl}}\n  policies:\n    - name: oauth2-generator\n      version: v0\n      params:\n        tokenEndpoint: {{realWorldTokenEndpoint}}\n        clientId: {{realWorldClientId}}\n        clientSecret: {{realWorldClientSecret}}\n        cacheStrategy: redis\n  operations:\n    - method: GET\n      path: {{realWorldBackendPath}}\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "RW.4a - Send request via shared-a (prime the shared cache)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"let json;",
+									"try { json = pm.response.json(); } catch (e) { json = {}; }",
+									"const authHeader = (json.headers && json.headers.authorization) || '';",
+									"pm.test('a real Bearer token was injected', function () { pm.expect(authHeader).to.match(/^Bearer /); });",
+									"pm.collectionVariables.set('rw_shared_token_a', authHeader);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-realworld-shared-a/v1.0{{realWorldBackendPath}}",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-realworld-shared-a",
+								"v1.0{{realWorldBackendPath}}"
+							],
+							"protocol": "https"
+						},
+						"description": "Requires --profile redis (docker compose --profile redis up -d redis) - see TESTING.md E.14 for the equivalent mock-IdP scenario."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.4b - Send request via shared-b (expect the SAME token via the shared Redis cache)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"let json;",
+									"try { json = pm.response.json(); } catch (e) { json = {}; }",
+									"const authHeader = (json.headers && json.headers.authorization) || '';",
+									"pm.test('a real Bearer token was injected', function () { pm.expect(authHeader).to.match(/^Bearer /); });",
+									"pm.collectionVariables.set('rw_shared_token_b', authHeader);",
+									"pm.test('same cached token reused (rw_shared_token_b === rw_shared_token_a)', function () { pm.expect(authHeader).to.eql(pm.collectionVariables.get('rw_shared_token_a')); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-realworld-shared-b/v1.0{{realWorldBackendPath}}",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-realworld-shared-b",
+								"v1.0{{realWorldBackendPath}}"
+							],
+							"protocol": "https"
+						},
+						"description": "Different RestApi instance, identical oauth2 config -> same Redis cache-key discriminator -> same cached token as RW.4a, proving the Redis tier is genuinely shared across instances for a real IdP token too."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-realworld-shared-a",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis/oauth2-test-realworld-shared-a",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"rest-apis",
+								"oauth2-test-realworld-shared-a"
+							],
+							"protocol": "http"
+						},
+						"description": "Always run this, even on failure - the registration holds your real IdP credentials in the controller's store until deleted."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-realworld-shared-b",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis/oauth2-test-realworld-shared-b",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"rest-apis",
+								"oauth2-test-realworld-shared-b"
+							],
+							"protocol": "http"
+						},
+						"description": "Always run this, even on failure - the registration holds your real IdP credentials in the controller's store until deleted."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.5 - Register: oauth2-test-realworld-purge",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('created (200 or 201)', function () { pm.expect([200, 201]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							},
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"rest-apis"
+							],
+							"protocol": "http"
+						},
+						"description": "RW.5 (genuine purge) - backend is mock-introspecting-backend, which actually validates the token against realWorldIntrospectEndpoint, unlike postman-echo.com.",
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: RestApi\nmetadata:\n  name: oauth2-test-realworld-purge\nspec:\n  displayName: OAuth2 Test Real World oauth2-test-realworld-purge\n  version: v1.0\n  context: /oauth2-test-realworld-purge/$version\n  upstream:\n    main:\n      url: {{realWorldPurgeBackendUrl}}\n  policies:\n    - name: oauth2-generator\n      version: v0\n      params:\n        tokenEndpoint: {{realWorldTokenEndpoint}}\n        clientId: {{realWorldClientId}}\n        clientSecret: {{realWorldClientSecret}}\n  operations:\n    - method: GET\n      path: {{realWorldBackendPath}}\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "RW.5a - Send request (prime cache)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"let json;",
+									"try { json = pm.response.json(); } catch (e) { json = {}; }",
+									"const authHeader = (json.headers && json.headers.authorization) || '';",
+									"pm.test('a real Bearer token was injected', function () { pm.expect(authHeader).to.match(/^Bearer /); });",
+									"pm.collectionVariables.set('rw_token_5', authHeader);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-realworld-purge/v1.0{{realWorldBackendPath}}",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-realworld-purge",
+								"v1.0{{realWorldBackendPath}}"
+							],
+							"protocol": "https"
+						},
+						"description": "mock-introspecting-backend must be running (see realWorldPurgeBackendUrl) and reachable from gateway-runtime."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.5b - Revoke the cached token at the real IdP",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const raw = pm.collectionVariables.get('rw_token_5') || '';",
+									"pm.collectionVariables.set('rw_token_5_bare', raw.replace(/^Bearer\\s+/i, ''));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('revoke accepted (200 or 204)', function () { pm.expect([200, 204]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{realWorldClientId}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{realWorldClientSecret}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
+						],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "token",
+									"value": "{{rw_token_5_bare}}",
+									"type": "text"
+								},
+								{
+									"key": "token_type_hint",
+									"value": "access_token",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{realWorldRevokeEndpoint}}",
+							"host": [
+								"{{realWorldRevokeEndpoint}}"
+							]
+						},
+						"description": "Revokes RW.5a's token at the real IdP. Unlike RW.3a, the NEXT request (RW.5c) hits a backend that actually checks this - mock-introspecting-backend, not postman-echo.com."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.5c - Send request again (same revoked token, expect a passthrough 401)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 401', function () { pm.response.to.have.status(401); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-realworld-purge/v1.0{{realWorldBackendPath}}",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-realworld-purge",
+								"v1.0{{realWorldBackendPath}}"
+							],
+							"protocol": "https"
+						},
+						"description": "oauth2-generator still has RW.5a's token cached and injects it as-is; mock-introspecting-backend genuinely rejects it (RW.5b just revoked it at the real IdP) with a real 401. No self-retry is implemented right now, so the client sees that 401 passthrough - but per tokenPurgeStatusCodes (default [401]), OnResponseHeaders purges the cached token here, so the NEXT request (RW.5d) must fetch a fresh one."
+					},
+					"response": []
+				},
+				{
+					"name": "RW.5d - Send request a third time (expect a fresh, valid token)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+									"let json;",
+									"try { json = pm.response.json(); } catch (e) { json = {}; }",
+									"const authHeader = (json.headers && json.headers.authorization) || '';",
+									"pm.test('a real Bearer token was injected', function () { pm.expect(authHeader).to.match(/^Bearer /); });",
+									"pm.collectionVariables.set('rw_token_5b', authHeader);",
+									"pm.test('a genuinely fresh token was fetched (rw_token_5b !== rw_token_5)', function () { pm.expect(authHeader).to.not.eql(pm.collectionVariables.get('rw_token_5')); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{gatewayBaseUrl}}/oauth2-test-realworld-purge/v1.0{{realWorldBackendPath}}",
+							"host": [
+								"{{gatewayBaseUrl}}"
+							],
+							"path": [
+								"oauth2-test-realworld-purge",
+								"v1.0{{realWorldBackendPath}}"
+							],
+							"protocol": "https"
+						},
+						"description": "Proves RW.5c's 401 actually purged the cache: this request fetches a genuinely fresh token from the real IdP (different from RW.5a/5b's revoked one) and mock-introspecting-backend accepts it, so the client gets 200 again."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete: oauth2-test-realworld-purge",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('deleted (200 or 204 or 404)', function () { pm.expect([200, 204, 404]).to.include(pm.response.code); });"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "{{adminAuthHeader}}"
+							}
+						],
+						"url": {
+							"raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis/oauth2-test-realworld-purge",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"api",
+								"management",
+								"v1",
+								"rest-apis",
+								"oauth2-test-realworld-purge"
+							],
+							"protocol": "http"
+						},
+						"description": "Always run this, even on failure - the registration holds your real IdP credentials in the controller's store until deleted."
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

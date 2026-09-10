@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e (response-path retry + additionalProviders reuse)" tests="5" time="0.040">
+  <testsuite name="16b - LlmProxy: model-failover's own fallback model reaches a cross-provider translator (fix regression test) / Reset backend P" id="10c20ebc-c071-41f5-bb96-88df7078008d" timestamp="2026-09-08T04:31:58.100Z" tests="0" failures="0" errors="0" time="0.014"/>
+  <testsuite name="16b - LlmProxy: model-failover's own fallback model reaches a cross-provider translator (fix regression test) / Reset anthropic backend" id="6b3cf6ee-672f-4928-8518-41d84dd58b29" timestamp="2026-09-08T04:31:58.100Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="16b - LlmProxy: model-failover's own fallback model reaches a cross-provider translator (fix regression test) / Force backend P (primary) to fail once" id="8aedb1ac-2a38-4c88-bbff-216db424de25" timestamp="2026-09-08T04:31:58.100Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="16b - LlmProxy: model-failover's own fallback model reaches a cross-provider translator (fix regression test) / Invoke gpt-4o-mini - primary fails, fallback's OWN model must reach Anthropic" id="0edc26ab-dbad-453b-aab1-8b57d32a8641" timestamp="2026-09-08T04:31:58.100Z" tests="2" failures="0" errors="0" time="0.022">
+    <testcase name="status is 200" time="0.022" classname="16BLlmProxyModelFailoversOwnFallbackModelReachesACrossProviderTranslatorFixRegressionTestInvokeGpt4OMiniPrimaryFailsFallbacksOwnModelMustReachAnthropic"/>
+    <testcase name="client-visible response is OpenAI-shaped" time="0.022" classname="16BLlmProxyModelFailoversOwnFallbackModelReachesACrossProviderTranslatorFixRegressionTestInvokeGpt4OMiniPrimaryFailsFallbacksOwnModelMustReachAnthropic"/>
+  </testsuite>
+  <testsuite name="16b - LlmProxy: model-failover's own fallback model reaches a cross-provider translator (fix regression test) / Anthropic received model-failover's own fallback model, not a provider-wide override" id="2056b8f8-71d3-4336-930e-097caa74cf11" timestamp="2026-09-08T04:31:58.100Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="the fallback's own configured model reached Anthropic" time="0.001" classname="16BLlmProxyModelFailoversOwnFallbackModelReachesACrossProviderTranslatorFixRegressionTestAnthropicReceivedModelFailoversOwnFallbackModelNotAProviderWideOverride"/>
+  </testsuite>
+</testsuites>

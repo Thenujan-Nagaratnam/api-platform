@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e (response-path retry mechanism)" tests="42" time="0.130">
+  <testsuite name="02 - LlmProvider: Unmatched model passes through untouched / Reset backend A" id="373dcb46-2e68-4963-b43a-5e478497c97b" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="02 - LlmProvider: Unmatched model passes through untouched / Invoke with a model no target group declares" id="32c3c3c7-164d-424b-8ff2-cbe2a9574e2d" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.029">
+    <testcase name="status is 200" time="0.029" classname="02LlmProviderUnmatchedModelPassesThroughUntouchedInvokeWithAModelNoTargetGroupDeclares"/>
+  </testsuite>
+  <testsuite name="02 - LlmProvider: Unmatched model passes through untouched / Verify backend A received the request byte-for-byte unmodified" id="efd46d83-62c0-43d2-8070-9b300b8daac5" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend A received the untouched model" time="0.001" classname="02LlmProviderUnmatchedModelPassesThroughUntouchedVerifyBackendAReceivedTheRequestByteForByteUnmodified"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Bare same-provider fallback recovers a transient failure / Reset backend A" id="42fa9cab-87cf-4d03-b48f-210ad8bb07ae" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="03 - LlmProvider: Bare same-provider fallback recovers a transient failure / Force backend A to fail once (primary attempt)" id="8d2ac588-0b65-4a85-a4c6-c9e361d739e4" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="03 - LlmProvider: Bare same-provider fallback recovers a transient failure / Invoke gpt-4o - primary fails once, bare fallback re-dials the SAME backend" id="63734b9f-0790-4bc6-924e-9c2e20a6b5d0" timestamp="2026-09-01T12:57:07.700Z" tests="2" failures="0" errors="0" time="0.009">
+    <testcase name="status is 200 despite the primary attempt failing" time="0.009" classname="03LlmProviderBareSameProviderFallbackRecoversATransientFailureInvokeGpt4OPrimaryFailsOnceBareFallbackReDialsTheSameBackend"/>
+    <testcase name="response shows the rewritten fallback model" time="0.009" classname="03LlmProviderBareSameProviderFallbackRecoversATransientFailureInvokeGpt4OPrimaryFailsOnceBareFallbackReDialsTheSameBackend"/>
+  </testsuite>
+  <testsuite name="03 - LlmProvider: Bare same-provider fallback recovers a transient failure / Verify backend A's second attempt (the bare fallback) landed with the rewritten model" id="05af27fc-a655-4d1b-af65-0c3b79387d11" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend A's last request shows gpt-4o-mini, proving the bare fallback re-dialed the same backend" time="0.001" classname="03LlmProviderBareSameProviderFallbackRecoversATransientFailureVerifyBackendAsSecondAttemptTheBareFallbackLandedWithTheRewrittenModel"/>
+  </testsuite>
+  <testsuite name="04 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Reset backend A" id="1a162027-7620-46cb-8a2c-7b0c710ea61a" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="04 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Reset backend B" id="6389a1d9-9ba4-4bd6-89cb-a00872313239" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="04 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Reset backend C" id="267b7851-2557-4b0b-870d-f11ce0d86c98" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="04 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Force backend A (primary) to fail" id="724a78e4-66fd-44b4-a45d-86cdad41a36d" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="04 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Force backend B (first fallback) to fail" id="d4006a80-6ae1-4feb-8c8b-52dfd0a284fb" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="04 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Invoke gpt-4o-chain - expect success via the SECOND fallback (backend C)" id="9c0dccc3-ac9b-49ef-873c-612991933282" timestamp="2026-09-01T12:57:07.700Z" tests="2" failures="0" errors="0" time="0.011">
+    <testcase name="status is 200" time="0.011" classname="04LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsInvokeGpt4OChainExpectSuccessViaTheSecondFallbackBackendC"/>
+    <testcase name="response shows the second fallback model" time="0.011" classname="04LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsInvokeGpt4OChainExpectSuccessViaTheSecondFallbackBackendC"/>
+  </testsuite>
+  <testsuite name="04 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Verify backend B was tried and received the rewritten model before failing" id="16394d24-cc6a-44b8-9ef5-e1439f9e8d7d" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.000">
+    <testcase name="backend B received gpt-4o-chain-b" time="0.000" classname="04LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsVerifyBackendBWasTriedAndReceivedTheRewrittenModelBeforeFailing"/>
+  </testsuite>
+  <testsuite name="04 - LlmProvider: Ordered same-provider chain - first fails, second succeeds / Verify backend C received the rewritten model and succeeded" id="ee8ec7e6-3bd2-4e49-a71b-5d9e5c1735a0" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.000">
+    <testcase name="backend C received gpt-4o-chain-c" time="0.000" classname="04LlmProviderOrderedSameProviderChainFirstFailsSecondSucceedsVerifyBackendCReceivedTheRewrittenModelAndSucceeded"/>
+  </testsuite>
+  <testsuite name="05 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Note" id="a32598a2-b34c-4be0-8a85-581fd4d35434" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="05 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Reset backend B (clears last-request AND force-status - B is healthy again)" id="c46f102c-b894-46eb-8a46-61b4cd87d8ad" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="05 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Reset backend C (clears last-request only - C stays healthy)" id="90c822f7-1b2c-46da-ad3a-88bf0b765dc1" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="05 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Force backend A (primary) to fail again" id="aa8b1034-af01-49fe-aa9d-ba1fb5762e90" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="05 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Invoke gpt-4o-chain again - both fallbacks are healthy this time" id="463e6249-ac29-41c5-a15c-4831baf591a7" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.008">
+    <testcase name="status is 200" time="0.008" classname="05LlmProviderSuspendDeprioritizesARecentlyFailedFallbackInvokeGpt4OChainAgainBothFallbacksAreHealthyThisTime"/>
+  </testsuite>
+  <testsuite name="05 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Verify backend C (not suspended) was dialed" id="a30005ce-f393-4510-b27d-1979816a457a" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.000">
+    <testcase name="backend C received a fresh request" time="0.000" classname="05LlmProviderSuspendDeprioritizesARecentlyFailedFallbackVerifyBackendCNotSuspendedWasDialed"/>
+  </testsuite>
+  <testsuite name="05 - LlmProvider: Suspend deprioritizes a recently-failed fallback / Verify backend B (suspended) was NEVER dialed" id="43799687-9f0c-4ca1-bad0-1bff3475b019" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend B received no request at all - it was deprioritized behind C" time="0.001" classname="05LlmProviderSuspendDeprioritizesARecentlyFailedFallbackVerifyBackendBSuspendedWasNeverDialed"/>
+  </testsuite>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend A" id="a04583dc-db20-4f10-9f3f-9de5809bcb18" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend B" id="0fa72486-368d-4ea9-880c-78a2b2d218ef" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend C" id="0c0da0ad-70cc-4755-9b0a-4c0d4623d3b8" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Force backend A to fail (sticky - stays down for the whole chain)" id="05539418-61c9-4658-9a9f-ab5ae5f5a66d" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.000"/>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Force backend B to fail (sticky)" id="220255bf-813e-47c9-9201-0066fd596f92" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Force backend C to fail (sticky)" id="2de981f9-6a6d-4793-88b7-384fe48b9557" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Invoke gpt-4o-chain - every fallback is down, expect the ORIGINAL failing response" id="07c56e4c-b65d-4217-a06b-4c933c4ad4a7" timestamp="2026-09-01T12:57:07.700Z" tests="2" failures="0" errors="0" time="0.008">
+    <testcase name="status is 500 (the primary's own failure, not fabricated)" time="0.008" classname="06LlmProviderAllSameProviderFallbacksExhaustedOriginalResponsePassesThroughInvokeGpt4OChainEveryFallbackIsDownExpectTheOriginalFailingResponse"/>
+    <testcase name="body is the primary's own forced-status error shape" time="0.008" classname="06LlmProviderAllSameProviderFallbacksExhaustedOriginalResponsePassesThroughInvokeGpt4OChainEveryFallbackIsDownExpectTheOriginalFailingResponse"/>
+  </testsuite>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend A (clear sticky force-status so later folders aren't affected)" id="39dbd20f-daf1-42ea-b02c-be5fc105f189" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend B (clear sticky force-status)" id="b4b45b78-fb32-461c-beb1-bed999f401cd" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="06 - LlmProvider: All same-provider fallbacks exhausted - original response passes through / Reset backend C (clear sticky force-status)" id="cec6794e-92a8-4824-9fb7-1e804baed764" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="07 - LlmProvider: Network-unreachable fallback falls through to the next / Reset backend A" id="b4c73dcb-d0f5-4920-8c8c-7e2eaa29efe7" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="07 - LlmProvider: Network-unreachable fallback falls through to the next / Reset backend B" id="cf0fb4e2-9f95-461f-97ea-5c10ea92b63e" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="07 - LlmProvider: Network-unreachable fallback falls through to the next / Force backend A (primary) to fail" id="6fe890e7-b851-4d9e-8986-eadf8119b375" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="07 - LlmProvider: Network-unreachable fallback falls through to the next / Invoke gpt-4o-neterr - first fallback is a dead port, second is backend B" id="51795ed2-a6aa-4e98-8287-bcb2492eb172" timestamp="2026-09-01T12:57:07.700Z" tests="2" failures="0" errors="0" time="0.011">
+    <testcase name="status is 200 despite the first fallback being unreachable" time="0.011" classname="07LlmProviderNetworkUnreachableFallbackFallsThroughToTheNextInvokeGpt4ONeterrFirstFallbackIsADeadPortSecondIsBackendB"/>
+    <testcase name="response shows the second fallback model" time="0.011" classname="07LlmProviderNetworkUnreachableFallbackFallsThroughToTheNextInvokeGpt4ONeterrFirstFallbackIsADeadPortSecondIsBackendB"/>
+  </testsuite>
+  <testsuite name="07 - LlmProvider: Network-unreachable fallback falls through to the next / Verify backend B received the rewritten model" id="5a5fd1b6-a00c-4867-8de4-86c535a69786" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="backend B received gpt-4o-neterr-b" time="0.001" classname="07LlmProviderNetworkUnreachableFallbackFallsThroughToTheNextVerifyBackendBReceivedTheRewrittenModel"/>
+  </testsuite>
+  <testsuite name="08 - LlmProvider: Cross-provider fallback REJECTED (APIKind gate) / Reset backend A" id="6605ba3b-7709-4827-8278-6527dd4df502" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="08 - LlmProvider: Cross-provider fallback REJECTED (APIKind gate) / Reset anthropic backend" id="d5c20547-0000-4654-a97d-d104a557972e" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="08 - LlmProvider: Cross-provider fallback REJECTED (APIKind gate) / Force backend A (primary) to fail" id="86e088f2-f2d8-4bd9-ba57-29dc2ed96259" timestamp="2026-09-01T12:57:07.700Z" tests="0" failures="0" errors="0" time="0.001"/>
+  <testsuite name="08 - LlmProvider: Cross-provider fallback REJECTED (APIKind gate) / Invoke gpt-4o-cross-reject - its only fallback is cross-provider, must be rejected on an LlmProvider" id="597e0844-d34c-4f1a-88ac-2e45cea0556d" timestamp="2026-09-01T12:57:07.700Z" tests="2" failures="0" errors="0" time="0.009">
+    <testcase name="status is 500 - the original failure passes through untouched" time="0.009" classname="08LlmProviderCrossProviderFallbackRejectedApiKindGateInvokeGpt4OCrossRejectItsOnlyFallbackIsCrossProviderMustBeRejectedOnAnLlmProvider"/>
+    <testcase name="body is the primary's own forced-status error shape, not an anthropic response" time="0.009" classname="08LlmProviderCrossProviderFallbackRejectedApiKindGateInvokeGpt4OCrossRejectItsOnlyFallbackIsCrossProviderMustBeRejectedOnAnLlmProvider"/>
+  </testsuite>
+  <testsuite name="08 - LlmProvider: Cross-provider fallback REJECTED (APIKind gate) / Verify the anthropic backend was NEVER dialed" id="14ce73c0-19c1-49a6-88ca-6be4bf54f260" timestamp="2026-09-01T12:57:07.700Z" tests="1" failures="0" errors="0" time="0.002">
+    <testcase name="anthropic backend received no request at all" time="0.002" classname="08LlmProviderCrossProviderFallbackRejectedApiKindGateVerifyTheAnthropicBackendWasNeverDialed"/>
+  </testsuite>
+</testsuites>

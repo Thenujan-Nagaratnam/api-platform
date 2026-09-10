@@ -1,0 +1,236 @@
+{
+  "info": {
+    "name": "AI Gateway - advanced-ratelimit redis precedence",
+    "_postman_id": "d4a1e9f0-2b3c-4a5d-9e6f-ratelimitredis",
+    "description": "Proves advanced-ratelimit's Redis-backend precedence: when systemParameters.redis.host is unset, every instance falls back to the gateway-wide default Redis client (top-level [redis] in config.toml, sdk/core/utils/redisclient.Shared()); when it IS set, that policy-level override is used instead - even when the override is misconfigured, which is how this collection proves it's genuinely being dialed rather than silently substituted.\n\nbackend/redis.* are systemParameters (operator/gateway-wide, uniform across every advanced-ratelimit instance) - NOT settable per-API via an individual policy attachment's params. So unlike a typical single-run collection, this one requires editing gateway/api-platform.env and recreating gateway-runtime BETWEEN folders - each folder's description states the exact env vars required before running it.\n\nPrerequisites:\n1. gateway/build.yaml must point advanced-ratelimit at filePath: ./dev-policies/advanced-ratelimit (already done - see the TEMPORARY comment there).\n2. Build: cd gateway && make build-gateway-runtime && make build-controller\n3. gateway/docker-compose.yaml's redis-override-test service must be present (a second, distinguishable Redis instance used only to prove the override is really dialed).\n4. docker compose up -d gateway-controller gateway-runtime sample-backend redis redis-override-test\n\nRun folders in order: 00 (health) -> 01 (register the test API, once) -> 02 (Phase 1) -> 03 (Phase 2) -> 04 (Phase 3) -> 05 (cleanup). Each of 02/03/04 has its own env-var + restart step in its folder description - do that BEFORE running the folder's requests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090",
+      "description": "gateway-controller REST management API, base path /api/management/v1",
+      "type": "string"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8080",
+      "description": "gateway-runtime (Envoy) data-plane traffic, plain HTTP",
+      "type": "string"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4=",
+      "description": "admin:admin",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "description": "Confirm the gateway stack is up before registering anything.",
+      "item": [
+        {
+          "name": "gateway-controller health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis",
+              "protocol": "http",
+              "host": ["{{controllerBaseUrl}}"],
+              "path": ["api", "management", "v1", "rest-apis"]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "admin", "type": "string" },
+                { "key": "password", "value": "admin", "type": "string" }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Register Test API",
+      "description": "Registers ONE RestApi, ratelimit-test-precedence, with advanced-ratelimit attached (quotas only - backend/redis.* are systemParameters, resolved from config.toml, not set here). This same API is reused across every phase below - only the gateway's own config changes between phases, never this registration.",
+      "item": [
+        {
+          "name": "Register ratelimit-test-precedence",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/yaml" }],
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "admin", "type": "string" },
+                { "key": "password", "value": "admin", "type": "string" }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: RestApi\nmetadata:\n  name: ratelimit-test-precedence\nspec:\n  displayName: Ratelimit Test - Precedence\n  version: v1.0\n  context: /ratelimit-test-precedence/$version\n  upstream:\n    main:\n      url: http://sample-backend:5000\n  accessControl:\n    mode: allow_all\n  operations:\n    - method: GET\n      path: /ready\n      # Deliberately NOT rate-limited - readiness polling after a\n      # gateway-runtime restart (see run-e2e.sh's restart_gateway_runtime)\n      # must not consume /health's own 2-request quota, or the poll loop\n      # itself would trip the limit before the real test requests run.\n    - method: GET\n      path: /health\n      policies:\n        - name: advanced-ratelimit\n          version: v1\n          params:\n            quotas:\n              - name: request-limit\n                limits:\n                  - limit: 2\n                    duration: \"1m\"\n"
+            },
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis",
+              "protocol": "http",
+              "host": ["{{controllerBaseUrl}}"],
+              "path": ["api", "management", "v1", "rest-apis"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Phase 1: No override -> gateway default used",
+      "description": "BEFORE running: in gateway/api-platform.env set APIP_GW_RATELIMIT_V1_BACKEND=redis (leave APIP_GW_RATELIMIT_V1_REDIS_HOST unset/absent), then `docker compose up -d gateway-runtime` and wait a few seconds for the route to rebuild.\n\nExpect: request 1-2 succeed (200), request 3 is rate-limited (429) - proving a working Redis backend is in use. Verified separately (redis-cli KEYS 'ratelimit:v1:*' against the gateway/docker-compose.yaml `redis` service, not `redis-override-test`) that this is specifically the gateway-wide default client, not the override.",
+      "item": [
+        {
+          "name": "Request 1 (should succeed)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 200', function () { pm.response.to.have.status(200); });"] } }],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://{{gatewayBaseUrl}}/ratelimit-test-precedence/v1.0/health", "protocol": "http", "host": ["{{gatewayBaseUrl}}"], "path": ["ratelimit-test-precedence", "v1.0", "health"] }
+          },
+          "response": []
+        },
+        {
+          "name": "Request 2 (should succeed)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 200', function () { pm.response.to.have.status(200); });"] } }],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://{{gatewayBaseUrl}}/ratelimit-test-precedence/v1.0/health", "protocol": "http", "host": ["{{gatewayBaseUrl}}"], "path": ["ratelimit-test-precedence", "v1.0", "health"] }
+          },
+          "response": []
+        },
+        {
+          "name": "Request 3 (quota exhausted, expect 429)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 429', function () { pm.response.to.have.status(429); });"] } }],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://{{gatewayBaseUrl}}/ratelimit-test-precedence/v1.0/health", "protocol": "http", "host": ["{{gatewayBaseUrl}}"], "path": ["ratelimit-test-precedence", "v1.0", "health"] }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - Phase 2: Working override -> policy-level Redis used",
+      "description": "BEFORE running: additionally set APIP_GW_RATELIMIT_V1_REDIS_HOST=redis-override-test (keep BACKEND=redis, leave failure mode/port at their defaults - redis-override-test's real port is 6379), then `docker compose up -d gateway-runtime` again and wait for the route to rebuild (the previous 1m rate-limit window may also need to elapse for a clean 200/200/429 sequence).\n\nExpect the identical 200/200/429 sequence as Phase 1 - proving the override CAN work end-to-end, not just that misconfiguring it breaks something. Verified separately that the key now lands in redis-override-test instead of the gateway default redis.",
+      "item": [
+        {
+          "name": "Request 1 (should succeed)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 200', function () { pm.response.to.have.status(200); });"] } }],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://{{gatewayBaseUrl}}/ratelimit-test-precedence/v1.0/health", "protocol": "http", "host": ["{{gatewayBaseUrl}}"], "path": ["ratelimit-test-precedence", "v1.0", "health"] }
+          },
+          "response": []
+        },
+        {
+          "name": "Request 2 (should succeed)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 200', function () { pm.response.to.have.status(200); });"] } }],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://{{gatewayBaseUrl}}/ratelimit-test-precedence/v1.0/health", "protocol": "http", "host": ["{{gatewayBaseUrl}}"], "path": ["ratelimit-test-precedence", "v1.0", "health"] }
+          },
+          "response": []
+        },
+        {
+          "name": "Request 3 (quota exhausted, expect 429)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 429', function () { pm.response.to.have.status(429); });"] } }],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://{{gatewayBaseUrl}}/ratelimit-test-precedence/v1.0/health", "protocol": "http", "host": ["{{gatewayBaseUrl}}"], "path": ["ratelimit-test-precedence", "v1.0", "health"] }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - Phase 3: Unreachable override + failureMode closed -> proves precedence",
+      "description": "BEFORE running: additionally set APIP_GW_RATELIMIT_V1_REDIS_PORT=9999 (nothing listens there) and APIP_GW_RATELIMIT_V1_REDIS_FAILURE_MODE=closed (keep HOST=redis-override-test, BACKEND=redis), then `docker compose up -d gateway-runtime` again.\n\nThis is the actual precedence proof: if the gateway-wide default were used instead of honoring this override (a bug), the request would keep succeeding normally, since the gateway default redis is healthy throughout. Instead, the route fails to build entirely (gateway-runtime logs 'failed to create policy instance advanced-ratelimit:v1: redis connection failed and failureMode=closed') and the request returns 500 - proving the override was genuinely dialed.\n\nAfter this folder: remove the four APIP_GW_RATELIMIT_V1_* lines from api-platform.env entirely and `docker compose up -d gateway-runtime` once more to return to a clean resting state (backend defaults back to memory).",
+      "item": [
+        {
+          "name": "Request (route fails to build, expect 500)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 500', function () { pm.response.to.have.status(500); });"] } }],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://{{gatewayBaseUrl}}/ratelimit-test-precedence/v1.0/health", "protocol": "http", "host": ["{{gatewayBaseUrl}}"], "path": ["ratelimit-test-precedence", "v1.0", "health"] }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 - Cleanup",
+      "description": "Deletes the test API. Run this after restoring api-platform.env per folder 04's note.",
+      "item": [
+        {
+          "name": "Delete ratelimit-test-precedence",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 204 or 404', function () { pm.expect(pm.response.code).to.be.oneOf([200, 204, 404]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "admin", "type": "string" },
+                { "key": "password", "value": "admin", "type": "string" }
+              ]
+            },
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/rest-apis/ratelimit-test-precedence",
+              "protocol": "http",
+              "host": ["{{controllerBaseUrl}}"],
+              "path": ["api", "management", "v1", "rest-apis", "ratelimit-test-precedence"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

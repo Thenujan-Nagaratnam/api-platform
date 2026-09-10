@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="model-failover e2e" tests="3" time="0.038">
+  <testsuite name="22 - LlmProvider: Suspend expiry - verify skip-ahead within the window / Reset backend A (clear last-request only)" id="b9a8d04d-0ea3-4576-9104-ecaef1ecf3c1" timestamp="2026-08-18T03:13:49.532Z" tests="0" failures="0" errors="0" time="0.015"/>
+  <testsuite name="22 - LlmProvider: Suspend expiry - verify skip-ahead within the window / Invoke again immediately - expect skip-ahead, backend A NOT dialed" id="1dbde2d3-4a9a-4872-b10e-d036716944b4" timestamp="2026-08-18T03:13:49.532Z" tests="1" failures="0" errors="0" time="0.023">
+    <testcase name="status is 200" time="0.023" classname="22LlmProviderSuspendExpiryVerifySkipAheadWithinTheWindowInvokeAgainImmediatelyExpectSkipAheadBackendANotDialed"/>
+  </testsuite>
+  <testsuite name="22 - LlmProvider: Suspend expiry - verify skip-ahead within the window / Verify backend A was skipped (still suspended)" id="92a83b9e-c482-40ff-9791-6e62c316ac22" timestamp="2026-08-18T03:13:49.532Z" tests="1" failures="0" errors="0" time="0.000">
+    <testcase name="backend A last-request is empty - suspend window still active" time="0.000" classname="22LlmProviderSuspendExpiryVerifySkipAheadWithinTheWindowVerifyBackendAWasSkippedStillSuspended"/>
+  </testsuite>
+</testsuites>
