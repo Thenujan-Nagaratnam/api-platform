@@ -69,6 +69,28 @@ replace github.com/wso2/api-platform/common => ../../../common
 
 replace github.com/wso2/api-platform/httpkit => ../../../httpkit
 
+// TEMPORARY, local-checkout only: this module now uses sdk/core fields (Body on
+// DownstreamRequest, AttemptNumber/AttemptNumberHeader/CurrentAttemptNumber on SharedContext)
+// added to the local api-platform/sdk/core checkout but not yet published as a tagged release
+// (the require above still pins the last published v0.4.0). Outside the Docker build, go.work's
+// own `use` block already resolves sdk/core to this same local checkout transparently, so this
+// replace is redundant there — but the Docker build (gateway-runtime/Dockerfile's `sdk-core`
+// build context, copied in specifically for this replace) has no go.work influence at all, so
+// without it the image silently links the stale published SDK and fails with "undefined:
+// policy.AttemptNumberHeader" etc. Remove this replace once a tagged sdk/core release carrying
+// those additions is available and the require above is bumped to it.
+replace github.com/wso2/api-platform/sdk/core => ../../../sdk/core
+
 replace github.com/wso2/gateway-controllers/policies/model-failover => ../../dev-policies/model-failover
+
+replace github.com/wso2/gateway-controllers/policies/openai-to-anthropic-transformer => ../../dev-policies/openai-to-anthropic-transformer
+
+replace github.com/wso2/gateway-controllers/policies/openai-to-azure-openai-transformer => ../../dev-policies/openai-to-azure-openai-transformer
+
+replace github.com/wso2/gateway-controllers/policies/openai-to-bedrock-transformer => ../../dev-policies/openai-to-bedrock-transformer
+
+replace github.com/wso2/gateway-controllers/policies/openai-to-gemini-transformer => ../../dev-policies/openai-to-gemini-transformer
+
+replace github.com/wso2/gateway-controllers/policies/openai-to-mistral-transformer => ../../dev-policies/openai-to-mistral-transformer
 
 replace github.com/wso2/api-platform/gateway/system-policies/analytics => ../../system-policies/analytics

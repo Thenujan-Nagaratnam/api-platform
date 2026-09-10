@@ -48,6 +48,18 @@ type DownstreamRequest struct {
 	Method    string
 	Authority string
 	Scheme    string
+
+	// Body is a snapshot of the request body as received from the downstream
+	// client, captured before any policy's body-phase mutation is applied —
+	// the body-phase counterpart to Headers above. Only populated for a
+	// buffered (non-streaming) request body; nil (Body.Present == false) for
+	// a streaming request, since no single complete body ever exists to
+	// snapshot in that mode. A body-phase policy's own mutation (e.g. a
+	// translator rewriting the payload for one specific backend) is never
+	// reflected here, so anything that needs to replay the client's true
+	// original request — not what an earlier policy already turned it into —
+	// can rely on this instead of the live, mutable RequestContext.Body.
+	Body *Body
 }
 
 // UpstreamRequestContext identifies the route's resolved upstream target during
@@ -150,6 +162,46 @@ type SharedContext struct {
 	// AuthContext stores structured authentication information populated by auth policies.
 	// Nil until an auth policy runs. Use Previous for multi-layer auth chains.
 	AuthContext *AuthContext
+
+	// AttemptNumber counts which attempt, in a chain of self-originated retries, this
+	// request is — 1 for a genuine, first-arrival client request; 2 for the first retry a
+	// policy originates itself, and so on. Populated by the policy engine from the
+	// AttemptNumberHeader request header (see its own doc), defaulting to 1 when that header
+	// is absent, so an ordinary request that never gets retried always reads 1.
+	//
+	// This exists because each retry a policy originates (e.g. model-failover's self-redial,
+	// or oauth2-generator's own upstream retry-on-401-refresh) is a genuinely new, independent
+	// stream from the kernel's point of view — there is no shared in-memory state linking it
+	// back to the request that triggered it (see AttemptNumberHeader). AttemptNumber is the
+	// one piece of that lineage the kernel surfaces as a typed field, for logging/tracing/
+	// observability, rather than every consumer re-parsing the raw header itself.
+	//
+	// A policy originating a retry is responsible for setting AttemptNumberHeader on its own
+	// outbound call to CurrentAttemptNumber()+1 (see that helper) — the kernel only reads the
+	// header on the way in, it never increments anything on its own.
+	AttemptNumber int
+}
+
+// AttemptNumberHeader is the well-known request header a self-retrying policy sets on its
+// own outbound retry so the kernel can populate SharedContext.AttemptNumber on that retry's
+// own (separate, independent) stream. Shared across every such policy in this codebase
+// (model-failover's self-redial, oauth2-generator's own upstream retry-on-401-refresh, and
+// any future one) so they all carry attempt lineage the same way, rather than each inventing
+// its own ad-hoc header. Absent entirely on a genuine first-arrival client request — a policy
+// must never rely on a client to have sent this header itself; only ever set by a policy on
+// its own self-originated retry.
+const AttemptNumberHeader = "x-wso2-attempt-number"
+
+// CurrentAttemptNumber returns the attempt number to report on the NEXT retry a policy is
+// about to originate from this request — i.e. shared.AttemptNumber+1, or 2 if shared is nil
+// (defensive: AttemptNumber's own zero value would otherwise read as attempt 1, understating
+// a retry that's about to become attempt 2). Set this on AttemptNumberHeader on the retry's
+// own outbound request.
+func CurrentAttemptNumber(shared *SharedContext) int {
+	if shared == nil || shared.AttemptNumber < 1 {
+		return 2
+	}
+	return shared.AttemptNumber + 1
 }
 
 // ─── Request-phase contexts ──────────────────────────────────────────────────

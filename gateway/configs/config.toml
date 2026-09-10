@@ -13,6 +13,12 @@ enabled = true
 
 [controller.server]
 gateway_id = '{{ env "APIP_GW_CONTROLLER_SERVER_GATEWAY_ID" "platform-gateway-id" }}'
+# TEMPORARY: unblocks startup past ~24 leftover oauth2-test-* LlmProvider
+# records in this machine's local controller-data volume (invalid "oauth2"
+# upstream auth type, pre-existing/unrelated to today's work) so the
+# model-failover e2e suite can run. Revert once those stale records are
+# cleaned up.
+skip_invalid_deployments_on_startup = true
 
 [controller.storage]
 type = '{{ env "APIP_GW_CONTROLLER_STORAGE_TYPE" "sqlite" }}'

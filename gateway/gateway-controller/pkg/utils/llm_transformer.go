@@ -301,7 +301,7 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 			}
 
 			if ap.Transformer != nil {
-				pol, err := t.proxyTransformerPolicy(ap.Transformer, name, fmt.Sprintf("additionalProviders[%s].transformer", name))
+				pol, err := t.proxyTransformerPolicy(ap.Transformer, name, fmt.Sprintf("additionalProviders[%s].transformer", name), tmpl.Configuration.Spec.RequestModel)
 				if err != nil {
 					return nil, err
 				}
@@ -935,7 +935,18 @@ func (t *LLMProviderTransformer) proxyInternalLoopbackMarkerPolicy() (*api.Polic
 // inline transformer. The provider's upstream name is passed to the translator
 // as its "providerId" param so it targets the correct upstream, and gates
 // execution so the translator runs only when this provider is selected.
-func (t *LLMProviderTransformer) proxyTransformerPolicy(transformer *api.LLMProxyTransformer, name, field string) (*api.Policy, error) {
+//
+// requestModel is the PROXY's OWN (primary/base provider's) template
+// extraction identifier — never the additional provider's, which has no
+// bearing here. The client always sends its model the one way the proxy's
+// own template defines, regardless of which provider ends up handling the
+// request; a translator like openai-to-anthropic-transformer needs that same
+// location to read the client's model out of the request it's translating,
+// matching the convention model-failover/model-round-robin/
+// model-weighted-round-robin already use (buildTemplateParams). nil when the
+// proxy's template declares no requestModel — a translator falls back to its
+// own hardcoded default in that case.
+func (t *LLMProviderTransformer) proxyTransformerPolicy(transformer *api.LLMProxyTransformer, name, field string, requestModel *api.ExtractionIdentifier) (*api.Policy, error) {
 	if transformer == nil {
 		return nil, nil
 	}
@@ -953,6 +964,7 @@ func (t *LLMProviderTransformer) proxyTransformerPolicy(transformer *api.LLMProx
 		}
 	}
 	params["providerId"] = name
+	setExtractionParam(params, "requestModel", requestModel)
 
 	condition := selectedProviderExecutionCondition(name, false)
 	return &api.Policy{

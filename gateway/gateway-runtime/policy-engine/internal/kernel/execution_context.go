@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	extprocconfigv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
@@ -754,6 +755,19 @@ func (ec *PolicyExecutionContext) processRequestBody(
 			Present:     true,
 		}
 
+		// Capture a snapshot of the downstream (client) body before any policy
+		// mutation, mirroring ec.downstreamHeaders above — body-phase policies
+		// mutate ec.requestBodyCtx.Body (or return a replacement) in place, so
+		// anything needing to replay the client's TRUE original request (not
+		// what an earlier policy already turned it into) needs this pristine
+		// copy instead. Only ever set here, in the buffered-body path: a
+		// streaming request body has no single complete body to snapshot.
+		ec.requestHeaderCtx.Downstream.Request.Body = &policy.Body{
+			Content:     cloneBodyContent(bodyContent),
+			EndOfStream: body.EndOfStream,
+			Present:     true,
+		}
+
 		execResult, err := ec.server.executor.ExecuteRequestPolicies(
 			ctx,
 			ec.policyChain.Policies,
@@ -1288,7 +1302,7 @@ func (ec *PolicyExecutionContext) processStreamingResponseBody(
 // is populated later in processRequestBody when body data arrives.
 func (ec *PolicyExecutionContext) buildRequestContexts(headers *extprocv3.HttpHeaders, routeMetadata RouteMetadata) {
 	headersMap := make(map[string][]string)
-	var path, method, authority, scheme, requestID string
+	var path, method, authority, scheme, requestID, attemptNumberRaw string
 
 	if headers.Headers != nil {
 		for _, header := range headers.Headers.GetHeaders() {
@@ -1311,12 +1325,27 @@ func (ec *PolicyExecutionContext) buildRequestContexts(headers *extprocv3.HttpHe
 				}
 			case "content-encoding":
 				ec.requestContentEncoding = value
+			case policy.AttemptNumberHeader:
+				attemptNumberRaw = value
 			}
 		}
 	}
 
 	if requestID == "" {
 		requestID = uuid.New().String()
+	}
+
+	// A genuine first-arrival client request never carries AttemptNumberHeader, so this
+	// defaults to 1 — only a policy's own self-originated retry sets it, to whatever
+	// CurrentAttemptNumber computed on the request that triggered the retry. A malformed
+	// value (never expected from this codebase's own retry policies, but this header rides
+	// on the wire like any other and a misbehaving/malicious caller could set it directly)
+	// fails closed to 1 rather than propagating garbage into logs/traces.
+	attemptNumber := 1
+	if attemptNumberRaw != "" {
+		if n, err := strconv.Atoi(attemptNumberRaw); err == nil && n > 0 {
+			attemptNumber = n
+		}
 	}
 
 	sharedCtx := &policy.SharedContext{
@@ -1329,6 +1358,7 @@ func (ec *PolicyExecutionContext) buildRequestContexts(headers *extprocv3.HttpHe
 		APIContext:    routeMetadata.Context,
 		OperationPath: routeMetadata.OperationPath,
 		Metadata:      make(map[string]interface{}),
+		AttemptNumber: attemptNumber,
 	}
 	if routeMetadata.TemplateHandle != "" {
 		sharedCtx.Metadata["template_handle"] = routeMetadata.TemplateHandle
@@ -1577,6 +1607,20 @@ func (ec *PolicyExecutionContext) responseStreamingEnabled(endOfStream bool) boo
 // downstream/upstream headers before policy mutation.
 func cloneHeaders(h *policy.Headers) *policy.Headers {
 	return policy.NewHeaders(h.GetAll())
+}
+
+// cloneBodyContent returns a defensive copy of a request/response body byte
+// slice, for the same reason cloneHeaders copies the header map: the pristine
+// downstream snapshot must never alias memory a later mutation could touch,
+// even though in practice a policy mutation replaces Body.Content wholesale
+// rather than editing it in place.
+func cloneBodyContent(content []byte) []byte {
+	if content == nil {
+		return nil
+	}
+	clone := make([]byte, len(content))
+	copy(clone, content)
+	return clone
 }
 
 // toRequestUpstream maps the internal wire UpstreamInfo to the request-phase SDK
