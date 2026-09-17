@@ -62,6 +62,23 @@ func NewTestRequestContextWithHeaders(headers map[string][]string) *policy.Reque
 	}
 }
 
+// NewTestUpstreamAttemptContext creates an UpstreamAttemptContext with default
+// test values, as if resolved for a backend named "test-backend" on the first
+// (non-retry) attempt.
+func NewTestUpstreamAttemptContext(originalRaw []byte) *policy.UpstreamAttemptContext {
+	return &policy.UpstreamAttemptContext{
+		UpstreamRequestContext: &policy.UpstreamRequestContext{
+			Name:     "test-backend",
+			URL:      "https://backend.example.com",
+			BasePath: "/v1",
+		},
+		Headers:            policy.NewHeaders(map[string][]string{"content-type": {"application/json"}}),
+		Body:               &policy.Body{Content: originalRaw, EndOfStream: true, Present: true},
+		OriginalRequestRaw: originalRaw,
+		IsRetry:            false,
+	}
+}
+
 // NewTestResponseContext creates a ResponseContext with default test values.
 func NewTestResponseContext() *policy.ResponseContext {
 	reqCtx := NewTestRequestContext()

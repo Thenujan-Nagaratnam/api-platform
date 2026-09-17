@@ -58,6 +58,52 @@ type UpstreamRequestContext struct {
 	BasePath string
 }
 
+// UpstreamAttemptContext is passed to UpstreamRequestPolicy.OnUpstreamRequestBody
+// and UpstreamResponsePolicy.OnUpstreamResponseBody. It carries the resolved
+// backend for this specific attempt plus the original client request, captured
+// once downstream and replayed unchanged to every attempt — so a retry to a
+// different backend always re-translates/re-authenticates from the client's
+// actual bytes, never from a previous attempt's already-mutated output.
+type UpstreamAttemptContext struct {
+	*SharedContext
+	*UpstreamRequestContext
+
+	// Method and Path are this attempt's resolved outbound request line — the
+	// method/path that will actually be dialed against this backend (already
+	// combined with the backend's BasePath and any earlier routing mutation),
+	// not the client-facing request line. A policy that needs to build a
+	// synthetic *http.Request for signing (e.g. AWS SigV4) uses these plus URL
+	// directly; unlike RequestContext, there is no separate APIContext to
+	// strip — Path is already the correct outbound path for this backend.
+	Method string
+	Path   string
+
+	// Headers are this attempt's request headers (read-only for policies via
+	// Get()/Has()/Iterate(); mutated by the kernel via UnsafeInternalValues()),
+	// seeded fresh from the client's original headers on every attempt.
+	Headers *Headers
+
+	// Body is this attempt's working request body — seeded from
+	// OriginalRequestRaw at the start of every attempt, then threaded through
+	// each policy in the chain as it mutates it (e.g. a transformer runs
+	// before an auth policy that must sign the transformed bytes). Never
+	// carried over from a previous attempt.
+	Body *Body
+
+	// OriginalRequestRaw is the client's original request body, captured once
+	// downstream before any policy (upstream or downstream) mutated it, and
+	// replayed unchanged into Body at the start of every attempt — a retry to
+	// a different backend always starts from these bytes, never from a
+	// previous attempt's already-translated output.
+	OriginalRequestRaw []byte
+
+	// IsRetry is true when this is not the first attempt for this client
+	// request — i.e. a prior attempt against a different (or the same)
+	// backend already failed. Set from genuine per-invocation state, not
+	// inferred from an Envoy attempt-count header.
+	IsRetry bool
+}
+
 // UpstreamResponseContext identifies the route's resolved upstream target during
 // the response phase and carries a snapshot of the upstream response.
 type UpstreamResponseContext struct {

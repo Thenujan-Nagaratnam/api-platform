@@ -25,6 +25,7 @@ import (
 
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/registry"
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/resolver"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
 // RouteConfig holds metadata and resolver info for a single route.
@@ -155,14 +156,54 @@ type Kernel struct {
 	// Used for value-based redaction in config dumps. Protected by mu (same lock as PolicyChains
 	// so that routes and sensitive values are always updated and read as one atomic snapshot).
 	sensitiveValues []string
+
+	// clusterUpstreams indexes every route's DefaultUpstream by cluster name,
+	// deployment-wide. Cluster names are unique within one xDS snapshot (Envoy
+	// CDS requires it), so this is an unambiguous global lookup. It exists for
+	// the upstream ext_proc server's resolveBackend: a retry attempt reports
+	// (routeKey, clusterName) for whichever real cluster Envoy just dialed,
+	// which — for a route with more than one real backend cluster (e.g. an
+	// aggregate-cluster failover target) — is not always *this* route's own
+	// DefaultUpstream.ClusterName, even though it's a cluster this deployment
+	// knows about via some other route. Rebuilt wholesale alongside
+	// RouteConfigs so it never drifts from what's currently applied.
+	clusterUpstreams map[string]policyenginev1.UpstreamInfo
 }
 
 // NewKernel creates a new Kernel instance
 func NewKernel() *Kernel {
 	return &Kernel{
-		RouteConfigs: make(map[string]*RouteConfig),
-		PolicyChains: make(map[string]*registry.PolicyChain),
+		RouteConfigs:     make(map[string]*RouteConfig),
+		PolicyChains:     make(map[string]*registry.PolicyChain),
+		clusterUpstreams: make(map[string]policyenginev1.UpstreamInfo),
 	}
+}
+
+// GetUpstreamByCluster looks up a cluster's resolved URL/base path by cluster
+// name alone, regardless of which route it was synced as the default
+// upstream for. See clusterUpstreams' doc comment for why this exists.
+func (k *Kernel) GetUpstreamByCluster(clusterName string) (policyenginev1.UpstreamInfo, bool) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	info, ok := k.clusterUpstreams[clusterName]
+	return info, ok
+}
+
+// rebuildClusterUpstreamsLocked recomputes clusterUpstreams from the given
+// route configs. Callers must hold k.mu for writing.
+func rebuildClusterUpstreamsLocked(configs map[string]*RouteConfig) map[string]policyenginev1.UpstreamInfo {
+	index := make(map[string]policyenginev1.UpstreamInfo, len(configs))
+	for _, rc := range configs {
+		if rc == nil || rc.Metadata.DefaultUpstream == nil {
+			continue
+		}
+		def := rc.Metadata.DefaultUpstream
+		if def.ClusterName == "" {
+			continue
+		}
+		index[def.ClusterName] = *def
+	}
+	return index
 }
 
 // GetRouteConfig retrieves the route config for a given route key.
@@ -206,6 +247,7 @@ func (k *Kernel) ApplyWholeRouteConfigs(newConfigs map[string]*RouteConfig) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.RouteConfigs = newConfigs
+	k.clusterUpstreams = rebuildClusterUpstreamsLocked(newConfigs)
 }
 
 // ApplyWholeRoutes atomically replaces all policy chain mappings.

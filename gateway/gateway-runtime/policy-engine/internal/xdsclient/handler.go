@@ -583,6 +583,8 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 	requiresResponseBody := false
 	requiresRequestHeader := false
 	requiresResponseHeader := false
+	requiresUpstreamRequest := false
+	requiresUpstreamResponse := false
 	hasExecutionConditions := false
 	supportsRequestStreaming := true
 	supportsResponseStreaming := true
@@ -646,6 +648,23 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 				supportsRequestStreaming = false
 			}
 		}
+		if mode.UpstreamRequestMode == policy.BodyModeBuffer {
+			if _, ok := impl.(policy.UpstreamRequestPolicy); ok {
+				requiresUpstreamRequest = true
+			} else {
+				slog.Warn("[chain-build] policy declares UpstreamRequestMode=BUFFER but does not implement UpstreamRequestPolicy",
+					"policy", policyConfig.Name, "route", routeKey)
+			}
+		}
+		if mode.UpstreamResponseMode == policy.BodyModeBuffer {
+			if _, ok := impl.(policy.UpstreamResponsePolicy); ok {
+				requiresUpstreamResponse = true
+			} else {
+				slog.Warn("[chain-build] policy declares UpstreamResponseMode=BUFFER but does not implement UpstreamResponsePolicy",
+					"policy", policyConfig.Name, "route", routeKey)
+			}
+		}
+
 		if mode.ResponseBodyMode == policy.BodyModeBuffer || mode.ResponseBodyMode == policy.BodyModeStream {
 			requiresResponseBody = true
 			hasResponseBodyPolicy = true
@@ -705,6 +724,8 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 		RequiresResponseBody:      requiresResponseBody,
 		RequiresRequestHeader:     requiresRequestHeader,
 		RequiresResponseHeader:    requiresResponseHeader,
+		RequiresUpstreamRequest:   requiresUpstreamRequest,
+		RequiresUpstreamResponse:  requiresUpstreamResponse,
 		HasExecutionConditions:    hasExecutionConditions,
 		SupportsRequestStreaming:  supportsRequestStreaming,
 		SupportsResponseStreaming: supportsResponseStreaming,

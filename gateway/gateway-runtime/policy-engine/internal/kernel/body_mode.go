@@ -147,6 +147,23 @@ func (k *Kernel) BuildPolicyChain(routeKey string, policySpecs []policy.PolicySp
 					"policy", spec.Name, "mode", mode.ResponseBodyMode, "route", routeKey)
 			}
 		}
+
+		if mode.UpstreamRequestMode == policy.BodyModeBuffer {
+			if _, ok := impl.(policy.UpstreamRequestPolicy); ok {
+				chain.RequiresUpstreamRequest = true
+			} else {
+				slog.Warn("[chain-build] policy declares UpstreamRequestMode=BUFFER but does not implement UpstreamRequestPolicy",
+					"policy", spec.Name, "route", routeKey)
+			}
+		}
+		if mode.UpstreamResponseMode == policy.BodyModeBuffer {
+			if _, ok := impl.(policy.UpstreamResponsePolicy); ok {
+				chain.RequiresUpstreamResponse = true
+			} else {
+				slog.Warn("[chain-build] policy declares UpstreamResponseMode=BUFFER but does not implement UpstreamResponsePolicy",
+					"policy", spec.Name, "route", routeKey)
+			}
+		}
 	}
 
 	// Clear streaming flags when no body policies exist — there is nothing to stream

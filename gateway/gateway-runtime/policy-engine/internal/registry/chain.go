@@ -65,4 +65,15 @@ type PolicyChain struct {
 	// control Envoy header transport (headers always flow for lifecycle reasons).
 	// It reflects callback participation intent.
 	RequiresResponseHeader bool
+
+	// Computed flag: true if any policy declares UpstreamRequestMode=BUFFER in
+	// Mode() AND implements UpstreamRequestPolicy. Drives whether the control
+	// plane attaches the per-backend upstream ext_proc filter for this route at
+	// all — routes with no such policy pay zero cost.
+	RequiresUpstreamRequest bool
+
+	// Computed flag: response-phase analog of RequiresUpstreamRequest — true if
+	// any policy declares UpstreamResponseMode=BUFFER in Mode() AND implements
+	// UpstreamResponsePolicy.
+	RequiresUpstreamResponse bool
 }

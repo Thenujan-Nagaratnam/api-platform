@@ -102,9 +102,43 @@ const (
 	ExtProcHeaderModeSkip            = "SKIP"
 	ExtProcRequestAttributeRouteName = "xds.route_name"
 
+	// ExtProcRequestAttributeClusterName lets the upstream (per-cluster)
+	// ext_proc filter learn which backend cluster this specific attempt is
+	// for — necessary because a single upstream-policy-engine cluster can be
+	// shared across many backend clusters' filter attachments (see
+	// clusterNeedsUpstreamPolicyFilter), so the server cannot know its
+	// backend from construction alone.
+	ExtProcRequestAttributeClusterName = "xds.cluster_name"
+
+	// UpstreamExtProcFilterName is the per-cluster (upstream) ext_proc filter
+	// attached via a backend Cluster's TypedExtensionProtocolOptions, distinct
+	// from ExtProcFilterName which is attached at the listener (downstream)
+	// level. Invoked fresh on every upstream attempt, including retries to a
+	// different backend — see the model-failover upstream-policy design.
+	UpstreamExtProcFilterName = "api_platform.policy_engine.upstream.envoy.filters.http.ext_proc"
+
+	// HttpProtocolOptionsTypedConfigKey is the well-known map key Envoy expects
+	// on Cluster.TypedExtensionProtocolOptions for per-cluster HTTP filter
+	// chains — the fully-qualified proto message name of HttpProtocolOptions,
+	// not an arbitrary label.
+	HttpProtocolOptionsTypedConfigKey = "envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
+
+	// UpstreamCodecFilterName is Envoy's built-in terminal filter every
+	// non-empty upstream HTTP filter chain must end with, or Envoy rejects the
+	// cluster config at warming time.
+	UpstreamCodecFilterName = "envoy.filters.http.upstream_codec"
+
 	// Policy Engine
 	PolicyEngineClusterName       = "api-platform/policy-engine"
 	DefaultPolicyEngineSocketPath = "/var/run/api-platform/policy-engine.sock"
+
+	// Upstream (per-cluster) Policy Engine — a genuinely separate socket/
+	// service from the downstream one above, so Envoy's per-cluster upstream
+	// filter attachment and the listener-level downstream attachment are
+	// unambiguous, distinct gRPC connections rather than sharing one stream
+	// type the server would have no way to tell apart.
+	UpstreamPolicyEngineClusterName       = "api-platform/policy-engine-upstream"
+	DefaultUpstreamPolicyEngineSocketPath = "/var/run/api-platform/policy-engine-upstream.sock"
 
 	// GatewayHealthPathPrefix is reserved for the gateway's own readiness/liveness
 	// direct-response routes (see GatewayReadyPath/GatewayHealthyPath). No API,

@@ -76,6 +76,17 @@ type ProcessingMode struct {
 	RequestBodyMode    BodyProcessingMode
 	ResponseHeaderMode HeaderProcessingMode
 	ResponseBodyMode   BodyProcessingMode
+
+	// UpstreamRequestMode declares whether this policy must be resolved fresh
+	// on every upstream attempt (see UpstreamRequestPolicy) rather than once
+	// per client request. BodyModeSkip (the zero value) means this policy does
+	// not participate in the upstream-attempt phase — existing policies are
+	// unaffected. Streaming is not supported here; only BodyModeSkip and
+	// BodyModeBuffer are valid.
+	UpstreamRequestMode BodyProcessingMode
+
+	// UpstreamResponseMode is the response-phase analog of UpstreamRequestMode.
+	UpstreamResponseMode BodyProcessingMode
 }
 
 // HeaderProcessingMode defines how a policy processes headers.
@@ -129,6 +140,28 @@ type RequestPolicy interface {
 // StreamingResponsePolicy), the entire chain uses BUFFERED mode.
 type ResponsePolicy interface {
 	OnResponseBody(ctx context.Context, respCtx *ResponseContext, params map[string]interface{}) ResponseAction
+}
+
+// UpstreamRequestPolicy processes the buffered request body fresh on every
+// upstream attempt, scoped to the specific backend cluster Envoy is dialing —
+// e.g. per-backend credential injection or per-backend payload translation for
+// model failover across providers. Unlike RequestPolicy, this is invoked again
+// on each retry to a different backend, always against the original request
+// bytes (see UpstreamAttemptContext.OriginalRequestRaw) rather than whatever a
+// previous attempt already produced. A policy declares participation via
+// ProcessingMode.UpstreamRequestMode = BodyModeBuffer.
+type UpstreamRequestPolicy interface {
+	OnUpstreamRequestBody(ctx context.Context, upCtx *UpstreamAttemptContext, params map[string]interface{}) RequestAction
+}
+
+// UpstreamResponsePolicy is the response-phase analog of UpstreamRequestPolicy —
+// invoked once per upstream attempt, scoped to whichever backend produced that
+// attempt's response. Only the winning attempt's response ever reaches the
+// downstream client, so in practice this runs once per client request, but
+// always for the backend that actually served it. A policy declares
+// participation via ProcessingMode.UpstreamResponseMode = BodyModeBuffer.
+type UpstreamResponsePolicy interface {
+	OnUpstreamResponseBody(ctx context.Context, upCtx *UpstreamAttemptContext, params map[string]interface{}) ResponseAction
 }
 
 // StreamingRequestPolicy processes the request body chunk-by-chunk.

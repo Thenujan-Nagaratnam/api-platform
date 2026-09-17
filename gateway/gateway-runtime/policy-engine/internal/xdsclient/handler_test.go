@@ -31,6 +31,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/kernel"
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/registry"
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/resolver"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
@@ -505,6 +506,50 @@ func TestBuildPolicyChain_UnknownPolicy(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, chain)
 	assert.Contains(t, err.Error(), "failed to create policy instance")
+}
+
+// upstreamAuthStubPolicy implements policy.UpstreamRequestPolicy — a minimal
+// stand-in for aws-authentication, used to prove the real xDS chain-builder
+// (not just Kernel.BuildPolicyChain, which nothing in production calls)
+// detects an upstream-phase policy and sets RequiresUpstreamRequest.
+type upstreamAuthStubPolicy struct{}
+
+func (upstreamAuthStubPolicy) Mode() policy.ProcessingMode {
+	return policy.ProcessingMode{UpstreamRequestMode: policy.BodyModeBuffer}
+}
+
+func (upstreamAuthStubPolicy) OnUpstreamRequestBody(_ context.Context, _ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
+	return policy.UpstreamRequestModifications{}
+}
+
+func TestBuildPolicyChain_UpstreamRequestPolicy_SetsRequiresUpstreamRequest(t *testing.T) {
+	k := kernel.NewKernel()
+	reg := &registry.PolicyRegistry{
+		Policies: make(map[string]*registry.PolicyEntry),
+	}
+	require.NoError(t, reg.SetConfig(map[string]interface{}{}))
+	require.NoError(t, reg.Register(
+		&policy.PolicyDefinition{Name: "upstream-auth-stub", Version: "v1"},
+		func(policy.PolicyMetadata, map[string]interface{}) (policy.Policy, error) {
+			return upstreamAuthStubPolicy{}, nil
+		},
+	))
+	handler := NewResourceHandler(k, reg, resolver.DefaultRegistry())
+
+	config := &policyenginev1.PolicyChain{
+		RouteKey: "test-route",
+		Policies: []policyenginev1.PolicyInstance{
+			{Name: "upstream-auth-stub", Version: "v1", Enabled: true},
+		},
+	}
+	metadata := policyenginev1.Metadata{APIId: "api-123", APIName: "test-api", Version: "v1"}
+
+	chain, err := handler.buildPolicyChain("test-route", config, metadata)
+
+	require.NoError(t, err)
+	require.NotNil(t, chain)
+	assert.True(t, chain.RequiresUpstreamRequest,
+		"a real xDS-delivered chain containing an UpstreamRequestPolicy must be marked so the upstream ext_proc server actually dispatches to it")
 }
 
 func TestBuildPolicyChain_MetadataPropagation(t *testing.T) {

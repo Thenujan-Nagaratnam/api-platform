@@ -68,3 +68,17 @@ require (
 replace github.com/wso2/api-platform/common => ../../../common
 
 replace github.com/wso2/api-platform/httpkit => ../../../httpkit
+
+// TEMPORARY, for local Docker build verification of the unpublished upstream-
+// scoped-policy-execution SDK changes (UpstreamRequestPolicy/UpstreamResponsePolicy/
+// UpstreamAttemptContext). Must be removed once sdk/core is tagged with these
+// changes and the require above is bumped to that version — do not merge with
+// this replace in place.
+replace github.com/wso2/api-platform/sdk/core => ../../../sdk/core
+
+// TEMPORARY, local dev-only override for live upstream-ext_proc testing.
+// gateway-builder fetches aws-authentication@v0 from the PUBLISHED module,
+// which predates OnUpstreamRequestBody — this points at a nested local copy
+// instead (see local-aws-authentication/go.mod's own doc comment). Remove
+// both once the real fix is published and the build.yaml pin is bumped.
+replace github.com/wso2/gateway-controllers/policies/aws-authentication => ./local-aws-authentication

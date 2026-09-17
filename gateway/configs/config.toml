@@ -21,7 +21,7 @@ type = '{{ env "APIP_GW_CONTROLLER_STORAGE_TYPE" "sqlite" }}'
 path = '{{ env "APIP_GW_CONTROLLER_STORAGE_SQLITE_PATH" "./data/gateway.db" }}'
 
 [policy_engine.logging]
-level = "info"
+level = "debug"
 
 [controller.logging]
 level = '{{ env "APIP_GW_CONTROLLER_LOGGING_LEVEL" "info" }}'
@@ -36,6 +36,44 @@ apim_oauth2_client_secret = '{{ env "APIP_GW_CONTROLLER_CONTROLPLANE_APIM_OAUTH2
 
 [controller.policies]
 definitions_path = '{{ env "APIP_GW_CONTROLLER_POLICIES_DEFINITIONS_PATH" "./default-policies" }}'
+
+# mcp-auth: gatewayhost must be lowercase (config-reference resolution is
+# case-sensitive) and must NOT include a port — ngrok's public URL is always
+# implicit standard HTTPS (443), and the port==-1 fix maps that correctly.
+# [policy_configurations.mcpauth_v1]
+# gatewayhost = "shriek-prescribe-pleading.ngrok-free.dev"
+# gatewayurl = "https://shriek-prescribe-pleading.ngrok-free.dev"
+
+# jwt-auth: all keys lowercase, same reason. Fill in your real Asgardeo tenant
+# below (issuer must exactly match what Asgardeo actually issues in the JWT
+# `iss` claim for your tenant).
+[policy_configurations.jwtauth_v1]
+jwkscachettl = "5m"
+jwksfetchtimeout = "5s"
+jwksfetchretrycount = 3
+jwksfetchretryinterval = "2s"
+leeway = "30s"
+authheaderscheme = "Bearer"
+headername = "Authorization"
+onfailurestatuscode = 401
+errormessageformat = "json"
+errormessage = "Authentication failed."
+validateissuer = true
+
+[[policy_configurations.jwtauth_v1.keymanagers]]
+name = "PrimaryIDP"
+# Local WSO2 IS omits the /t/carbon.super tenant qualifier in the token's
+# actual `iss` claim for the super tenant, even though the token/JWKS
+# endpoints themselves are exposed under the tenant-qualified path below.
+issuer = "https://localhost:9443/oauth2/token"
+
+# jwks fetch happens from inside the gateway-runtime container, which can't
+# resolve "localhost" back to the host machine running the local IS — use
+# Docker Desktop's host.docker.internal instead. issuer above stays
+# "localhost" since that's what the IS actually puts in the token's iss claim.
+[policy_configurations.jwtauth_v1.keymanagers.jwks.remote]
+uri = "https://host.docker.internal:9443/t/carbon.super/oauth2/jwks"
+skipTlsVerify = true
 
 [controller.auth.basic]
 enabled = true

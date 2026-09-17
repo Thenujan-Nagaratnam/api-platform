@@ -268,10 +268,20 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 				parsedURL.Scheme = "https"
 			}
 			c := t.createCluster(clusterName, parsedURL, nil, connectTimeout)
+			if clusterNeedsUpstreamPolicyFilter(clusterName, rdc) {
+				if err := attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName); err != nil {
+					return nil, nil, fmt.Errorf("failed to attach upstream policy filter to cluster %q: %w", clusterName, err)
+				}
+			}
 			clusters = append(clusters, c)
 			continue
 		}
 		c := t.createWeightedCluster(clusterName, uc.Endpoints, uc.TLS, connectTimeout)
+		if clusterNeedsUpstreamPolicyFilter(clusterName, rdc) {
+			if err := attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName); err != nil {
+				return nil, nil, fmt.Errorf("failed to attach upstream policy filter to cluster %q: %w", clusterName, err)
+			}
+		}
 		clusters = append(clusters, c)
 	}
 
@@ -918,6 +928,12 @@ func (t *Translator) TranslateConfigs(
 	// Add policy engine cluster
 	policyEngineCluster := t.createPolicyEngineCluster()
 	clusters = append(clusters, policyEngineCluster)
+
+	// Add the upstream (per-cluster) policy engine cluster. Always present,
+	// same as the downstream one above — individual backend clusters only
+	// pay the per-request cost when attachUpstreamPolicyFilter actually wired
+	// the filter to them (see clusterNeedsUpstreamPolicyFilter).
+	clusters = append(clusters, createUpstreamPolicyEngineCluster())
 
 	// Add ALS cluster if the collector is active (it ships access logs over gRPC)
 	log.Debug("gRPC event server config", slog.Any("config", t.config.Collector.Server))

@@ -547,6 +547,52 @@ func TestRestAPITransformer_DefaultClusterReferencesRealCluster(t *testing.T) {
 	}
 }
 
+// TestRestAPITransformer_DefaultUpstreamClusterNameReferencesRealCluster guards
+// the sibling of TestRestAPITransformer_DefaultClusterReferencesRealCluster:
+// route.Upstream.Default.ClusterName (the route's single compiled-in upstream,
+// synced to the policy engine as RouteConfig.Metadata.DefaultUpstream and used
+// to resolve a real backend host for upstream-phase policies, e.g. AWS SigV4
+// signing) must name the SAME real cluster Envoy actually creates — the
+// rdc.UpstreamClusters key / ClusterKey format translateRuntimeConfig uses
+// (confirmed live: "upstream_main_<host>_<port>") — not the differently
+// formatted EnvoyClusterName ("cluster_<scheme>_<host>"), which is not a
+// cluster this deployment ever creates via the main translateRuntimeConfig
+// path. A mismatch here means the policy engine can never resolve this
+// route's own backend, even for a plain single-endpoint API with no dynamic
+// routing involved at all.
+func TestRestAPITransformer_DefaultUpstreamClusterNameReferencesRealCluster(t *testing.T) {
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, map[string]models.PolicyDefinition{})
+
+	apiData := api.APIConfigData{
+		DisplayName: "single-backend",
+		Context:     "/test",
+		Version:     "1.0.0",
+		Operations:  []api.Operation{{Method: api.Ptr(api.OperationMethod("GET")), Path: api.Ptr("/hello")}},
+		Upstream: struct {
+			Main    api.Upstream  `json:"main" yaml:"main"`
+			Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+		}{
+			Main: api.Upstream{Url: ptrStr("http://backend:8080")},
+		},
+	}
+	cfg := &models.StoredConfig{
+		UUID:          "single-api",
+		Kind:          string(api.RestAPIKindRestApi),
+		Configuration: api.RestAPI{Kind: api.RestAPIKindRestApi, Metadata: api.Metadata{Name: "single-api"}, Spec: apiData},
+	}
+
+	rdc, err := transformer.Transform(cfg)
+	require.NoError(t, err)
+
+	for key, r := range rdc.Routes {
+		require.NotNil(t, r.Upstream.Default, "route %q must always carry its own compiled-in default upstream", key)
+		_, ok := rdc.UpstreamClusters[r.Upstream.Default.ClusterName]
+		assert.True(t, ok,
+			"route %q Default.ClusterName %q must be an actual UpstreamClusters key (got keys %v)",
+			key, r.Upstream.Default.ClusterName, upstreamClusterKeys(rdc))
+	}
+}
+
 func upstreamClusterKeys(rdc *models.RuntimeDeployConfig) []string {
 	keys := make([]string, 0, len(rdc.UpstreamClusters))
 	for k := range rdc.UpstreamClusters {
