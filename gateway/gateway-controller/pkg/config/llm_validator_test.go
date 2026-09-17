@@ -2184,6 +2184,94 @@ func TestValidateLLMProxy_Resilience(t *testing.T) {
 	})
 }
 
+func validProxyWithFailover(failover *api.LLMFailoverConfig, additional *[]api.LLMProxyAdditionalProvider) api.LLMProxyConfiguration {
+	return api.LLMProxyConfiguration{
+		ApiVersion: api.LLMProxyConfigurationApiVersionGatewayApiPlatformWso2Comv1,
+		Kind:       api.LLMProxyConfigurationKindLlmProxy,
+		Metadata:   api.Metadata{Name: "openai-proxy"},
+		Spec: api.LLMProxyConfigData{
+			DisplayName:         "my-proxy",
+			Version:             "v1.0",
+			Provider:            api.LLMProxyProvider{Id: "openai-provider"},
+			AdditionalProviders: additional,
+			Resilience:          &api.LLMResilience{Failover: failover},
+		},
+	}
+}
+
+func TestValidateLLMProxy_Failover(t *testing.T) {
+	validator := NewLLMValidator()
+	anthropic := &[]api.LLMProxyAdditionalProvider{{Id: "anthropic-provider", As: stringPtr("anthropic-upstream")}}
+
+	t.Run("valid failover to a named additional provider", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{
+				Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
+				Fallbacks: []api.LLMFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: stringPtr("anthropic-upstream")}},
+			}},
+		}, anthropic))
+		assert.Empty(t, errs)
+	})
+
+	t.Run("valid failover to the primary provider (no provider field)", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{
+				Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
+				Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}},
+			}},
+		}, nil))
+		assert.Empty(t, errs)
+	})
+
+	t.Run("empty target model is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{
+				Target:    api.LLMFailoverTarget{Model: ""},
+				Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}},
+			}},
+		}, nil))
+		assertHasFieldError(t, errs, "spec.resilience.failover.targets[0].target.model")
+	})
+
+	t.Run("empty fallbacks is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{
+				Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
+				Fallbacks: []api.LLMFailoverTarget{},
+			}},
+		}, nil))
+		assertHasFieldError(t, errs, "spec.resilience.failover.targets[0].fallbacks")
+	})
+
+	t.Run("unknown provider reference is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{
+				Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
+				Fallbacks: []api.LLMFailoverTarget{{Model: "claude-sonnet", Provider: stringPtr("nonexistent-upstream")}},
+			}},
+		}, anthropic))
+		assertHasFieldError(t, errs, "spec.resilience.failover.targets[0].fallbacks[0].provider")
+	})
+
+	t.Run("duplicate target model within one failover block is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{
+				{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}},
+				{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-3.5"}}},
+			},
+		}, nil))
+		assertHasFieldError(t, errs, "spec.resilience.failover.targets[1].target.model")
+	})
+
+	t.Run("negative suspendDuration is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets:         []api.LLMFailoverTargetEntry{{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}}},
+			SuspendDuration: intPtr(-1),
+		}, nil))
+		assertHasFieldError(t, errs, "spec.resilience.failover.suspendDuration")
+	})
+}
+
 // validProxyWithAuth builds an LlmProxy whose primary provider.auth is set.
 func validProxyWithAuth(auth *api.LLMUpstreamAuth) api.LLMProxyConfiguration {
 	return api.LLMProxyConfiguration{

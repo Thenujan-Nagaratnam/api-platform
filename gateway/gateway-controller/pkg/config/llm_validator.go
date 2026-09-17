@@ -855,6 +855,20 @@ func (v *LLMValidator) validateProxyData(spec *api.LLMProxyConfigData) []Validat
 	// The deprecated `policies` list must not coexist with the new policy lists
 	errors = append(errors, v.validatePolicyListExclusivity(spec.GlobalPolicies, spec.OperationPolicies, spec.Policies)...)
 
+	if spec.Resilience != nil && spec.Resilience.Failover != nil {
+		validUpstreamNames := map[string]bool{spec.Provider.Id: true}
+		if spec.AdditionalProviders != nil {
+			for _, ap := range *spec.AdditionalProviders {
+				name := ap.Id
+				if ap.As != nil && *ap.As != "" {
+					name = *ap.As
+				}
+				validUpstreamNames[name] = true
+			}
+		}
+		errors = append(errors, v.validateLLMFailover("spec.resilience.failover", spec.Resilience.Failover, validUpstreamNames)...)
+	}
+
 	// Validate API-level resilience (timeout / idleTimeout). LLM kinds support resilience at
 	// the API level only.
 	errors = append(errors, validateResilienceTimeouts("spec.resilience", ToBaseResilience(spec.Resilience))...)
@@ -890,6 +904,67 @@ func (v *LLMValidator) validateLLMProxyTransformer(fieldPrefix string, transform
 			Field:   fieldPrefix + ".version",
 			Message: "Transformer version must be major-only (e.g. v1)",
 		})
+	}
+	return errors
+}
+
+func (v *LLMValidator) validateLLMFailover(fieldPrefix string, failover *api.LLMFailoverConfig, validUpstreamNames map[string]bool) []ValidationError {
+	var errors []ValidationError
+
+	if failover.SuspendDuration != nil && *failover.SuspendDuration < 0 {
+		errors = append(errors, ValidationError{
+			Field:   fieldPrefix + ".suspendDuration",
+			Message: fieldPrefix + ".suspendDuration must be >= 0",
+		})
+	}
+
+	seenModels := map[string]bool{}
+	for i, entry := range failover.Targets {
+		entryPrefix := fmt.Sprintf("%s.targets[%d]", fieldPrefix, i)
+
+		// The "is required" check for entry.Target.Model itself lives in
+		// validateLLMFailoverTarget below (called on the next line) — this
+		// loop only adds the duplicate-detection check that's specific to
+		// the target position, not shared with fallbacks.
+		if entry.Target.Model != "" && seenModels[entry.Target.Model] {
+			errors = append(errors, ValidationError{
+				Field:   entryPrefix + ".target.model",
+				Message: fmt.Sprintf("duplicate target model %q in resilience.failover.targets", entry.Target.Model),
+			})
+		}
+		seenModels[entry.Target.Model] = true
+
+		errors = append(errors, v.validateLLMFailoverTarget(entryPrefix+".target", entry.Target, validUpstreamNames)...)
+
+		if len(entry.Fallbacks) == 0 {
+			errors = append(errors, ValidationError{
+				Field:   entryPrefix + ".fallbacks",
+				Message: entryPrefix + ".fallbacks must have at least one entry",
+			})
+		}
+		for j, fb := range entry.Fallbacks {
+			errors = append(errors, v.validateLLMFailoverTarget(fmt.Sprintf("%s.fallbacks[%d]", entryPrefix, j), fb, validUpstreamNames)...)
+		}
+	}
+
+	return errors
+}
+
+func (v *LLMValidator) validateLLMFailoverTarget(fieldPrefix string, target api.LLMFailoverTarget, validUpstreamNames map[string]bool) []ValidationError {
+	var errors []ValidationError
+	if strings.TrimSpace(target.Model) == "" {
+		errors = append(errors, ValidationError{
+			Field:   fieldPrefix + ".model",
+			Message: fieldPrefix + ".model is required",
+		})
+	}
+	if target.Provider != nil && strings.TrimSpace(*target.Provider) != "" {
+		if !validUpstreamNames[*target.Provider] {
+			errors = append(errors, ValidationError{
+				Field:   fieldPrefix + ".provider",
+				Message: fmt.Sprintf("%s.provider %q does not match the primary provider or any additionalProviders[].as/id", fieldPrefix, *target.Provider),
+			})
+		}
 	}
 	return errors
 }

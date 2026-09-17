@@ -23,3 +23,9 @@ package config
 func stringPtr(s string) *string {
 	return &s
 }
+
+// intPtr is a helper function that returns a pointer to the provided int.
+// This is used in tests to create int pointers for optional fields.
+func intPtr(i int) *int {
+	return &i
+}
