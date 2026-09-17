@@ -663,11 +663,13 @@ func failoverRDC() *models.RuntimeDeployConfig {
 								Model:      "gpt-4o",
 								ClusterKey: "primary-cluster",
 								Upstream:   policyenginev1.UpstreamInfo{ClusterName: "primary-cluster", URL: "https://openai.com"},
+								Provider:   "openai-provider",
 							},
 							Fallbacks: []models.RouteFailoverEntry{{
 								Model:      "claude-sonnet-4-5-20250929",
 								ClusterKey: "fallback-cluster",
 								Upstream:   policyenginev1.UpstreamInfo{ClusterName: "fallback-cluster", URL: "https://anthropic.com"},
+								Provider:   "anthropic-provider",
 							}},
 						}},
 					},
@@ -692,6 +694,14 @@ func TestRouteConfigEmitsFailoverTargets(t *testing.T) {
 
 	data := decodeRouteConfig(t, resources[RouteConfigTypeURL][routeKey])
 
+	// Emitted once per route (shared across every target's chain in the block, matching
+	// RouteFailover.SuspendDurationSeconds's own route-level scope), as a float64 —
+	// structpb-based wire encoding rejects a bare Go int, same as max_request_body_bytes.
+	suspendDuration, ok := data["failover_suspend_duration"]
+	require.True(t, ok, "a route with resilience.failover must emit failover_suspend_duration")
+	assert.Equal(t, float64(900), suspendDuration)
+	assert.IsType(t, float64(0), suspendDuration, "must be emitted as float64, not a bare int")
+
 	raw, ok := data["failover_targets"]
 	require.True(t, ok, "a route with resilience.failover must emit failover_targets")
 	targets, ok := raw.([]interface{})
@@ -710,11 +720,13 @@ func TestRouteConfigEmitsFailoverTargets(t *testing.T) {
 	assert.Equal(t, "gpt-4o", first["model"])
 	assert.Equal(t, "primary-cluster", first["cluster_name"])
 	assert.Equal(t, "https://openai.com", first["url"])
+	assert.Equal(t, "openai-provider", first["provider"], "chain entry must identify its provider — cluster_name/url alone can't be resolved back to one")
 
 	second := chain[1].(map[string]interface{})
 	assert.Equal(t, "claude-sonnet-4-5-20250929", second["model"])
 	assert.Equal(t, "fallback-cluster", second["cluster_name"])
 	assert.Equal(t, "https://anthropic.com", second["url"])
+	assert.Equal(t, "anthropic-provider", second["provider"])
 }
 
 // A route with no resilience.failover block must not gain the field — mirrors
@@ -729,5 +741,7 @@ func TestRouteConfigOmitsFailoverTargetsWhenUnset(t *testing.T) {
 		data := decodeRouteConfig(t, res)
 		_, present := data["failover_targets"]
 		assert.False(t, present, "route %q without resilience.failover must omit failover_targets", routeKey)
+		_, suspendPresent := data["failover_suspend_duration"]
+		assert.False(t, suspendPresent, "route %q without resilience.failover must omit failover_suspend_duration", routeKey)
 	}
 }

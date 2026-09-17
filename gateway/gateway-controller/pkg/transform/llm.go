@@ -111,7 +111,7 @@ func (t *LLMTransformer) Transform(cfg *models.StoredConfig) (*models.RuntimeDep
 	// RouteFailover shape every route carries. No-op for any other kind or
 	// any LlmProxy with no failover block.
 	if proxy, ok := cfg.SourceConfiguration.(api.LLMProxyConfiguration); ok && proxy.Spec.Resilience != nil {
-		if err := applyFailoverToRoutes(rdc, proxy.Spec.Resilience.Failover); err != nil {
+		if err := applyFailoverToRoutes(rdc, proxy.Spec.Resilience.Failover, proxy.Spec.Provider.Id); err != nil {
 			return nil, fmt.Errorf("resolving resilience.failover: %w", err)
 		}
 	}
@@ -154,8 +154,18 @@ func (t *LLMTransformer) extractLLMMetadata(cfg *models.StoredConfig) *models.LL
 // (route.Upstream.ClusterKey / .Default) directly — never a name lookup —
 // because the primary/sandbox slot clusters are stored with an empty Name
 // (see models.UpstreamCluster.Name's doc comment), which is not a usable
-// lookup key on its own.
-func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFailoverConfig) error {
+// lookup key on its own. primaryProviderID is the proxy's own spec.provider.id,
+// needed so an explicit `provider: <primary's own id>` also takes this same
+// primary path instead of falling through to the (failing) named-cluster scan.
+//
+// Known v1 scope limitation, not a bug: this applies to every route the LlmProxy
+// owns, including operations with no client-supplied model to match against
+// (e.g. a "/models" listing endpoint) — such a route still gets retry-on-5xx and
+// forced host-rewrite it never had before. Properly scoping this to only
+// model-bearing operations needs per-operation request-shape awareness that
+// belongs in a later plan's downstream target-selection work (which already has
+// to parse the client-requested model out of the request body), not here.
+func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFailoverConfig, primaryProviderID string) error {
 	if failover == nil || len(failover.Targets) == 0 {
 		return nil
 	}
@@ -168,13 +178,13 @@ func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFai
 	for routeKey, r := range rdc.Routes {
 		targets := make([]models.RouteFailoverTarget, 0, len(failover.Targets))
 		for _, entry := range failover.Targets {
-			targetEntry, err := resolveFailoverEntry(rdc, r, entry.Target)
+			targetEntry, err := resolveFailoverEntry(rdc, r, entry.Target, primaryProviderID)
 			if err != nil {
 				return fmt.Errorf("route %q: resolving failover target %q: %w", routeKey, entry.Target.Model, err)
 			}
 			fallbacks := make([]models.RouteFailoverEntry, 0, len(entry.Fallbacks))
 			for _, fb := range entry.Fallbacks {
-				fbEntry, err := resolveFailoverEntry(rdc, r, fb)
+				fbEntry, err := resolveFailoverEntry(rdc, r, fb, primaryProviderID)
 				if err != nil {
 					return fmt.Errorf("route %q: resolving failover fallback %q: %w", routeKey, fb.Model, err)
 				}
@@ -200,9 +210,20 @@ func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFai
 }
 
 // resolveFailoverEntry resolves one {model, provider} shorthand into a real
-// cluster reference. provider == nil means the route's own primary upstream.
-func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t api.LLMFailoverTarget) (models.RouteFailoverEntry, error) {
-	if t.Provider == nil || strings.TrimSpace(*t.Provider) == "" {
+// cluster reference. provider == nil/empty, or provider == the proxy's own
+// primaryProviderID, both mean the route's own primary upstream — a validated
+// config can legally spell out `provider: <primary's own id>` explicitly
+// (llm_validator.go seeds it into validUpstreamNames), and that must resolve
+// exactly like omitting the field, not fall through to the named-cluster scan
+// below, whose clusters are keyed by additionalProviders[].as/id and would
+// never contain the primary (its cluster is stored with an empty Name — see
+// models.UpstreamCluster.Name's doc comment).
+func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t api.LLMFailoverTarget, primaryProviderID string) (models.RouteFailoverEntry, error) {
+	providerName := ""
+	if t.Provider != nil {
+		providerName = strings.TrimSpace(*t.Provider)
+	}
+	if providerName == "" || providerName == primaryProviderID {
 		if r.Upstream.Default == nil {
 			return models.RouteFailoverEntry{}, fmt.Errorf("route has no default upstream to use as the primary failover target")
 		}
@@ -210,10 +231,10 @@ func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t ap
 			Model:      t.Model,
 			ClusterKey: r.Upstream.ClusterKey,
 			Upstream:   *r.Upstream.Default,
+			Provider:   primaryProviderID,
 		}, nil
 	}
 
-	providerName := strings.TrimSpace(*t.Provider)
 	for key, uc := range rdc.UpstreamClusters {
 		if uc.Name != providerName {
 			continue
@@ -232,6 +253,16 @@ func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t ap
 		if uc.Endpoints[0].Port != defaultPort {
 			hostPort = fmt.Sprintf("%s:%d", host, uc.Endpoints[0].Port)
 		}
+		// NOTE: this re-derives the URL from uc.Endpoints[0] with its own default-port
+		// omission logic, rather than reusing the URL restapi.go's addUpstreamCluster
+		// already computed for this same cluster (upstreamClusterResult.URL) — that
+		// value isn't persisted on models.UpstreamCluster, only returned transiently.
+		// The two can disagree in spelling for a non-default port explicitly written
+		// into the source URL (e.g. "https://host:443" vs "https://host"), though both
+		// name the identical backend. Not fixed here: plumbing the original URL onto
+		// UpstreamCluster is more invasive than this fix warrants (see Fix 5 in the
+		// final-review fix report) — the wire consumer must not rely on exact string
+		// equality between this URL and a same-host default_upstream.url elsewhere.
 		return models.RouteFailoverEntry{
 			Model:      t.Model,
 			ClusterKey: key,
@@ -240,6 +271,7 @@ func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t ap
 				URL:         fmt.Sprintf("%s://%s", scheme, hostPort),
 				BasePath:    uc.BasePath,
 			},
+			Provider: providerName,
 		}, nil
 	}
 	return models.RouteFailoverEntry{}, fmt.Errorf("provider %q not found among configured upstreams", providerName)

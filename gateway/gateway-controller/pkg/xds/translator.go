@@ -418,8 +418,20 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		routeAction.Route.HostRewriteSpecifier = &route.RouteAction_AutoHostRewrite{
 			AutoHostRewrite: &wrapperspb.BoolValue{Value: true},
 		}
+		// NumRetries must cover the deepest fallback chain among this route's targets, not
+		// any single target's own depth — RetryPolicy is one object per ROUTE, shared by every
+		// target, so a shallower target must not cap how far a deeper target's chain can
+		// escalate. Envoy defaults num_retries to 1 when unset, which would silently strand
+		// fallbacks[1:] unreachable (previous_priorities only advances one priority per retry).
+		maxFallbackDepth := 0
+		for _, target := range rdcRoute.Upstream.Failover.Targets {
+			if len(target.Fallbacks) > maxFallbackDepth {
+				maxFallbackDepth = len(target.Fallbacks)
+			}
+		}
 		routeAction.Route.RetryPolicy = &route.RetryPolicy{
-			RetryOn: "5xx",
+			RetryOn:    "5xx",
+			NumRetries: wrapperspb.UInt32(uint32(maxFallbackDepth)),
 			RetryPriority: &route.RetryPolicy_RetryPriority{
 				Name:       "envoy.retry_priorities.previous_priorities",
 				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: failoverRetryPriorityConfig},
@@ -934,9 +946,13 @@ func (t *Translator) TranslateConfigs(
 			}
 		}
 		virtualHost := &route.VirtualHost{
-			Name:                       vhost,
-			Domains:                    t.getVHostDomains(vhost),
-			Routes:                     routes,
+			Name:    vhost,
+			Domains: t.getVHostDomains(vhost),
+			Routes:  routes,
+			// Set at the VirtualHost level because Envoy has no route-level equivalent for
+			// IncludeRequestAttemptCount — an accepted, Envoy-API-driven limitation, not an
+			// oversight: enabling failover on one LlmProxy route also adds the
+			// x-envoy-attempt-count header to every other unrelated API sharing this vhost.
 			IncludeRequestAttemptCount: vhostNeedsAttemptCount,
 			// Strip any client-supplied x-envoy-original-path so it cannot survive to
 			// the collector.ignore_path_prefixes access-log filter (buildIgnorePathsAccessLogFilter):

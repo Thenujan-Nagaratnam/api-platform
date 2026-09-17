@@ -461,6 +461,11 @@ func (t *Translator) createRouteConfigResource(
 			})
 		}
 		data["failover_targets"] = targets
+		// A single scalar shared by every target in this block, matching
+		// RouteFailover.SuspendDurationSeconds's own route-level scope — Plan C reads this
+		// to know how long a suspended target stays skipped. float64, not a bare Go int:
+		// structpb-based wire encoding rejects int (see max_request_body_bytes above).
+		data["failover_suspend_duration"] = float64(route.Upstream.Failover.SuspendDurationSeconds)
 	}
 
 	return toAnyResource(data, RouteConfigTypeURL)
@@ -468,9 +473,14 @@ func (t *Translator) createRouteConfigResource(
 
 // failoverEntryToMap renders one failover chain slot (the target itself, or one of
 // its fallbacks) into the wire shape Plan B's policy-engine xDS handler parses.
+// "provider" is included alongside the shared UpstreamInfo fields because neither
+// cluster_name (empty-Name for the primary slot cluster) nor url (a loopback address
+// for a named provider, not the real backend) can be resolved back to a provider
+// identity by a future consumer's transformer-selection logic (spec §6.4/§7).
 func failoverEntryToMap(e models.RouteFailoverEntry) map[string]interface{} {
 	m := e.Upstream.ToMap()
 	m["model"] = e.Model
+	m["provider"] = e.Provider
 	return m
 }
 

@@ -178,6 +178,15 @@ type RouteFailoverEntry struct {
 	Model      string
 	ClusterKey string
 	Upstream   policyenginev1.UpstreamInfo
+
+	// Provider is the resolved provider id/name for this entry (the primary
+	// provider's own id for the no-provider/self-referencing case, or the
+	// matched additionalProviders[].as/id for a named entry). Neither
+	// Upstream.ClusterName (empty for the primary slot cluster) nor
+	// Upstream.URL (a loopback address for named providers, not the real
+	// backend) can be resolved back to a provider identity by a downstream
+	// consumer, so this field carries it explicitly on the wire.
+	Provider string
 }
 
 // PolicyChain is an ordered list of policies for a route.

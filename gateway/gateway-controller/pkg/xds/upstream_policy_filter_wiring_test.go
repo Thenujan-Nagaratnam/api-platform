@@ -99,7 +99,70 @@ func TestTranslateRuntimeConfig_FailoverRouteGetsRetryPolicyAndHostRewrite(t *te
 	assert.Equal(t, "5xx", action.RetryPolicy.RetryOn)
 	require.NotNil(t, action.RetryPolicy.RetryPriority)
 	assert.Equal(t, "envoy.retry_priorities.previous_priorities", action.RetryPolicy.RetryPriority.Name)
+	require.NotNil(t, action.RetryPolicy.NumRetries, "num_retries must be set or Envoy defaults to 1, capping escalation at priority 1 regardless of chain depth")
+	assert.Equal(t, uint32(1), action.RetryPolicy.NumRetries.GetValue())
 
 	_, isAutoRewrite := action.HostRewriteSpecifier.(*route.RouteAction_AutoHostRewrite)
 	assert.True(t, isAutoRewrite, "a failover route must auto-rewrite Host, or per-attempt backend resolution can't tell attempts apart")
+}
+
+// TestTranslateRuntimeConfig_FailoverRetryPolicyNumRetriesMatchesDeepestChain asserts
+// NumRetries is set to the deepest fallback chain among the route's targets — Envoy
+// defaults num_retries to 1, so without this, a target with 2+ fallbacks could only
+// ever escalate from priority 0 to priority 1 and fallbacks[1:] would be unreachable.
+func TestTranslateRuntimeConfig_FailoverRetryPolicyNumRetriesMatchesDeepestChain(t *testing.T) {
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"primary-cluster":   {BasePath: "/", Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+			"fallback-cluster1": {BasePath: "/", Endpoints: []models.Endpoint{{Host: "anthropic.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+			"fallback-cluster2": {BasePath: "/", Endpoints: []models.Endpoint{{Host: "cohere.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+			"fallback-cluster3": {BasePath: "/", Endpoints: []models.Endpoint{{Host: "mistral.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+		},
+		Routes: map[string]*models.Route{
+			"POST|/chat/completions|main": {
+				Method: "POST",
+				Path:   "/chat/completions",
+				Vhost:  "main",
+				Upstream: models.RouteUpstream{
+					ClusterKey:       "primary-cluster",
+					UseClusterHeader: true,
+					DefaultCluster:   "primary-cluster",
+					Failover: &models.RouteFailover{
+						Targets: []models.RouteFailoverTarget{
+							{
+								Model:  "gpt-4o",
+								Target: models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+								Fallbacks: []models.RouteFailoverEntry{
+									{ClusterKey: "fallback-cluster1"},
+									{ClusterKey: "fallback-cluster2"},
+								},
+							},
+							{
+								Model:  "gpt-4o-mini",
+								Target: models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+								Fallbacks: []models.RouteFailoverEntry{
+									{ClusterKey: "fallback-cluster1"},
+									{ClusterKey: "fallback-cluster2"},
+									{ClusterKey: "fallback-cluster3"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	translator := createTestTranslator()
+	routes, _, err := translator.translateRuntimeConfig(rdc)
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+
+	action := routes[0].GetRoute()
+	require.NotNil(t, action)
+	require.NotNil(t, action.RetryPolicy)
+	require.NotNil(t, action.RetryPolicy.NumRetries)
+	// Deepest chain across both targets: 3 fallbacks (second target) — the max, not
+	// either target's own individual depth, since RetryPolicy is one object per route.
+	assert.Equal(t, uint32(3), action.RetryPolicy.NumRetries.GetValue())
 }
