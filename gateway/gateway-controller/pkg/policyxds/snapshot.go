@@ -29,6 +29,7 @@ import (
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/xds"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -440,7 +441,37 @@ func (t *Translator) createRouteConfigResource(
 		data["default_upstream"] = route.Upstream.Default.ToMap()
 	}
 
+	// This route's resolved failover chains (nil unless the source LlmProxy declared
+	// resilience.failover). chain[0] is always the target itself, chain[1:] are the
+	// fallbacks in order — the same list x-envoy-attempt-count-1 indexes into per the
+	// design spec §6. aggregate_cluster must match xds.AggregateClusterName exactly,
+	// since that is the same name Envoy reports back via xds.cluster_name.
+	if route.Upstream.Failover != nil {
+		targets := make([]interface{}, 0, len(route.Upstream.Failover.Targets))
+		for i, target := range route.Upstream.Failover.Targets {
+			chain := make([]interface{}, 0, len(target.Fallbacks)+1)
+			chain = append(chain, failoverEntryToMap(target.Target))
+			for _, fb := range target.Fallbacks {
+				chain = append(chain, failoverEntryToMap(fb))
+			}
+			targets = append(targets, map[string]interface{}{
+				"aggregate_cluster": xds.AggregateClusterName(routeKey, i),
+				"model":             target.Model,
+				"chain":             chain,
+			})
+		}
+		data["failover_targets"] = targets
+	}
+
 	return toAnyResource(data, RouteConfigTypeURL)
+}
+
+// failoverEntryToMap renders one failover chain slot (the target itself, or one of
+// its fallbacks) into the wire shape Plan B's policy-engine xDS handler parses.
+func failoverEntryToMap(e models.RouteFailoverEntry) map[string]interface{} {
+	m := e.Upstream.ToMap()
+	m["model"] = e.Model
+	return m
 }
 
 // toAnyResource converts a map to an anypb.Any resource with the given type URL.
