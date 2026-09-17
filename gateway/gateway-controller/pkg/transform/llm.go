@@ -20,12 +20,14 @@ package transform
 
 import (
 	"fmt"
+	"strings"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/utils"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
 // LLMTransformer transforms LLM Provider or LLM Proxy StoredConfig into RuntimeDeployConfig.
@@ -105,6 +107,15 @@ func (t *LLMTransformer) Transform(cfg *models.StoredConfig) (*models.RuntimeDep
 	}
 	rdc.SensitiveValues = cfg.SensitiveValues
 
+	// Step 5: Resolve resilience.failover (LlmProxy-only) into the generic
+	// RouteFailover shape every route carries. No-op for any other kind or
+	// any LlmProxy with no failover block.
+	if proxy, ok := cfg.SourceConfiguration.(api.LLMProxyConfiguration); ok && proxy.Spec.Resilience != nil {
+		if err := applyFailoverToRoutes(rdc, proxy.Spec.Resilience.Failover); err != nil {
+			return nil, fmt.Errorf("resolving resilience.failover: %w", err)
+		}
+	}
+
 	return rdc, nil
 }
 
@@ -133,4 +144,103 @@ func (t *LLMTransformer) extractLLMMetadata(cfg *models.StoredConfig) *models.LL
 		return nil
 	}
 	return meta
+}
+
+// applyFailoverToRoutes resolves failover (the LLM-public {model, provider}
+// shorthand) into models.RouteFailover on every route in rdc, using
+// rdc.UpstreamClusters (already built by RestAPITransformer) to translate a
+// named provider into a real cluster key + upstream info. A target/fallback
+// with no provider uses the route's OWN already-resolved primary upstream
+// (route.Upstream.ClusterKey / .Default) directly — never a name lookup —
+// because the primary/sandbox slot clusters are stored with an empty Name
+// (see models.UpstreamCluster.Name's doc comment), which is not a usable
+// lookup key on its own.
+func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFailoverConfig) error {
+	if failover == nil || len(failover.Targets) == 0 {
+		return nil
+	}
+
+	suspendSeconds := 0
+	if failover.SuspendDuration != nil {
+		suspendSeconds = *failover.SuspendDuration
+	}
+
+	for routeKey, r := range rdc.Routes {
+		targets := make([]models.RouteFailoverTarget, 0, len(failover.Targets))
+		for _, entry := range failover.Targets {
+			targetEntry, err := resolveFailoverEntry(rdc, r, entry.Target)
+			if err != nil {
+				return fmt.Errorf("route %q: resolving failover target %q: %w", routeKey, entry.Target.Model, err)
+			}
+			fallbacks := make([]models.RouteFailoverEntry, 0, len(entry.Fallbacks))
+			for _, fb := range entry.Fallbacks {
+				fbEntry, err := resolveFailoverEntry(rdc, r, fb)
+				if err != nil {
+					return fmt.Errorf("route %q: resolving failover fallback %q: %w", routeKey, fb.Model, err)
+				}
+				fallbacks = append(fallbacks, fbEntry)
+			}
+			targets = append(targets, models.RouteFailoverTarget{
+				Model:     entry.Target.Model,
+				Target:    targetEntry,
+				Fallbacks: fallbacks,
+			})
+		}
+
+		r.Upstream.Failover = &models.RouteFailover{
+			SuspendDurationSeconds: suspendSeconds,
+			Targets:                targets,
+		}
+		if !r.Upstream.UseClusterHeader {
+			r.Upstream.UseClusterHeader = true
+			r.Upstream.DefaultCluster = r.Upstream.ClusterKey
+		}
+	}
+	return nil
+}
+
+// resolveFailoverEntry resolves one {model, provider} shorthand into a real
+// cluster reference. provider == nil means the route's own primary upstream.
+func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t api.LLMFailoverTarget) (models.RouteFailoverEntry, error) {
+	if t.Provider == nil || strings.TrimSpace(*t.Provider) == "" {
+		if r.Upstream.Default == nil {
+			return models.RouteFailoverEntry{}, fmt.Errorf("route has no default upstream to use as the primary failover target")
+		}
+		return models.RouteFailoverEntry{
+			Model:      t.Model,
+			ClusterKey: r.Upstream.ClusterKey,
+			Upstream:   *r.Upstream.Default,
+		}, nil
+	}
+
+	providerName := strings.TrimSpace(*t.Provider)
+	for key, uc := range rdc.UpstreamClusters {
+		if uc.Name != providerName {
+			continue
+		}
+		if len(uc.Endpoints) == 0 {
+			return models.RouteFailoverEntry{}, fmt.Errorf("provider %q has no endpoints", providerName)
+		}
+		scheme := "http"
+		defaultPort := 80
+		if uc.TLS != nil && uc.TLS.Enabled {
+			scheme = "https"
+			defaultPort = 443
+		}
+		host := uc.Endpoints[0].Host
+		hostPort := host
+		if uc.Endpoints[0].Port != defaultPort {
+			hostPort = fmt.Sprintf("%s:%d", host, uc.Endpoints[0].Port)
+		}
+		return models.RouteFailoverEntry{
+			Model:      t.Model,
+			ClusterKey: key,
+			Upstream: policyenginev1.UpstreamInfo{
+				ClusterName: key,
+				URL:         fmt.Sprintf("%s://%s", scheme, hostPort),
+				BasePath:    uc.BasePath,
+			},
+		}, nil
+	}
+	return models.RouteFailoverEntry{}, fmt.Errorf("provider %q not found among configured upstreams", providerName)
 }

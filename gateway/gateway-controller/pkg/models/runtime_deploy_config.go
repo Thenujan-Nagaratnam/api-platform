@@ -148,6 +148,36 @@ type RouteUpstream struct {
 	// the policy engine as the route's single default upstream field, regardless
 	// of which slot it is.
 	Default *policyenginev1.UpstreamInfo
+
+	// Failover is this route's failover configuration (nil unless the source
+	// LlmProxy declared resilience.failover). See RouteFailover.
+	Failover *RouteFailover
+}
+
+// RouteFailover declares, for one route, the ordered failover chains a
+// client-requested model can match against. Populated only when the source
+// LlmProxy has a resilience.failover block; nil otherwise. See
+// docs/superpowers/specs/2026-09-17-llm-model-failover-design.md.
+type RouteFailover struct {
+	SuspendDurationSeconds int
+	Targets                []RouteFailoverTarget
+}
+
+// RouteFailoverTarget is one client-requested model's own failover chain.
+type RouteFailoverTarget struct {
+	Model     string
+	Target    RouteFailoverEntry
+	Fallbacks []RouteFailoverEntry
+}
+
+// RouteFailoverEntry is a single attempt slot: which model to send (may
+// differ from RouteFailoverTarget.Model for a fallback using a cheaper
+// model), which real cluster to dial, and that cluster's resolved upstream
+// info.
+type RouteFailoverEntry struct {
+	Model      string
+	ClusterKey string
+	Upstream   policyenginev1.UpstreamInfo
 }
 
 // PolicyChain is an ordered list of policies for a route.
