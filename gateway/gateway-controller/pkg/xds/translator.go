@@ -285,6 +285,28 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		clusters = append(clusters, c)
 	}
 
+	// Build one aggregate cluster per resilience.failover targets[] entry,
+	// deduped by route key + entry index (multiple operations of the same
+	// LlmProxy share the identical failover block, so this avoids emitting
+	// duplicate aggregate clusters with colliding names).
+	seenAggregates := map[string]bool{}
+	for routeKey, rdcRoute := range rdc.Routes {
+		if rdcRoute.Upstream.Failover == nil {
+			continue
+		}
+		aggClusters, err := buildFailoverAggregateClusters(rdcRoute.Upstream.Failover, routeKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
+		}
+		for _, c := range aggClusters {
+			if seenAggregates[c.Name] {
+				continue
+			}
+			seenAggregates[c.Name] = true
+			clusters = append(clusters, c)
+		}
+	}
+
 	// Build routes from Routes map. Iterate in a deterministic order — ascending
 	// Route.Order (the source operation/rule index), then route key — so the stable
 	// route sorter later resolves equal-precedence ties by Gateway-API rule order

@@ -85,12 +85,14 @@ func shouldAttachUpstreamPolicyFilter(requiresUpstreamRequest, requiresUpstreamR
 // filter to c's TypedExtensionProtocolOptions, terminated by the mandatory
 // upstream_codec filter.
 //
-// This must be called once per REAL member cluster a route can dispatch to —
-// never on an aggregate-cluster pseudo-object (envoy.clusters.aggregate has no
-// hosts of its own; chooseHost() always delegates to a member cluster's
-// ClusterInfo, so a filter attached to the aggregate cluster's own name never
-// fires). Callers building an aggregate-cluster construct for model failover
-// must call this on each of the aggregate's real member clusters individually.
+// For a regular (non-aggregate) route, call this on the real cluster the
+// route dispatches to. For a model-failover route built around an
+// envoy.clusters.aggregate cluster, call this on the AGGREGATE cluster
+// itself, not its real member clusters — confirmed live: attaching the
+// filter to the real member clusters never fires when traffic is reached
+// through the aggregate (cx_total stayed 0 on the member clusters' ext_proc
+// stats), while attaching it to the aggregate cluster's own name fires
+// correctly. See buildFailoverAggregateClusters in failover_cluster.go.
 //
 // Idempotent: calling this more than once on the same cluster leaves exactly
 // one filter chain in place rather than accumulating duplicates.
