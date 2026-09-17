@@ -24,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 )
@@ -57,4 +59,47 @@ func TestTranslateRuntimeConfig_AttachesUpstreamFilterOnlyWhereNeeded(t *testing
 
 	assert.True(t, byName["bedrock-fallback"], "cluster whose route has an upstream-phase policy must get the filter")
 	assert.False(t, byName["openai-main"], "cluster whose route has no upstream-phase policy must stay filter-free (zero cost)")
+}
+
+func TestTranslateRuntimeConfig_FailoverRouteGetsRetryPolicyAndHostRewrite(t *testing.T) {
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"primary-cluster":  {BasePath: "/", Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+			"fallback-cluster": {BasePath: "/", Endpoints: []models.Endpoint{{Host: "anthropic.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+		},
+		Routes: map[string]*models.Route{
+			"POST|/chat/completions|main": {
+				Method: "POST",
+				Path:   "/chat/completions",
+				Vhost:  "main",
+				Upstream: models.RouteUpstream{
+					ClusterKey:       "primary-cluster",
+					UseClusterHeader: true,
+					DefaultCluster:   "primary-cluster",
+					Failover: &models.RouteFailover{
+						Targets: []models.RouteFailoverTarget{{
+							Model:     "gpt-4o",
+							Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+							Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	translator := createTestTranslator()
+	routes, _, err := translator.translateRuntimeConfig(rdc)
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+
+	action := routes[0].GetRoute()
+	require.NotNil(t, action)
+	require.NotNil(t, action.RetryPolicy)
+	assert.Equal(t, "5xx", action.RetryPolicy.RetryOn)
+	require.NotNil(t, action.RetryPolicy.RetryPriority)
+	assert.Equal(t, "envoy.retry_priorities.previous_priorities", action.RetryPolicy.RetryPriority.Name)
+
+	_, isAutoRewrite := action.HostRewriteSpecifier.(*route.RouteAction_AutoHostRewrite)
+	assert.True(t, isAutoRewrite, "a failover route must auto-rewrite Host, or per-attempt backend resolution can't tell attempts apart")
 }

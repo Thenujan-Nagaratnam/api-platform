@@ -53,6 +53,7 @@ import (
 	luav3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/lua/v3"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	previous_prioritiesv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/retry/priority/previous_priorities/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
@@ -323,7 +324,10 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		return routeKeys[i] < routeKeys[j]
 	})
 	for _, routeKey := range routeKeys {
-		r := t.createRouteFromRDC(routeKey, rdc.Routes[routeKey], rdc)
+		r, err := t.createRouteFromRDC(routeKey, rdc.Routes[routeKey], rdc)
+		if err != nil {
+			return nil, nil, err
+		}
 		routes = append(routes, r)
 	}
 
@@ -341,7 +345,7 @@ func (t *Translator) routeTimeoutOrDefault(v *time.Duration, defaultMs uint32) *
 }
 
 // createRouteFromRDC creates an Envoy route from a RuntimeDeployConfig Route.
-func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig) *route.Route {
+func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig) (*route.Route, error) {
 	fullPath := rdcRoute.Path
 	method := rdcRoute.Method
 	operationPath := rdcRoute.OperationPath
@@ -389,6 +393,27 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 	if rdcRoute.AutoHostRewrite {
 		routeAction.Route.HostRewriteSpecifier = &route.RouteAction_AutoHostRewrite{
 			AutoHostRewrite: &wrapperspb.BoolValue{Value: true},
+		}
+	}
+
+	// Failover routes always auto-rewrite Host (needed for per-attempt
+	// backend resolution to tell attempts apart, see the design spec) and
+	// carry a retry policy that escalates through the aggregate cluster's
+	// priority levels on a 5xx.
+	if rdcRoute.Upstream.Failover != nil {
+		routeAction.Route.HostRewriteSpecifier = &route.RouteAction_AutoHostRewrite{
+			AutoHostRewrite: &wrapperspb.BoolValue{Value: true},
+		}
+		retryPriorityAny, err := anypb.New(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
+		if err != nil {
+			return nil, fmt.Errorf("route %q: failed to marshal retry_priority config: %w", routeKey, err)
+		}
+		routeAction.Route.RetryPolicy = &route.RetryPolicy{
+			RetryOn: "5xx",
+			RetryPriority: &route.RetryPolicy_RetryPriority{
+				Name:       "envoy.retry_priorities.previous_priorities",
+				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: retryPriorityAny},
+			},
 		}
 	}
 
@@ -472,7 +497,7 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		}
 	}
 
-	return r
+	return r, nil
 }
 
 // buildMatchHeaders builds the Envoy header matchers for a route: the mandatory :method matcher
@@ -888,10 +913,21 @@ func (t *Translator) TranslateConfigs(
 				constants.ExtProcFilterName: extProcDisabledAny,
 			},
 		})
+		// A failover route's RetryPolicy.RetryPriority signals that the vhost needs the
+		// per-attempt count exposed to the upstream ext_proc filter, which uses it to tell
+		// retry attempts apart when resolving the per-attempt backend.
+		vhostNeedsAttemptCount := false
+		for _, r := range routes {
+			if r.GetRoute().GetRetryPolicy().GetRetryPriority() != nil {
+				vhostNeedsAttemptCount = true
+				break
+			}
+		}
 		virtualHost := &route.VirtualHost{
-			Name:    vhost,
-			Domains: t.getVHostDomains(vhost),
-			Routes:  routes,
+			Name:                       vhost,
+			Domains:                    t.getVHostDomains(vhost),
+			Routes:                     routes,
+			IncludeRequestAttemptCount: vhostNeedsAttemptCount,
 			// Strip any client-supplied x-envoy-original-path so it cannot survive to
 			// the collector.ignore_path_prefixes access-log filter (buildIgnorePathsAccessLogFilter):
 			// on a route that performs a path rewrite, Envoy's router unconditionally
