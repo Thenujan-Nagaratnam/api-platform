@@ -69,6 +69,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
+	"google.golang.org/protobuf/proto"
 	anypb "google.golang.org/protobuf/types/known/anypb"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -324,10 +325,7 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		return routeKeys[i] < routeKeys[j]
 	})
 	for _, routeKey := range routeKeys {
-		r, err := t.createRouteFromRDC(routeKey, rdc.Routes[routeKey], rdc)
-		if err != nil {
-			return nil, nil, err
-		}
+		r := t.createRouteFromRDC(routeKey, rdc.Routes[routeKey], rdc)
 		routes = append(routes, r)
 	}
 
@@ -344,8 +342,24 @@ func (t *Translator) routeTimeoutOrDefault(v *time.Duration, defaultMs uint32) *
 	return durationpb.New(time.Duration(defaultMs) * time.Millisecond)
 }
 
+// mustMarshalAny marshals a fixed, compile-time-constant proto message into an anypb.Any.
+// Intended only for literals that never vary at runtime, where a marshal failure would
+// indicate a broken build rather than a request-time condition worth propagating as an error.
+func mustMarshalAny(msg proto.Message) *anypb.Any {
+	a, err := anypb.New(msg)
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal constant proto message %T: %v", msg, err))
+	}
+	return a
+}
+
+// failoverRetryPriorityConfig is the marshalled envoy.extensions.retry.priority.previous_priorities.v3.
+// PreviousPrioritiesConfig attached to every failover route's RetryPolicy. It carries no per-route
+// variability (see createRouteFromRDC), so it's marshalled once here rather than on every route.
+var failoverRetryPriorityConfig = mustMarshalAny(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
+
 // createRouteFromRDC creates an Envoy route from a RuntimeDeployConfig Route.
-func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig) (*route.Route, error) {
+func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig) *route.Route {
 	fullPath := rdcRoute.Path
 	method := rdcRoute.Method
 	operationPath := rdcRoute.OperationPath
@@ -404,15 +418,11 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		routeAction.Route.HostRewriteSpecifier = &route.RouteAction_AutoHostRewrite{
 			AutoHostRewrite: &wrapperspb.BoolValue{Value: true},
 		}
-		retryPriorityAny, err := anypb.New(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
-		if err != nil {
-			return nil, fmt.Errorf("route %q: failed to marshal retry_priority config: %w", routeKey, err)
-		}
 		routeAction.Route.RetryPolicy = &route.RetryPolicy{
 			RetryOn: "5xx",
 			RetryPriority: &route.RetryPolicy_RetryPriority{
 				Name:       "envoy.retry_priorities.previous_priorities",
-				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: retryPriorityAny},
+				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: failoverRetryPriorityConfig},
 			},
 		}
 	}
@@ -497,7 +507,7 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		}
 	}
 
-	return r, nil
+	return r
 }
 
 // buildMatchHeaders builds the Envoy header matchers for a route: the mandatory :method matcher

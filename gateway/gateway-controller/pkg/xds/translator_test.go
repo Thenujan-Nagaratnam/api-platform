@@ -790,8 +790,7 @@ func TestTranslator_WildcardUpstreamRewriteFromRDC(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r, err := translator.createRouteFromRDC("GET|"+tt.fullPath+"|", rdcRoute, rdc)
-			require.NoError(t, err)
+			r := translator.createRouteFromRDC("GET|"+tt.fullPath+"|", rdcRoute, rdc)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -837,8 +836,7 @@ func TestTranslator_RouteResilienceTimeoutsFromRDC(t *testing.T) {
 				Timeout:         tt.timeout,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r, err := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
-			require.NoError(t, err)
+			r := translator.createRouteFromRDC("GET|/api/v1.0/items|", rdcRoute, rdc)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantTimeout, r.GetRoute().GetTimeout().AsDuration(), "route timeout")
 			assert.Equal(t, tt.wantIdle, r.GetRoute().GetIdleTimeout().AsDuration(), "route idle timeout")
@@ -887,8 +885,7 @@ func TestTranslator_MCPUpstreamRewriteFromRDC(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r, err := translator.createRouteFromRDC("POST|"+tt.fullPath+"|", rdcRoute, rdc)
-			require.NoError(t, err)
+			r := translator.createRouteFromRDC("POST|"+tt.fullPath+"|", rdcRoute, rdc)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -948,8 +945,7 @@ func TestTranslator_MCPAppendResourcePathToBackend(t *testing.T) {
 				AutoHostRewrite: true,
 				Upstream:        models.RouteUpstream{ClusterKey: "main"},
 			}
-			r, err := translator.createRouteFromRDC("POST|"+tt.context+mcpPath+"|", rdcRoute, rdc)
-			require.NoError(t, err)
+			r := translator.createRouteFromRDC("POST|"+tt.context+mcpPath+"|", rdcRoute, rdc)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantUpstream, applyEnvoyRewrite(t, r, tt.request))
 		})
@@ -977,8 +973,7 @@ func TestTranslator_ExactPathUsesNativeMatcher(t *testing.T) {
 		PathMatchType: "Exact",
 		Upstream:      models.RouteUpstream{ClusterKey: "main"},
 	}
-	r, err := translator.createRouteFromRDC("GET|/match/exact|", rdcRoute, rdc)
-	require.NoError(t, err)
+	r := translator.createRouteFromRDC("GET|/match/exact|", rdcRoute, rdc)
 	require.NotNil(t, r)
 	pathSpec, ok := r.GetMatch().GetPathSpecifier().(*route.RouteMatch_Path)
 	require.True(t, ok, "exact path should use RouteMatch_Path, got %T", r.GetMatch().GetPathSpecifier())
@@ -2750,8 +2745,7 @@ func TestTranslator_CreateRouteFromRDC_HTTPRouteMetadata(t *testing.T) {
 		Upstream:        models.RouteUpstream{ClusterKey: "main"},
 	}
 
-	r, err := translator.createRouteFromRDC("GET|/pets/v1.0/{id}|", rdcRoute, rdc)
-	require.NoError(t, err)
+	r := translator.createRouteFromRDC("GET|/pets/v1.0/{id}|", rdcRoute, rdc)
 	require.NotNil(t, r)
 	require.NotNil(t, r.Metadata)
 
@@ -3170,8 +3164,7 @@ func TestBuildMatchHeaders_HeaderMatchersRendered(t *testing.T) {
 			{Name: "X-Flavor", Type: "RegularExpression", Value: "red|blue"},
 		},
 	}
-	r, err := translator.createRouteFromRDC("GET|/svc/v1/things|main.local|abc123", route1, rdc)
-	require.NoError(t, err)
+	r := translator.createRouteFromRDC("GET|/svc/v1/things|main.local|abc123", route1, rdc)
 	require.NotNil(t, r)
 
 	var version, flavor *route.HeaderMatcher
