@@ -2002,7 +2002,7 @@ func validProviderWithResilience(r *api.Resilience) api.LLMProviderConfiguration
 	}
 }
 
-func validProxyWithResilience(r *api.Resilience) api.LLMProxyConfiguration {
+func validProxyWithResilience(r *api.LLMResilience) api.LLMProxyConfiguration {
 	return api.LLMProxyConfiguration{
 		ApiVersion: api.LLMProxyConfigurationApiVersionGatewayApiPlatformWso2Comv1,
 		Kind:       api.LLMProxyConfigurationKindLlmProxy,
@@ -2164,7 +2164,7 @@ func TestValidateLLMProxy_Resilience(t *testing.T) {
 	validator := NewLLMValidator()
 
 	t.Run("valid timeout", func(t *testing.T) {
-		errs := validator.Validate(validProxyWithResilience(&api.Resilience{Timeout: stringPtr("75s")}))
+		errs := validator.Validate(validProxyWithResilience(&api.LLMResilience{Timeout: stringPtr("75s")}))
 		assert.Empty(t, errs)
 	})
 
@@ -2174,12 +2174,12 @@ func TestValidateLLMProxy_Resilience(t *testing.T) {
 	})
 
 	t.Run("malformed timeout is rejected", func(t *testing.T) {
-		errs := validator.Validate(validProxyWithResilience(&api.Resilience{Timeout: stringPtr("fast")}))
+		errs := validator.Validate(validProxyWithResilience(&api.LLMResilience{Timeout: stringPtr("fast")}))
 		assertHasFieldError(t, errs, "spec.resilience.timeout")
 	})
 
 	t.Run("negative idleTimeout is rejected", func(t *testing.T) {
-		errs := validator.Validate(validProxyWithResilience(&api.Resilience{IdleTimeout: stringPtr("-1s")}))
+		errs := validator.Validate(validProxyWithResilience(&api.LLMResilience{IdleTimeout: stringPtr("-1s")}))
 		assertHasFieldError(t, errs, "spec.resilience.idleTimeout")
 	})
 }

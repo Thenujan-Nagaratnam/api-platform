@@ -3068,6 +3068,96 @@ components:
           pattern: '^\d+(\.\d+)?(ms|s|m|h)$'
           example: 5s
 
+    LLMFailoverTarget:
+      type: object
+      required:
+        - model
+      description: >
+        One attempt slot in a failover chain: which model to send, and
+        optionally which provider to send it to. Omitting provider means the
+        LlmProxy's primary provider.
+      properties:
+        model:
+          type: string
+          minLength: 1
+          description: Model name to send for this attempt.
+          example: gpt-4o
+        provider:
+          type: string
+          description: >
+            Must match an additionalProviders[].as (or .id when as is
+            omitted), or be omitted to mean the LlmProxy's primary provider.
+          minLength: 1
+          example: anthropic-upstream
+
+    LLMFailoverTargetEntry:
+      type: object
+      required:
+        - target
+        - fallbacks
+      description: >
+        One client-requested model's own failover chain: its primary attempt
+        plus an ordered list of fallbacks tried in order if the primary (or
+        an earlier fallback) fails within the same request.
+      properties:
+        target:
+          $ref: '#/components/schemas/LLMFailoverTarget'
+        fallbacks:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/LLMFailoverTarget'
+
+    LLMFailoverConfig:
+      type: object
+      required:
+        - targets
+      description: >
+        Declares genuine mid-request failover: if the request's target model
+        fails, Envoy itself retries the SAME request against the next
+        fallback, re-signed and re-transformed for that fallback's provider.
+      properties:
+        targets:
+          type: array
+          minItems: 1
+          description: >
+            One entry per client-requestable model this proxy protects with
+            failover. A request whose model matches no entry here is
+            unaffected by this block and uses the proxy's normal primary
+            provider.
+          items:
+            $ref: '#/components/schemas/LLMFailoverTargetEntry'
+        suspendDuration:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >
+            Seconds a target is skipped for new requests after it fails.
+            0 disables suspension tracking entirely (a request can still
+            fail over mid-request; it just won't be pre-emptively skipped
+            on the next one).
+          example: 900
+
+    LLMResilience:
+      type: object
+      description: >
+        LlmProxy-only resilience: the same timeout/idleTimeout every other
+        kind's Resilience carries, plus failover. Not used by RestApi,
+        McpProxy, or LlmProvider — those keep the shared Resilience schema.
+      properties:
+        timeout:
+          type: string
+          description: Maximum time for the entire route (request to upstream response). "0s" disables the timeout.
+          pattern: '^\d+(\.\d+)?(ms|s|m|h)$'
+          example: 15s
+        idleTimeout:
+          type: string
+          description: Per-route stream idle timeout (overrides the listener stream idle timeout for this route). "0s" disables the timeout.
+          pattern: '^\d+(\.\d+)?(ms|s|m|h)$'
+          example: 0s
+        failover:
+          $ref: '#/components/schemas/LLMFailoverConfig'
+
     Resilience:
       type: object
       description: >
@@ -4893,7 +4983,7 @@ components:
           default: deployed
           example: deployed
         resilience:
-          $ref: '#/components/schemas/Resilience'
+          $ref: '#/components/schemas/LLMResilience'
           description: >
             API-level backend/route timeout configuration. Applies to all routes generated
             for this LLM Proxy (the routes that forward traffic upstream). Supported at the
