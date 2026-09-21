@@ -55,17 +55,36 @@ applied at chain-build time in all three builders (`kernel/xds.go`,
 is set. The wrapper:
 
 - reports every downstream mode as skip and does **not** implement
-  `RequestPolicy`/`ResponsePolicy`, so the downstream executors never run it;
-- implements `UpstreamRequestPolicy`/`UpstreamResponsePolicy` by delegating to
-  the inner policy's `OnRequestBody`/`OnResponseBody` with a `RequestContext`/
-  `ResponseContext` built from the attempt's existing fields;
-- returns the inner policy's action unchanged — `UpstreamRequestModifications`/
-  `DownstreamResponseModifications` already satisfy both action interfaces, so
-  the existing `applyUpstream*Modifications` accumulation applies as-is.
+  `RequestPolicy`/`ResponsePolicy`/`RequestHeaderPolicy`/`ResponseHeaderPolicy`,
+  so the downstream executors never run it;
+- implements `UpstreamRequestPolicy`/`UpstreamResponsePolicy` (both
+  pre-existing) by delegating to the inner policy's
+  `OnRequestBody`/`OnResponseBody` with a `RequestContext`/`ResponseContext`
+  built from the attempt's existing fields;
+- for a policy with **no body-phase interface** (e.g. `set-headers`,
+  `oauth2-generator` — header-only), delegates instead to
+  `OnRequestHeaders`/`OnResponseHeaders` (also pre-existing interfaces) and
+  converts the returned `RequestHeaderAction`/`ResponseHeaderAction` into the
+  equivalent `RequestAction`/`ResponseAction` (`UpstreamRequestHeaderModifications`
+  and `UpstreamRequestModifications` share the same header-mutation fields, as
+  do their response counterparts). There is no separate upstream header phase
+  in Envoy or the kernel: header mutations reach Envoy via the same body-phase
+  `HeaderMutation` that `upstream_extproc.go` already sends for any other
+  upstream-attached policy's action. A policy implementing both interfaces
+  runs only its body phase upstream.
+- returns the inner policy's (possibly converted) action unchanged —
+  `UpstreamRequestModifications`/`DownstreamResponseModifications` already
+  satisfy both action interfaces, so the existing `applyUpstream*Modifications`
+  accumulation applies as-is.
 
-Because the wrapper presents itself through the upstream interfaces, the
-existing executor, `RequiresUpstreamRequest/Response` chain flags and
-`upstream_extproc.go` need no changes.
+No new SDK interfaces and no new `ProcessingMode` fields were added for this:
+participation is decided entirely from the four pre-existing fields
+(`RequestHeaderMode`, `RequestBodyMode`, `ResponseHeaderMode`,
+`ResponseBodyMode`) on the inner policy, and the wrapper reports through
+`UpstreamRequestMode`/`UpstreamResponseMode` (also pre-existing) exactly as
+the body-only case already did. Because the wrapper presents itself only
+through the upstream interfaces, the existing executor, `RequiresUpstreamRequest/Response`
+chain flags and `upstream_extproc.go` need no changes.
 
 ### Accepted lossiness
 A policy attached via `upstreamPolicies` receives zero-valued `Authority`,
@@ -76,9 +95,6 @@ a snapshot of the real upstream response headers. Such a policy must not depend
 on these. `executionCondition` is not evaluated upstream.
 
 ## Non-goals / known gaps
-- **Header-phase policies** (e.g. `set-headers`) cannot run upstream: no
-  upstream header-phase interface exists. The wrapper logs a warning at chain
-  build and the policy never runs. Separate future work.
 - Chains built via `kernel/body_mode.go` from `PolicySpec` (protocol-resolver
   composed chains) do not carry the flag; not used by LLM kinds.
 - Existing native upstream policies (`openai-to-anthropic-transformer`,
@@ -91,7 +107,10 @@ on these. `executionCondition` is not evaluated upstream.
   `RequestPolicy`/`ResponsePolicy`) wrapped via `WrapUpstreamAttached` is
   invisible to the downstream interfaces/modes, runs through
   `ExecuteUpstreamRequestPolicies`/`ExecuteUpstreamResponsePolicies`, and its
-  mutations accumulate; a header-only policy gets no upstream phase.
+  mutations accumulate; a header-only policy (only `RequestHeaderPolicy`/
+  `ResponseHeaderPolicy`) runs via the same upstream body-phase interfaces,
+  with its header mutations converted and applied; a policy with neither
+  phase gets no upstream phase and logs a warning.
 - `utils/llm_provider_transformer_test.go`: `operationPolicies` and
   `upstreamPolicies` entries for the same policy/path yield one unflagged and
   one `upstream: true` operation policy.
