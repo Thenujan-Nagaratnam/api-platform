@@ -69,11 +69,11 @@ replace github.com/wso2/api-platform/common => ../../../common
 
 replace github.com/wso2/api-platform/httpkit => ../../../httpkit
 
-// TEMPORARY, for local Docker build verification of the unpublished upstream-
-// scoped-policy-execution SDK changes (UpstreamRequestPolicy/UpstreamResponsePolicy/
-// UpstreamAttemptContext). Must be removed once sdk/core is tagged with these
-// changes and the require above is bumped to that version — do not merge with
-// this replace in place.
+// TEMPORARY, for local Docker build verification of the unreleased
+// UpstreamRequestContext.RouteCluster and UpstreamResponseContext.RouteCluster
+// fields (Task 1 of the model-failover policy implementation). Must be removed
+// once sdk/core is tagged with these fields and the require above is bumped to
+// that version — do not merge with this replace in place.
 replace github.com/wso2/api-platform/sdk/core => ../../../sdk/core
 
 // TEMPORARY, local dev-only override for live upstream-ext_proc testing.
