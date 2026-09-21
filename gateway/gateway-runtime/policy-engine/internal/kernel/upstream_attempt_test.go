@@ -30,7 +30,7 @@ import (
 func TestBuildUpstreamAttemptContext_SeedsBodyFromOriginal(t *testing.T) {
 	original := []byte(`{"model":"gpt-4o"}`)
 
-	attemptCtx := BuildUpstreamAttemptContext(original, map[string][]string{"content-type": {"application/json"}}, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions", false)
+	attemptCtx := BuildUpstreamAttemptContext(original, map[string][]string{"content-type": {"application/json"}}, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions", false, "", "", 0)
 
 	require.NotNil(t, attemptCtx)
 	assert.Equal(t, "openai-primary", attemptCtx.Name)
@@ -40,6 +40,18 @@ func TestBuildUpstreamAttemptContext_SeedsBodyFromOriginal(t *testing.T) {
 	require.NotNil(t, attemptCtx.Body)
 	assert.Equal(t, original, attemptCtx.Body.Content)
 	assert.False(t, attemptCtx.IsRetry)
+	assert.Empty(t, attemptCtx.ResolvedModel)
+	assert.Empty(t, attemptCtx.ResolvedProvider)
+}
+
+func TestBuildUpstreamAttemptContext_SetsResolvedModelAndProviderForFailoverAttempt(t *testing.T) {
+	original := []byte(`{"model":"gpt-4o"}`)
+
+	attemptCtx := BuildUpstreamAttemptContext(original, nil, "anthropic-upstream-cluster", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", true, "claude-3-5-sonnet-20241022", "anthropic-upstream", 0)
+
+	require.NotNil(t, attemptCtx)
+	assert.Equal(t, "claude-3-5-sonnet-20241022", attemptCtx.ResolvedModel)
+	assert.Equal(t, "anthropic-upstream", attemptCtx.ResolvedProvider)
 }
 
 func TestBuildUpstreamAttemptContext_RetryUsesOriginalNotPreviousOutput(t *testing.T) {
@@ -48,12 +60,12 @@ func TestBuildUpstreamAttemptContext_RetryUsesOriginalNotPreviousOutput(t *testi
 	// Attempt 1 goes to the primary and its transformer mutates the working
 	// body (simulated here — the point under test is that this mutation
 	// never leaks into how a later attempt is built).
-	attempt1 := BuildUpstreamAttemptContext(original, nil, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions", false)
+	attempt1 := BuildUpstreamAttemptContext(original, nil, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions", false, "", "", 0)
 	attempt1.Body.Content = []byte(`{"totally":"different, mutated by attempt 1's transformer"}`)
 
 	// Attempt 2 (the fallback, a different provider) must be built fresh from
 	// the SAME cached original bytes — never from attempt1's mutated Body.
-	attempt2 := BuildUpstreamAttemptContext(original, nil, "anthropic-fallback", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", true)
+	attempt2 := BuildUpstreamAttemptContext(original, nil, "anthropic-fallback", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", true, "", "", 0)
 
 	assert.Equal(t, "anthropic-fallback", attempt2.Name)
 	assert.True(t, attempt2.IsRetry)
@@ -69,7 +81,7 @@ func TestBuildUpstreamAttemptContext_SharedContextIsNeverNil(t *testing.T) {
 	// upstream-phase signing attempt. UpstreamAttemptContext embeds
 	// *SharedContext, so it must always be a real, usable pointer, mirroring
 	// every other per-request context the kernel builds.
-	attemptCtx := BuildUpstreamAttemptContext([]byte(`{}`), nil, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions", false)
+	attemptCtx := BuildUpstreamAttemptContext([]byte(`{}`), nil, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions", false, "", "", 0)
 
 	require.NotNil(t, attemptCtx.SharedContext)
 	assert.NotPanics(t, func() {
@@ -81,10 +93,16 @@ func TestBuildUpstreamAttemptContext_SharedContextIsNeverNil(t *testing.T) {
 	})
 }
 
+func TestBuildUpstreamAttemptContext_SetsResponseStatusCode(t *testing.T) {
+	attemptCtx := BuildUpstreamAttemptContext([]byte(`{}`), nil, "anthropic-upstream-cluster", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", true, "claude-3-5-sonnet-20241022", "anthropic-upstream", 500)
+
+	assert.Equal(t, 500, attemptCtx.ResponseStatusCode)
+}
+
 func TestBuildUpstreamAttemptContext_OriginalSliceNotAliasedByBody(t *testing.T) {
 	original := []byte(`{"model":"gpt-4o"}`)
 
-	attemptCtx := BuildUpstreamAttemptContext(original, nil, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions", false)
+	attemptCtx := BuildUpstreamAttemptContext(original, nil, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions", false, "", "", 0)
 
 	// Mutating Body.Content (as a transformer policy would, via
 	// UpstreamRequestModifications.Body) must never mutate the byte slice a

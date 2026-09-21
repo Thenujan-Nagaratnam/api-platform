@@ -20,6 +20,7 @@ package kernel
 
 import (
 	"testing"
+	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -32,6 +33,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/executor"
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/registry"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
 // =============================================================================
@@ -1049,4 +1051,127 @@ func TestTranslateRequestHeaderActionsWithBodyMerge_DynamicEndpoint(t *testing.T
 		assert.Equal(t, "/alternate", extProc.Fields["target_upstream_base_path"].GetStringValue())
 		assert.NotContains(t, extProc.Fields, "request_transformation.target_path")
 	})
+}
+
+// =============================================================================
+// applyFailoverRouting / translateRequestActionsCore failover tests
+// =============================================================================
+
+// failoverTargetsForTest builds one declared failover target — gpt-4o on the
+// primary (openai), falling back to Claude on Anthropic — matching the shape
+// resolveBackend's own tests use, so the two suites stay consistent.
+func failoverTargetsForTest() []FailoverTarget {
+	return []FailoverTarget{
+		{
+			AggregateCluster: "failover_agg_chat_0",
+			Model:            "gpt-4o",
+			Chain: []FailoverChainEntry{
+				{
+					Model:    "gpt-4o",
+					Provider: "openai-provider",
+					Upstream: policyenginev1.UpstreamInfo{ClusterName: "openai-provider-cluster", URL: "https://api.openai.com/v1", BasePath: "/v1"},
+				},
+				{
+					Model:    "claude-3-5-sonnet-20241022",
+					Provider: "anthropic-upstream",
+					Upstream: policyenginev1.UpstreamInfo{ClusterName: "anthropic-upstream-cluster", URL: "https://api.anthropic.com/v1", BasePath: "/v1"},
+				},
+			},
+		},
+	}
+}
+
+func targetUpstreamHeaderValue(t *testing.T, rsl *RequestTranslationResult) string {
+	t.Helper()
+	require.NotNil(t, rsl.HeaderMutation)
+	for _, h := range rsl.HeaderMutation.SetHeaders {
+		if h.Header.Key == constants.TargetUpstreamHeader {
+			return string(h.Header.RawValue)
+		}
+	}
+	return ""
+}
+
+func newFailoverExecCtx(t *testing.T, routeKey string, body []byte) (*PolicyExecutionContext, *Kernel) {
+	t.Helper()
+	kernel := NewKernel()
+	chainExecutor := executor.NewChainExecutor(nil, nil, nil)
+	server := NewExternalProcessorServer(kernel, chainExecutor, config.TracingConfig{}, "", testMaxDecompressedBytes, testMaxDecompressedBytes)
+
+	chain := &registry.PolicyChain{}
+	execCtx := newPolicyExecutionContext(server, routeKey, chain)
+	execCtx.sharedCtx = &policy.SharedContext{}
+	execCtx.requestBodyCtx = &policy.RequestContext{
+		Path:          "/proxy/chat/completions",
+		SharedContext: execCtx.sharedCtx,
+		Body:          &policy.Body{Content: body, Present: len(body) > 0, EndOfStream: true},
+	}
+	execCtx.failoverTargets = failoverTargetsForTest()
+	return execCtx, kernel
+}
+
+func TestApplyFailoverRouting_ModelMatch_RoutesToAggregateCluster(t *testing.T) {
+	execCtx, _ := newFailoverExecCtx(t, "chat-route", []byte(`{"model":"gpt-4o"}`))
+
+	rsl, err := translateRequestActionsCore(&executor.RequestExecutionResult{}, execCtx)
+
+	require.NoError(t, err)
+	assert.Equal(t, "failover_agg_chat_0", targetUpstreamHeaderValue(t, rsl))
+	// TargetUpstreamNameKey is written onto execCtx's persistent dynamicMetadata
+	// (carried across phases), not into the per-call result's DynamicMetadata —
+	// see applyUpstreamRedirect.
+	assert.Equal(t, "openai-provider", execCtx.dynamicMetadata[constants.ExtProcFilterName][constants.TargetUpstreamNameKey])
+}
+
+func TestApplyFailoverRouting_NoModelMatch_LeavesDefaultUpstreamUnchanged(t *testing.T) {
+	execCtx, _ := newFailoverExecCtx(t, "chat-route", []byte(`{"model":"some-other-model"}`))
+	execCtx.defaultUpstreamCluster = "plain-default-cluster"
+
+	rsl, err := translateRequestActionsCore(&executor.RequestExecutionResult{}, execCtx)
+
+	require.NoError(t, err)
+	assert.Equal(t, "plain-default-cluster", targetUpstreamHeaderValue(t, rsl))
+}
+
+func TestApplyFailoverRouting_SuspendedPrimary_RoutesDirectlyToFirstNonSuspendedFallback(t *testing.T) {
+	execCtx, kernel := newFailoverExecCtx(t, "chat-route", []byte(`{"model":"gpt-4o"}`))
+	kernel.suspension.Suspend(suspensionKey("chat-route", "gpt-4o", "openai-provider"), time.Minute)
+
+	rsl, err := translateRequestActionsCore(&executor.RequestExecutionResult{}, execCtx)
+
+	require.NoError(t, err)
+	assert.Equal(t, "anthropic-upstream-cluster", targetUpstreamHeaderValue(t, rsl))
+	assert.Equal(t, "anthropic-upstream", execCtx.dynamicMetadata[constants.ExtProcFilterName][constants.TargetUpstreamNameKey])
+}
+
+func TestApplyFailoverRouting_EveryEntrySuspended_FallsBackToAggregate(t *testing.T) {
+	execCtx, kernel := newFailoverExecCtx(t, "chat-route", []byte(`{"model":"gpt-4o"}`))
+	kernel.suspension.Suspend(suspensionKey("chat-route", "gpt-4o", "openai-provider"), time.Minute)
+	kernel.suspension.Suspend(suspensionKey("chat-route", "claude-3-5-sonnet-20241022", "anthropic-upstream"), time.Minute)
+
+	rsl, err := translateRequestActionsCore(&executor.RequestExecutionResult{}, execCtx)
+
+	require.NoError(t, err)
+	assert.Equal(t, "failover_agg_chat_0", targetUpstreamHeaderValue(t, rsl))
+}
+
+func TestApplyFailoverRouting_NoFailoverTargets_Noop(t *testing.T) {
+	execCtx, _ := newFailoverExecCtx(t, "chat-route", []byte(`{"model":"gpt-4o"}`))
+	execCtx.failoverTargets = nil
+	execCtx.defaultUpstreamCluster = "plain-default-cluster"
+
+	rsl, err := translateRequestActionsCore(&executor.RequestExecutionResult{}, execCtx)
+
+	require.NoError(t, err)
+	assert.Equal(t, "plain-default-cluster", targetUpstreamHeaderValue(t, rsl))
+}
+
+func TestApplyFailoverRouting_UnparseableBody_Noop(t *testing.T) {
+	execCtx, _ := newFailoverExecCtx(t, "chat-route", []byte(`not json`))
+	execCtx.defaultUpstreamCluster = "plain-default-cluster"
+
+	rsl, err := translateRequestActionsCore(&executor.RequestExecutionResult{}, execCtx)
+
+	require.NoError(t, err)
+	assert.Equal(t, "plain-default-cluster", targetUpstreamHeaderValue(t, rsl))
 }

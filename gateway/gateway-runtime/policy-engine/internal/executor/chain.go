@@ -897,6 +897,9 @@ func (c *ChainExecutor) ExecuteUpstreamResponsePolicies(
 				span.End()
 				break
 			}
+			if mods, ok := action.(policy.DownstreamResponseModifications); ok {
+				applyUpstreamResponseModifications(upCtx, &mods)
+			}
 		}
 
 		result.FinalAction = action
@@ -905,6 +908,42 @@ func (c *ChainExecutor) ExecuteUpstreamResponsePolicies(
 
 	result.TotalExecutionTime = time.Since(startTime)
 	return result, nil
+}
+
+// applyUpstreamResponseModifications threads a policy's header/body/status
+// mutations into upCtx so both the next policy in the same attempt's chain
+// and, ultimately, the kernel building the actual ext_proc response observe
+// the FULL chain's combined effect — mirroring applyUpstreamRequestModifications,
+// which the request-phase counterpart needed for the identical reason: reading
+// only the last-executed policy's own returned action silently drops an
+// earlier policy's mutations (e.g. a transformer's translated body) once a
+// later policy in the same chain runs and returns its own, narrower action.
+func applyUpstreamResponseModifications(ctx *policy.UpstreamAttemptContext, mods *policy.DownstreamResponseModifications) {
+	if ctx.Headers != nil {
+		headers := ctx.Headers.UnsafeInternalValues()
+		if mods.HeadersToSet != nil {
+			for key, value := range mods.HeadersToSet {
+				headers[key] = []string{value}
+			}
+		}
+		if mods.HeadersToRemove != nil {
+			for _, key := range mods.HeadersToRemove {
+				delete(headers, key)
+			}
+		}
+	}
+
+	if mods.Body != nil {
+		ctx.Body = &policy.Body{
+			Content:     mods.Body,
+			EndOfStream: true,
+			Present:     true,
+		}
+	}
+
+	if mods.StatusCode != nil {
+		ctx.ResponseStatusOverride = mods.StatusCode
+	}
 }
 
 // applyUpstreamRequestModifications threads a policy's body/header mutations
@@ -931,6 +970,17 @@ func applyUpstreamRequestModifications(ctx *policy.UpstreamAttemptContext, mods 
 			EndOfStream: true,
 			Present:     true,
 		}
+	}
+
+	// Accumulate onto ctx.Path the same way Body is accumulated onto ctx.Body
+	// above: a policy earlier in the chain (e.g. a transformer) may set Path,
+	// then a later policy (e.g. an auth signer) runs without touching it —
+	// without this, only the last policy that happened to also set Path would
+	// survive into the chain's final state, silently dropping an earlier
+	// policy's path rewrite whenever a later policy's own action doesn't
+	// repeat it.
+	if mods.Path != nil {
+		ctx.Path = *mods.Path
 	}
 }
 

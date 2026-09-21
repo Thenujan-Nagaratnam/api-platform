@@ -34,11 +34,22 @@ import (
 // original into Body, so a policy's in-place mutation of this attempt's
 // working body (or of the returned context generally) can never corrupt the
 // caller's cached original slice for a subsequent attempt.
+// model and provider identify which model/provider this attempt represents
+// for a route resolved from a declared resilience.failover chain — both
+// empty for every other resolution path, which leaves
+// UpstreamAttemptContext.ResolvedModel/ResolvedProvider empty exactly as
+// before this parameter pair existed.
+//
+// statusCode is meaningful only for a response-phase build (the caller
+// passes 0 at the request phase, before any response exists) — it becomes
+// UpstreamAttemptContext.ResponseStatusCode.
 func BuildUpstreamAttemptContext(
 	original []byte,
 	headers map[string][]string,
 	backendName, backendURL, basePath, method, outboundPath string,
 	isRetry bool,
+	model, provider string,
+	statusCode int,
 ) *policy.UpstreamAttemptContext {
 	bodyCopy := make([]byte, len(original))
 	copy(bodyCopy, original)
@@ -52,9 +63,12 @@ func BuildUpstreamAttemptContext(
 			URL:      backendURL,
 			BasePath: basePath,
 		},
-		Method:  method,
-		Path:    outboundPath,
-		Headers: policy.NewHeaders(headers),
+		ResolvedModel:      model,
+		ResolvedProvider:   provider,
+		Method:             method,
+		Path:               outboundPath,
+		Headers:            policy.NewHeaders(headers),
+		ResponseStatusCode: statusCode,
 		Body: &policy.Body{
 			Content:     bodyCopy,
 			EndOfStream: true,
