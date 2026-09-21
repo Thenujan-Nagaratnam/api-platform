@@ -68,6 +68,17 @@ type UpstreamAttemptContext struct {
 	*SharedContext
 	*UpstreamRequestContext
 
+	// ResolvedModel and ResolvedProvider identify which model/provider this
+	// specific attempt represents, for a route whose upstream was resolved
+	// from a declared resilience.failover chain (see gateway-runtime's
+	// UpstreamExternalProcessorServer.resolveBackend). Both are empty for an
+	// attempt resolved any other way (a route's plain DefaultUpstream, the
+	// global cluster index, or the :authority fallback) — a policy checking
+	// ResolvedProvider before branching its transform direction naturally
+	// no-ops on every non-failover route without an extra feature flag.
+	ResolvedModel    string
+	ResolvedProvider string
+
 	// Method and Path are this attempt's resolved outbound request line — the
 	// method/path that will actually be dialed against this backend (already
 	// combined with the backend's BasePath and any earlier routing mutation),
@@ -102,6 +113,26 @@ type UpstreamAttemptContext struct {
 	// backend already failed. Set from genuine per-invocation state, not
 	// inferred from an Envoy attempt-count header.
 	IsRetry bool
+
+	// ResponseStatusCode is this attempt's upstream HTTP response status,
+	// valid only from UpstreamResponsePolicy.OnUpstreamResponseBody — always
+	// 0 during the request phase (OnUpstreamRequestBody), since no response
+	// exists yet. A response-shape-translating policy (e.g. an OpenAI ->
+	// Anthropic transformer choosing between its success and error response
+	// shape) reads this rather than inspecting Body for a heuristic
+	// error/success marker.
+	ResponseStatusCode int
+
+	// ResponseStatusOverride is the OUTPUT counterpart to ResponseStatusCode:
+	// nil leaves the real upstream status code unchanged; the kernel sets it
+	// from the accumulated DownstreamResponseModifications.StatusCode of
+	// every response-phase policy that ran in this attempt's chain (last
+	// non-nil write wins, mirroring HeadersToSet semantics), then applies it
+	// to the response actually sent downstream. Policies never set this
+	// directly — it exists on this struct only so the kernel can accumulate
+	// it across the whole chain the same way it does Headers/Body, rather
+	// than reading only the last-executed policy's own returned action.
+	ResponseStatusOverride *int
 }
 
 // UpstreamResponseContext identifies the route's resolved upstream target during
