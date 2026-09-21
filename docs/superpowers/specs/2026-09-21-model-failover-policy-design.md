@@ -62,9 +62,19 @@ operationPolicies:
       suspendDuration: 900
 ```
 
+That's the *author-facing* shape — what an operator (or the LlmProxy transformer, if this stays
+generated from higher-level provider config rather than hand-written) writes. The controller expands
+it before attaching: each `targets[]` entry gets an `aggregateCluster` field injected with the exact
+name the controller assigned that entry's `envoy.clusters.aggregate` cluster in §5 — the *same* params
+map is used for both the `operationPolicies:` and `upstreamPolicies:` attachments, so `model-failover`
+never needs to compute or guess a cluster name; it only ever reads one it was handed. This removes the
+"two independently-written naming schemes must agree" risk entirely — there is exactly one source of
+truth (the controller), and matching in §6 is a plain string comparison against `params`, not a
+recomputation.
+
 Same validation rules as before (`provider` must resolve to `additionalProviders[].as`/`.id` or the
 primary; deploy-time error otherwise). The policy is also attached under `upstreamPolicies:` with the
-*same instance* — the controller synthesizes this second attachment automatically when it sees
+*same expanded params* — the controller synthesizes this second attachment automatically when it sees
 `model-failover` under `operationPolicies:`, the same way it already synthesizes provider-scoped
 `upstreamPolicies:` attachments for credential/transform policies (§6).
 
@@ -91,7 +101,8 @@ field: when a route has a `model-failover` `PolicyInstance` attached, the contro
 - One real cluster per distinct `{model, provider}` pair referenced in `targets`, if one doesn't
   already exist from normal provider/`additionalProviders` cluster creation.
 - One `envoy.clusters.aggregate` cluster per `targets[]` entry, deterministically named
-  (`failover_agg_<routeKey-hash>_<index>`), members in priority order.
+  (`failover_agg_<routeKey-hash>_<index>`), members in priority order — this same name is written back
+  into that entry's `aggregateCluster` param (§3) before the policy instance is attached.
 - `retry_policy: { retry_on: "5xx", retry_priority: previous_priorities }`, `auto_host_rewrite: true`,
   `include_attempt_count_in_request: true` on the route.
 - The upstream ext_proc filter attached to each aggregate cluster.
@@ -140,9 +151,8 @@ point already exists, this only means preserving the pre-substitution value inst
 
 Attached via `upstreamPolicies:` (§3), `model-failover`'s `OnRequestHeaders`:
 
-1. Matches `reqCtx.Upstream.RouteCluster` against its own `params.targets[]`'s assigned aggregate
-   cluster names (deterministically computable from the same naming scheme the controller uses in §5 —
-   `model-failover` and the controller must agree on this scheme; see open items).
+1. Matches `reqCtx.Upstream.RouteCluster` against its own `params.targets[].aggregateCluster` (the name
+   the controller injected — §3) with a plain string comparison. No independent computation.
 2. No match → no-op (this attempt isn't on a chain this instance owns).
 3. On a match, reads `x-envoy-attempt-count` from `reqCtx.Headers`. `index = max(attemptCount, 1) - 1`.
    `index == 0` → the entry's `target`; `index >= 1` → `fallbacks[index-1]`; past the end → no-op
@@ -203,8 +213,16 @@ covers upstream-attached entries. This is a pure, self-contained addition — no
 **Ordering requirement:** `model-failover`'s `upstreamPolicies:` instance must execute before the
 provider-scoped credential/transform instances in `chain.UpstreamPolicies`, so the metadata it writes
 exists when their conditions are checked — same requirement `llm-header-router` already has downstream.
-The controller must attach `model-failover`'s upstream instance first in attachment order (array order
-in the synced config determines execution order, same as today).
+
+Verified this session: ordering in this whole pipeline is pure Go code-execution order, not a
+role-aware sort — `llm-header-router`'s downstream ordering works today only because it's attached via
+a code block (`collectOperationLevelLLMPolicies`/`orderedLLMPolicyAttachments` in
+`llm_transformer.go`) that appends before the separate loops building the provider-scoped
+`transformerPolicies`/`upstreamAuthPolicies` attachments later in the same function. The one sort that
+exists (`shouldAttachPathBefore`) never touches the provider-scoped policies at all, so it can't
+reorder them relative to the router. `model-failover`'s `upstreamPolicies:` instance must be appended
+by a code block that runs before the loop(s) building the provider-scoped `upstreamPolicies:`
+attachments — the same pattern, nothing new required in the executor or the SDK for this.
 
 ## 10. What this removes from the kernel
 
@@ -228,21 +246,8 @@ in the synced config determines execution order, same as today).
   follow-up.
 - Cross-replica shared suspension state.
 
-## Open items carried into implementation planning
+## Open items
 
-1. **Aggregate cluster naming agreement.** `model-failover` must compute the same deterministic
-   aggregate-cluster name the controller assigns (§5/§6) purely from its own params + route identity,
-   with no side-channel sync — needs a naming scheme both sides can derive independently (e.g. a pure
-   function of `routeKey`/policy-instance-identity + `targets[]` index), not a hash the controller
-   invents and never communicates.
-2. **Does `model-failover` need `routeKey` at all**, or is matching purely on `RouteCluster` against its
-   own params sufficient? (Probably yes — the per-route uniqueness lives in the cluster name, which
-   already encodes it.)
-3. **Attachment-order guarantee.** Confirm `orderedLLMPolicyAttachments` (or its successor) has a
-   deterministic way to force `model-failover` first among `upstreamPolicies:` entries, not just an
-   accident of iteration order.
-4. **Downstream suspension check needs body access before routing.** `model-failover`'s downstream
-   role reads the body (to parse `model`) *and* needs to decide `UpstreamName` before the body-phase
-   action returns — confirm this fits `RequestPolicy.OnRequestBody`'s existing single-pass shape
-   cleanly (it should; `openai-to-anthropic-transformer` already does body-parse + `UpstreamName` in one
-   `OnRequestBody` today).
+None outstanding. Aggregate-cluster naming, attachment ordering, and the downstream body+routing shape
+were all verified against the existing codebase this session (§3, §9, §4) — see each section for the
+resolution and citations.
