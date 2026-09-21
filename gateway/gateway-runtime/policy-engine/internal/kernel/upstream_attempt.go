@@ -58,6 +58,7 @@ func NewUpstreamAttemptSharedContext(model, provider string) *policy.SharedConte
 // mutations from this phase are visible there.
 func BuildUpstreamAttemptRequestHeaderContext(
 	shared *policy.SharedContext,
+	rawClusterName string,
 	headers *policy.Headers,
 	backendName, backendURL, basePath, method, outboundPath string,
 ) *policy.RequestHeaderContext {
@@ -66,7 +67,7 @@ func BuildUpstreamAttemptRequestHeaderContext(
 		Headers:       headers,
 		Path:          outboundPath,
 		Method:        method,
-		Upstream:      &policy.UpstreamRequestContext{Name: backendName, URL: backendURL, BasePath: basePath},
+		Upstream:      &policy.UpstreamRequestContext{Name: backendName, URL: backendURL, BasePath: basePath, RouteCluster: rawClusterName},
 	}
 }
 
@@ -79,6 +80,7 @@ func BuildUpstreamAttemptRequestHeaderContext(
 // corrupt the caller's cached slice for a later attempt.
 func BuildUpstreamAttemptRequestContext(
 	shared *policy.SharedContext,
+	rawClusterName string,
 	headers *policy.Headers,
 	original []byte,
 	backendName, backendURL, basePath, method, outboundPath string,
@@ -96,7 +98,7 @@ func BuildUpstreamAttemptRequestContext(
 		},
 		Path:     outboundPath,
 		Method:   method,
-		Upstream: &policy.UpstreamRequestContext{Name: backendName, URL: backendURL, BasePath: basePath},
+		Upstream: &policy.UpstreamRequestContext{Name: backendName, URL: backendURL, BasePath: basePath, RouteCluster: rawClusterName},
 	}
 }
 
@@ -107,6 +109,7 @@ func BuildUpstreamAttemptRequestContext(
 // visible there.
 func BuildUpstreamAttemptResponseHeaderContext(
 	shared *policy.SharedContext,
+	rawClusterName string,
 	responseHeaders *policy.Headers,
 	backendName, backendURL, basePath, requestMethod, requestPath string,
 	statusCode int,
@@ -120,6 +123,7 @@ func BuildUpstreamAttemptResponseHeaderContext(
 		Upstream: &policy.UpstreamResponseContext{
 			Name: backendName, URL: backendURL, BasePath: basePath,
 			Response: &policy.UpstreamResponse{Headers: responseHeaders, StatusCode: statusCode},
+			RouteCluster: rawClusterName,
 		},
 	}
 }
@@ -131,6 +135,7 @@ func BuildUpstreamAttemptResponseHeaderContext(
 // upstream response body.
 func BuildUpstreamAttemptResponseContext(
 	shared *policy.SharedContext,
+	rawClusterName string,
 	responseHeaders *policy.Headers,
 	originalRequestRaw, body []byte,
 	backendName, backendURL, basePath, requestMethod, requestPath string,
@@ -155,6 +160,7 @@ func BuildUpstreamAttemptResponseContext(
 		Upstream: &policy.UpstreamResponseContext{
 			Name: backendName, URL: backendURL, BasePath: basePath,
 			Response: &policy.UpstreamResponse{Headers: responseHeaders, StatusCode: statusCode},
+			RouteCluster: rawClusterName,
 		},
 	}
 }

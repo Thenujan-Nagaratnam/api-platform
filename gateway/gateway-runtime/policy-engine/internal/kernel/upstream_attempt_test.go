@@ -50,7 +50,7 @@ func TestBuildUpstreamAttemptRequestContext_SeedsBodyFromOriginal(t *testing.T) 
 	shared := NewUpstreamAttemptSharedContext("", "")
 	headers := policy.NewHeaders(map[string][]string{"content-type": {"application/json"}})
 
-	reqCtx := BuildUpstreamAttemptRequestContext(shared, headers, original, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions")
+	reqCtx := BuildUpstreamAttemptRequestContext(shared, "", headers, original, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions")
 
 	require.NotNil(t, reqCtx)
 	require.NotNil(t, reqCtx.Upstream)
@@ -68,13 +68,13 @@ func TestBuildUpstreamAttemptRequestContext_RetryUsesOriginalNotPreviousOutput(t
 	// Attempt 1 goes to the primary and its transformer mutates the working
 	// body (simulated here — the point under test is that this mutation
 	// never leaks into how a later attempt is built).
-	attempt1 := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), policy.NewHeaders(nil), original,
+	attempt1 := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), "", policy.NewHeaders(nil), original,
 		"openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions")
 	attempt1.Body.Content = []byte(`{"totally":"different, mutated by attempt 1's transformer"}`)
 
 	// Attempt 2 (the fallback, a different provider) must be built fresh from
 	// the SAME cached original bytes — never from attempt1's mutated Body.
-	attempt2 := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), policy.NewHeaders(nil), original,
+	attempt2 := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), "", policy.NewHeaders(nil), original,
 		"anthropic-fallback", "https://api.anthropic.com", "/v1", "POST", "/v1/messages")
 
 	assert.Equal(t, "anthropic-fallback", attempt2.Upstream.Name)
@@ -88,7 +88,7 @@ func TestBuildUpstreamAttemptRequestContext_SharedContextIsNeverNil(t *testing.T
 	// policy-engine connection on the very first real upstream-phase signing
 	// attempt, so it must always be a real, usable pointer, mirroring every
 	// other per-request context the kernel builds.
-	reqCtx := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), policy.NewHeaders(nil), []byte(`{}`),
+	reqCtx := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), "", policy.NewHeaders(nil), []byte(`{}`),
 		"backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
 
 	require.NotNil(t, reqCtx.SharedContext)
@@ -104,7 +104,7 @@ func TestBuildUpstreamAttemptRequestContext_SharedContextIsNeverNil(t *testing.T
 func TestBuildUpstreamAttemptRequestContext_OriginalSliceNotAliasedByBody(t *testing.T) {
 	original := []byte(`{"model":"gpt-4o"}`)
 
-	reqCtx := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), policy.NewHeaders(nil), original,
+	reqCtx := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), "", policy.NewHeaders(nil), original,
 		"backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
 
 	// Mutating Body.Content (as a transformer policy would, via
@@ -121,7 +121,7 @@ func TestBuildUpstreamAttemptResponseContext_SetsResponseStatusAndBackend(t *tes
 	shared := NewUpstreamAttemptSharedContext("claude-3-5-sonnet-20241022", "anthropic-upstream")
 	headers := policy.NewHeaders(map[string][]string{"content-type": {"application/json"}})
 
-	respCtx := BuildUpstreamAttemptResponseContext(shared, headers, []byte(`{"model":"gpt-4o"}`), []byte(`{"result":"ok"}`),
+	respCtx := BuildUpstreamAttemptResponseContext(shared, "", headers, []byte(`{"model":"gpt-4o"}`), []byte(`{"result":"ok"}`),
 		"anthropic-upstream-cluster", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", 500)
 
 	require.NotNil(t, respCtx)
@@ -137,12 +137,35 @@ func TestBuildUpstreamAttemptRequestHeaderContext_SharesHeadersWithBodyPhase(t *
 	shared := NewUpstreamAttemptSharedContext("", "")
 	headers := policy.NewHeaders(map[string][]string{"content-type": {"application/json"}})
 
-	hdrCtx := BuildUpstreamAttemptRequestHeaderContext(shared, headers, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
+	hdrCtx := BuildUpstreamAttemptRequestHeaderContext(shared, "", headers, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
 	// A header-phase policy mutates via UnsafeInternalValues() — the same
 	// object must be visible from the later body-phase context.
 	hdrCtx.Headers.UnsafeInternalValues()["x-set-headers"] = []string{"1"}
 
-	reqCtx := BuildUpstreamAttemptRequestContext(shared, headers, []byte(`{}`), "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
+	reqCtx := BuildUpstreamAttemptRequestContext(shared, "", headers, []byte(`{}`), "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
 
 	assert.Equal(t, []string{"1"}, reqCtx.Headers.UnsafeInternalValues()["x-set-headers"])
+}
+
+func TestBuildUpstreamAttemptRequestHeaderContext_SetsRouteCluster(t *testing.T) {
+	shared := NewUpstreamAttemptSharedContext("", "")
+	headers := policy.NewHeaders(nil)
+
+	hdrCtx := BuildUpstreamAttemptRequestHeaderContext(shared, "failover_agg_chat_0", headers,
+		"openai-provider-cluster", "https://api.openai.com", "/v1", "POST", "/chat/completions")
+
+	require.NotNil(t, hdrCtx.Upstream)
+	assert.Equal(t, "failover_agg_chat_0", hdrCtx.Upstream.RouteCluster)
+	assert.Equal(t, "openai-provider-cluster", hdrCtx.Upstream.Name, "RouteCluster must not overwrite the resolved Name")
+}
+
+func TestBuildUpstreamAttemptResponseContext_SetsRouteCluster(t *testing.T) {
+	shared := NewUpstreamAttemptSharedContext("", "")
+	headers := policy.NewHeaders(nil)
+
+	respCtx := BuildUpstreamAttemptResponseContext(shared, "failover_agg_chat_0", headers,
+		[]byte(`{}`), []byte(`{}`), "openai-provider-cluster", "https://api.openai.com", "/v1", "POST", "/chat/completions", 200)
+
+	require.NotNil(t, respCtx.Upstream)
+	assert.Equal(t, "failover_agg_chat_0", respCtx.Upstream.RouteCluster)
 }

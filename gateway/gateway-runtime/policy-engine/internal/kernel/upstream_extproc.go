@@ -89,6 +89,12 @@ func NewUpstreamExternalProcessorServer(k *Kernel, chainExecutor *executor.Chain
 type upstreamAttemptState struct {
 	routeKey    string
 	clusterName string
+	// rawClusterName is the xds.cluster_name attribute exactly as Envoy
+	// reported it for this attempt, captured before resolveBackend
+	// substitutes the resolved real member cluster into clusterName. For an
+	// aggregate-routed attempt this is the aggregate cluster's own name —
+	// exposed to policies via RouteCluster (kernel.BuildUpstreamAttempt*Context).
+	rawClusterName string
 	chain       *registry.PolicyChain
 	method      string
 	path        string
@@ -158,6 +164,7 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 		case *extprocv3.ProcessingRequest_RequestHeaders:
 			state.routeKey = extractAttribute(req, "xds.route_name")
 			state.clusterName = extractAttribute(req, "xds.cluster_name")
+			state.rawClusterName = state.clusterName
 			state.chain = s.kernel.GetPolicyChainForKey(state.routeKey)
 			state.method, state.path = extractMethodAndPath(r.RequestHeaders)
 			attemptCount := extractAttemptCount(r.RequestHeaders)
@@ -225,7 +232,7 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 
 			var immediate *extprocv3.ImmediateResponse
 			if state.chain != nil && state.chain.RequiresUpstreamRequest {
-				reqHdrCtx := BuildUpstreamAttemptRequestHeaderContext(state.sharedContext, state.requestHeaders,
+				reqHdrCtx := BuildUpstreamAttemptRequestHeaderContext(state.sharedContext, state.rawClusterName, state.requestHeaders,
 					state.clusterName, state.backendURL, state.basePath, state.method, state.path)
 				action, err := s.chainExecutor.ExecuteUpstreamAttemptRequestHeaderPolicies(ctx, state.chain.UpstreamPolicies, reqHdrCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
 				if err != nil {
@@ -267,7 +274,7 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 
 			var immediate *extprocv3.ImmediateResponse
 			if state.chain != nil && state.chain.RequiresUpstreamResponse {
-				respHdrCtx := BuildUpstreamAttemptResponseHeaderContext(state.sharedContext, state.responseHeaders,
+				respHdrCtx := BuildUpstreamAttemptResponseHeaderContext(state.sharedContext, state.rawClusterName, state.responseHeaders,
 					state.clusterName, state.backendURL, state.basePath, state.method, state.path, state.statusCode)
 				action, err := s.chainExecutor.ExecuteUpstreamAttemptResponseHeaderPolicies(ctx, state.chain.UpstreamPolicies, respHdrCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
 				if err != nil {
@@ -326,7 +333,7 @@ func (s *UpstreamExternalProcessorServer) processRequestBody(ctx context.Context
 	}
 
 	originalRequestHeadersForBody := cloneHeaderMap(state.requestHeaders.UnsafeInternalValues())
-	reqCtx := BuildUpstreamAttemptRequestContext(state.sharedContext, state.requestHeaders, body.Body,
+	reqCtx := BuildUpstreamAttemptRequestContext(state.sharedContext, state.rawClusterName, state.requestHeaders, body.Body,
 		state.clusterName, state.backendURL, state.basePath, state.method, state.path)
 	action, err := s.chainExecutor.ExecuteUpstreamAttemptRequestPolicies(ctx, state.chain.UpstreamPolicies, reqCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
 	if err != nil {
@@ -417,7 +424,7 @@ func (s *UpstreamExternalProcessorServer) processResponseBody(ctx context.Contex
 		}
 
 		originalResponseHeadersForBody := cloneHeaderMap(state.responseHeaders.UnsafeInternalValues())
-		respCtx := BuildUpstreamAttemptResponseContext(state.sharedContext, state.responseHeaders,
+		respCtx := BuildUpstreamAttemptResponseContext(state.sharedContext, state.rawClusterName, state.responseHeaders,
 			state.originalRequestBody, body.Body,
 			state.clusterName, state.backendURL, state.basePath, state.method, state.path, state.statusCode)
 		action, err := s.chainExecutor.ExecuteUpstreamAttemptResponsePolicies(ctx, state.chain.UpstreamPolicies, respCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
