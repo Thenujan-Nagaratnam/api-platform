@@ -918,6 +918,8 @@ func (v *LLMValidator) validateLLMFailover(fieldPrefix string, failover *api.LLM
 		})
 	}
 
+	errors = append(errors, v.validateLLMFailoverRetryOn(fieldPrefix, failover)...)
+
 	seenModels := map[string]bool{}
 	for i, entry := range failover.Targets {
 		entryPrefix := fmt.Sprintf("%s.targets[%d]", fieldPrefix, i)
@@ -945,6 +947,69 @@ func (v *LLMValidator) validateLLMFailover(fieldPrefix string, failover *api.LLM
 		for j, fb := range entry.Fallbacks {
 			errors = append(errors, v.validateLLMFailoverTarget(fmt.Sprintf("%s.fallbacks[%d]", entryPrefix, j), fb, validUpstreamNames)...)
 		}
+	}
+
+	return errors
+}
+
+// validLLMFailoverRetryOn is the exact set Envoy's HTTP RetryPolicy.retry_on
+// accepts (the gRPC-only conditions — cancelled/deadline-exceeded/internal/
+// resource-exhausted/unavailable — are deliberately excluded: LLM proxy
+// traffic is plain HTTP/JSON, never gRPC).
+var validLLMFailoverRetryOn = map[api.LLMFailoverConfigRetryOn]bool{
+	api.N5xx:                 true,
+	api.GatewayError:         true,
+	api.Reset:                true,
+	api.ResetBeforeRequest:   true,
+	api.ConnectFailure:       true,
+	api.EnvoyRatelimited:     true,
+	api.Retriable4xx:         true,
+	api.RefusedStream:        true,
+	api.RetriableStatusCodes: true,
+	api.RetriableHeaders:     true,
+}
+
+// validateLLMFailoverRetryOn validates resilience.failover.retryOn against
+// Envoy's actual supported HTTP retry_on values, and enforces the two
+// conditions that need a companion list to mean anything
+// (retriable-status-codes/retriable-headers) actually got one. A nil/empty
+// retryOn is valid — applyFailoverToRoutes defaults it to ["5xx"] at
+// translate time, preserving this feature's original hardcoded behavior.
+func (v *LLMValidator) validateLLMFailoverRetryOn(fieldPrefix string, failover *api.LLMFailoverConfig) []ValidationError {
+	var errors []ValidationError
+	if failover.RetryOn == nil {
+		return errors
+	}
+
+	hasRetriableStatusCodes := false
+	hasRetriableHeaders := false
+	for i, cond := range *failover.RetryOn {
+		if !validLLMFailoverRetryOn[cond] {
+			errors = append(errors, ValidationError{
+				Field:   fmt.Sprintf("%s.retryOn[%d]", fieldPrefix, i),
+				Message: fmt.Sprintf("unsupported retryOn value %q", cond),
+			})
+			continue
+		}
+		if cond == api.RetriableStatusCodes {
+			hasRetriableStatusCodes = true
+		}
+		if cond == api.RetriableHeaders {
+			hasRetriableHeaders = true
+		}
+	}
+
+	if hasRetriableStatusCodes && (failover.RetriableStatusCodes == nil || len(*failover.RetriableStatusCodes) == 0) {
+		errors = append(errors, ValidationError{
+			Field:   fieldPrefix + ".retriableStatusCodes",
+			Message: fieldPrefix + ".retriableStatusCodes must be non-empty when retryOn includes \"retriable-status-codes\"",
+		})
+	}
+	if hasRetriableHeaders && (failover.RetriableHeaders == nil || len(*failover.RetriableHeaders) == 0) {
+		errors = append(errors, ValidationError{
+			Field:   fieldPrefix + ".retriableHeaders",
+			Message: fieldPrefix + ".retriableHeaders must be non-empty when retryOn includes \"retriable-headers\"",
+		})
 	}
 
 	return errors

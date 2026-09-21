@@ -429,14 +429,32 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 				maxFallbackDepth = len(target.Fallbacks)
 			}
 		}
-		routeAction.Route.RetryPolicy = &route.RetryPolicy{
-			RetryOn:    "5xx",
+		// RetryOn is expected non-empty by the time it reaches here —
+		// applyFailoverToRoutes (pkg/transform/llm.go) defaults it to ["5xx"]
+		// when the source config omits resilience.failover.retryOn — but
+		// default defensively here too, so a RouteFailover built any other
+		// way never produces an empty retry_on (which Envoy treats as "never
+		// retry", silently defeating the whole feature). Envoy's retry_on
+		// accepts a comma-separated list of conditions in one string.
+		retryOn := rdcRoute.Upstream.Failover.RetryOn
+		if len(retryOn) == 0 {
+			retryOn = []string{"5xx"}
+		}
+		retryPolicy := &route.RetryPolicy{
+			RetryOn:    strings.Join(retryOn, ","),
 			NumRetries: wrapperspb.UInt32(uint32(maxFallbackDepth)),
 			RetryPriority: &route.RetryPolicy_RetryPriority{
 				Name:       "envoy.retry_priorities.previous_priorities",
 				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: failoverRetryPriorityConfig},
 			},
 		}
+		if len(rdcRoute.Upstream.Failover.RetriableStatusCodes) > 0 {
+			retryPolicy.RetriableStatusCodes = rdcRoute.Upstream.Failover.RetriableStatusCodes
+		}
+		if len(rdcRoute.Upstream.Failover.RetriableHeaders) > 0 {
+			retryPolicy.RetriableHeaders = buildRetriableHeaderMatchers(rdcRoute.Upstream.Failover.RetriableHeaders)
+		}
+		routeAction.Route.RetryPolicy = retryPolicy
 	}
 
 	r := &route.Route{
@@ -520,6 +538,23 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 	}
 
 	return r
+}
+
+// buildRetriableHeaderMatchers builds a presence-match (any value) HeaderMatcher
+// per configured name for RetryPolicy.RetriableHeaders — resilience.failover's
+// retryOn: ["retriable-headers"] only needs to know a header is present at all,
+// never a specific value, unlike buildMatchHeaders' route-selection matchers.
+func buildRetriableHeaderMatchers(headerNames []string) []*route.HeaderMatcher {
+	matchers := make([]*route.HeaderMatcher, 0, len(headerNames))
+	for _, name := range headerNames {
+		matchers = append(matchers, &route.HeaderMatcher{
+			Name: strings.ToLower(strings.TrimSpace(name)),
+			HeaderMatchSpecifier: &route.HeaderMatcher_PresentMatch{
+				PresentMatch: true,
+			},
+		})
+	}
+	return matchers
 }
 
 // buildMatchHeaders builds the Envoy header matchers for a route: the mandatory :method matcher

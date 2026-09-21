@@ -126,6 +126,87 @@ func TestApplyFailoverToRoutes_NilFailoverIsNoOp(t *testing.T) {
 	assert.False(t, rdc.Routes["r"].Upstream.UseClusterHeader)
 }
 
+// primaryOnlyFailoverRDC builds a minimal RDC with a single primary-provider
+// route, for tests that only exercise RetryOn/RetriableStatusCodes/
+// RetriableHeaders threading and don't need a second named provider.
+func primaryOnlyFailoverRDC() *models.RuntimeDeployConfig {
+	return &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"upstream_main_openai_com_443": {
+				Name:      "",
+				BasePath:  "/",
+				Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}},
+				TLS:       &models.UpstreamTLS{Enabled: true},
+			},
+		},
+		Routes: map[string]*models.Route{
+			"POST|/chat/completions|main": {
+				Upstream: models.RouteUpstream{
+					ClusterKey: "upstream_main_openai_com_443",
+					Default: &policyenginev1.UpstreamInfo{
+						ClusterName: "upstream_main_openai_com_443",
+						URL:         "https://openai.com",
+						BasePath:    "/",
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestApplyFailoverToRoutes_DefaultsRetryOnTo5xx(t *testing.T) {
+	rdc := primaryOnlyFailoverRDC()
+	failover := &api.LLMFailoverConfig{
+		Targets: []api.LLMFailoverTargetEntry{{
+			Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
+			Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}},
+		}},
+	}
+
+	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider"))
+
+	route := rdc.Routes["POST|/chat/completions|main"]
+	assert.Equal(t, []string{"5xx"}, route.Upstream.Failover.RetryOn)
+	assert.Empty(t, route.Upstream.Failover.RetriableStatusCodes)
+	assert.Empty(t, route.Upstream.Failover.RetriableHeaders)
+}
+
+func TestApplyFailoverToRoutes_CopiesCustomRetryOn(t *testing.T) {
+	rdc := primaryOnlyFailoverRDC()
+	failover := &api.LLMFailoverConfig{
+		Targets: []api.LLMFailoverTargetEntry{{
+			Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
+			Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}},
+		}},
+		RetryOn: &[]api.LLMFailoverConfigRetryOn{api.Reset, api.ConnectFailure, api.GatewayError},
+	}
+
+	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider"))
+
+	route := rdc.Routes["POST|/chat/completions|main"]
+	assert.Equal(t, []string{"reset", "connect-failure", "gateway-error"}, route.Upstream.Failover.RetryOn)
+}
+
+func TestApplyFailoverToRoutes_CopiesRetriableStatusCodesAndHeaders(t *testing.T) {
+	rdc := primaryOnlyFailoverRDC()
+	failover := &api.LLMFailoverConfig{
+		Targets: []api.LLMFailoverTargetEntry{{
+			Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
+			Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}},
+		}},
+		RetryOn:              &[]api.LLMFailoverConfigRetryOn{api.RetriableStatusCodes, api.RetriableHeaders},
+		RetriableStatusCodes: &[]int{409, 425},
+		RetriableHeaders:     &[]string{"x-should-retry"},
+	}
+
+	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider"))
+
+	route := rdc.Routes["POST|/chat/completions|main"]
+	assert.Equal(t, []string{"retriable-status-codes", "retriable-headers"}, route.Upstream.Failover.RetryOn)
+	assert.Equal(t, []uint32{409, 425}, route.Upstream.Failover.RetriableStatusCodes)
+	assert.Equal(t, []string{"x-should-retry"}, route.Upstream.Failover.RetriableHeaders)
+}
+
 // TestResolveFailoverEntry_AllThreeWaysOfNamingThePrimaryProvider covers the
 // three ways a validated failover target can refer to the proxy's own primary
 // provider — omitting `provider`, and explicitly naming it either as the

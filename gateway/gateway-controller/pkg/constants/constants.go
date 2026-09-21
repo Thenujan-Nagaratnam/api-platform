@@ -71,12 +71,12 @@ const (
 	// Configuration Validation Constants
 	MaxReasonableTimeoutMs       = uint32(3600000) // 1 hour in milliseconds
 	MaxReasonablePolicyTimeoutMs = uint32(60000)   // 60 seconds in milliseconds
-	
-	// MaxReasonableBufferLimitBytes caps the downstream per-connection buffer limit in bytes, 
+
+	// MaxReasonableBufferLimitBytes caps the downstream per-connection buffer limit in bytes,
 	// preventing unreasonably large values that could lead to resource exhaustion or performance degradation.
 	MaxReasonableBufferLimitBytes = uint32(104857600) // 100 MiB
 
-	// MaxReasonableConnectionTimeoutMs caps connection-level timeouts (request, request-headers,etc.), 
+	// MaxReasonableConnectionTimeoutMs caps connection-level timeouts (request, request-headers,etc.),
 	// allowing higher values than MaxReasonableTimeoutMs to support long-lived idle connections.
 	MaxReasonableConnectionTimeoutMs = uint32(86400000) // 24 hours in milliseconds
 
@@ -195,8 +195,14 @@ const (
 		"    - name: '%s'\n" +
 		"      value: '%s'\n"
 	UPSTREAM_AUTH_OAUTH2_POLICY_NAME = "oauth2-generator"
-	PROXY_HOST__HEADER_POLICY_NAME   = "host-rewrite"
-	PROXY_HOST__HEADER_POLICY_PARAMS = "host: '%s'\n"
+	// UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME is the per-attempt counterpart to
+	// UPSTREAM_AUTH_APIKEY_POLICY_NAME ("set-headers"): set-headers only runs
+	// downstream, once, before Envoy dispatches, so it cannot know which
+	// provider will actually serve a resilience.failover-eligible request.
+	// This policy self-gates on UpstreamAttemptContext.ResolvedProvider instead.
+	UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME = "llm-upstream-provider-auth"
+	PROXY_HOST__HEADER_POLICY_NAME            = "host-rewrite"
+	PROXY_HOST__HEADER_POLICY_PARAMS          = "host: '%s'\n"
 
 	ACCESS_CONTROL_DENY_POLICY_NAME = "respond"
 	// YAML for default 404 respond policy params

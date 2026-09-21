@@ -165,6 +165,31 @@ func (t *LLMTransformer) extractLLMMetadata(cfg *models.StoredConfig) *models.LL
 // model-bearing operations needs per-operation request-shape awareness that
 // belongs in a later plan's downstream target-selection work (which already has
 // to parse the client-requested model out of the request body), not here.
+// resolveFailoverRetryOn defaults failover.RetryOn to ["5xx"] — this
+// feature's original, byte-identical-on-omission behavior — and copies
+// across the two companion lists verbatim (validateLLMFailoverRetryOn
+// already guarantees they're non-empty whenever their triggering retryOn
+// condition is present, so no further defaulting is needed here).
+func resolveFailoverRetryOn(failover *api.LLMFailoverConfig) (retryOn []string, retriableStatusCodes []uint32, retriableHeaders []string) {
+	if failover.RetryOn == nil || len(*failover.RetryOn) == 0 {
+		return []string{"5xx"}, nil, nil
+	}
+	retryOn = make([]string, 0, len(*failover.RetryOn))
+	for _, cond := range *failover.RetryOn {
+		retryOn = append(retryOn, string(cond))
+	}
+	if failover.RetriableStatusCodes != nil {
+		retriableStatusCodes = make([]uint32, 0, len(*failover.RetriableStatusCodes))
+		for _, code := range *failover.RetriableStatusCodes {
+			retriableStatusCodes = append(retriableStatusCodes, uint32(code))
+		}
+	}
+	if failover.RetriableHeaders != nil {
+		retriableHeaders = append(retriableHeaders, *failover.RetriableHeaders...)
+	}
+	return retryOn, retriableStatusCodes, retriableHeaders
+}
+
 func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFailoverConfig, primaryProviderID string) error {
 	if failover == nil || len(failover.Targets) == 0 {
 		return nil
@@ -174,6 +199,8 @@ func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFai
 	if failover.SuspendDuration != nil {
 		suspendSeconds = *failover.SuspendDuration
 	}
+
+	retryOn, retriableStatusCodes, retriableHeaders := resolveFailoverRetryOn(failover)
 
 	for routeKey, r := range rdc.Routes {
 		targets := make([]models.RouteFailoverTarget, 0, len(failover.Targets))
@@ -200,6 +227,9 @@ func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFai
 		r.Upstream.Failover = &models.RouteFailover{
 			SuspendDurationSeconds: suspendSeconds,
 			Targets:                targets,
+			RetryOn:                retryOn,
+			RetriableStatusCodes:   retriableStatusCodes,
+			RetriableHeaders:       retriableHeaders,
 		}
 		if !r.Upstream.UseClusterHeader {
 			r.Upstream.UseClusterHeader = true

@@ -265,11 +265,22 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 
 	// Step 3.5: Apply proxy-level provider auth for proxy->provider loopback upstream
 	// and inline translators declared per additional provider. Both are attached as
-	// conditional policies so they run only when their provider is selected.
+	// conditional policies so they run only when their provider is selected downstream
+	// (the model-round-robin/single-provider path - ExecutionCondition is never
+	// evaluated for the upstream-attempt phase, see below).
 	var upstreamAuthPolicies []api.Policy
 	var transformerPolicies []api.Policy
+	// authByProviderID captures every provider's own auth config, keyed by its
+	// resolved identity (primary's Id, or an additionalProviders[].as/.id) - used
+	// below to build the resilience.failover-scoped upstream auth attachments,
+	// which need a specific provider's credential regardless of whether that
+	// provider is also reachable via the ordinary downstream selection path.
+	authByProviderID := map[string]*api.LLMUpstreamAuth{}
+	valuePrefixByProviderID := map[string]string{}
 	if proxy.Spec.Provider.Auth != nil {
-		pol, err := t.proxyUpstreamAuthPolicy(proxy.Spec.Provider.Auth, apiKeyAuthValuePrefix(providerConfig.Spec.GlobalPolicies), "provider.auth")
+		authByProviderID[proxy.Spec.Provider.Id] = proxy.Spec.Provider.Auth
+		valuePrefixByProviderID[proxy.Spec.Provider.Id] = apiKeyAuthValuePrefix(providerConfig.Spec.GlobalPolicies)
+		pol, err := t.proxyUpstreamAuthPolicy(proxy.Spec.Provider.Auth, valuePrefixByProviderID[proxy.Spec.Provider.Id], proxy.Spec.Provider.Id, "provider.auth")
 		if err != nil {
 			return nil, err
 		}
@@ -288,7 +299,9 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 			}
 
 			if ap.Auth != nil {
-				pol, err := t.proxyUpstreamAuthPolicy(ap.Auth, additionalValuePrefixByID[ap.Id], fmt.Sprintf("additionalProviders[%s].auth", name))
+				authByProviderID[name] = ap.Auth
+				valuePrefixByProviderID[name] = additionalValuePrefixByID[ap.Id]
+				pol, err := t.proxyUpstreamAuthPolicy(ap.Auth, additionalValuePrefixByID[ap.Id], name, fmt.Sprintf("additionalProviders[%s].auth", name))
 				if err != nil {
 					return nil, err
 				}
@@ -306,6 +319,33 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 					return nil, err
 				}
 				transformerPolicies = append(transformerPolicies, *pol)
+			}
+		}
+	}
+
+	// Step 3.6: For every provider referenced anywhere in a declared
+	// resilience.failover chain, attach the per-attempt failover-auth
+	// counterpart for api-key auth (oauth2 already self-gates via the
+	// providerId injected into its downstream attachment above; "other" is a
+	// caller-defined policy this transformer cannot retrofit - see
+	// failoverUpstreamAuthPolicy's own doc comment). Unconditional attachment
+	// (no ExecutionCondition) is correct here: gating is internal to the
+	// policy via UpstreamAttemptContext.ResolvedProvider, and it only ever
+	// fires for a request that actually reaches the upstream ext_proc phase
+	// via an aggregate cluster - never for an ordinary single-provider route.
+	var failoverUpstreamAuthPolicies []api.Policy
+	if proxy.Spec.Resilience != nil && proxy.Spec.Resilience.Failover != nil {
+		for _, providerID := range failoverReferencedProviders(proxy.Spec.Resilience.Failover, proxy.Spec.Provider.Id) {
+			auth := authByProviderID[providerID]
+			if auth == nil || auth.Type != api.LLMUpstreamAuthTypeApiKey {
+				continue
+			}
+			pol, err := t.failoverUpstreamAuthPolicy(auth, valuePrefixByProviderID[providerID], providerID)
+			if err != nil {
+				return nil, fmt.Errorf("resilience.failover: provider %q: %w", providerID, err)
+			}
+			if pol != nil {
+				failoverUpstreamAuthPolicies = append(failoverUpstreamAuthPolicies, *pol)
 			}
 		}
 	}
@@ -394,6 +434,13 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 		for i := range ops {
 			for _, upstreamAuthPolicy := range upstreamAuthPolicies {
 				appendOperationPolicy(&ops[i], upstreamAuthPolicy)
+			}
+		}
+	}
+	if len(failoverUpstreamAuthPolicies) > 0 {
+		for i := range ops {
+			for _, failoverUpstreamAuthPolicy := range failoverUpstreamAuthPolicies {
+				appendOperationPolicy(&ops[i], failoverUpstreamAuthPolicy)
 			}
 		}
 	}
@@ -864,7 +911,11 @@ func apiKeyAuthValuePrefix(globalPolicies *[]api.Policy) string {
 // proxyUpstreamAuthPolicy builds the api.Policy for an LlmProxy
 // provider/additionalProviders auth config. valuePrefix is the provider's own
 // api-key-auth value prefix, applied the same way to the loopback credential.
-func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAuth, valuePrefix, field string) (*api.Policy, error) {
+// providerID is this provider's own identity (primary's Id, or an
+// additionalProviders[].as/.id) - injected into oauth2-generator's params so
+// it can self-gate a resilience.failover attempt via
+// UpstreamAttemptContext.ResolvedProvider (see OnUpstreamRequestBody).
+func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAuth, valuePrefix, providerID, field string) (*api.Policy, error) {
 	if auth == nil {
 		return nil, nil
 	}
@@ -892,9 +943,20 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 		)
 	case api.LLMUpstreamAuthTypeOauth2:
 		// No typed-field fallback for oauth2 - policyParams is always required.
-		return buildUpstreamAuthPolicy(string(auth.Type), field,
+		pol, err := buildUpstreamAuthPolicy(string(auth.Type), field,
 			auth.PolicyName, auth.PolicyVersion, auth.PolicyParams,
 			constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME, nil, t.resolvePolicyVersionOverride)
+		if err != nil || pol == nil {
+			return pol, err
+		}
+		// Injected unconditionally, mirroring proxyTransformerPolicy's own
+		// providerId injection below - harmless when the proxy has no
+		// resilience.failover block, since oauth2-generator's
+		// OnUpstreamRequestBody (the only consumer of this param) is never
+		// invoked unless a request actually reaches the upstream ext_proc
+		// phase via an aggregate cluster.
+		(*pol.Params)["providerId"] = providerID
+		return pol, nil
 	case api.LLMUpstreamAuthTypeOther:
 		// No default policy name (policyName is required) and no typed-field
 		// fallback (policyParams is always required).
@@ -960,6 +1022,78 @@ func (t *LLMProviderTransformer) proxyTransformerPolicy(transformer *api.LLMProx
 		Version:            transformer.Version,
 		Params:             &params,
 		ExecutionCondition: &condition,
+	}, nil
+}
+
+// failoverReferencedProviders returns every provider identity referenced
+// anywhere in failover's declared chains (each target and each of its
+// fallbacks), deduplicated and in first-seen order. A nil/empty Provider
+// field means the LlmProxy's primary provider, per LLMFailoverTarget's own
+// documented default.
+func failoverReferencedProviders(failover *api.LLMFailoverConfig, primaryProviderID string) []string {
+	seen := map[string]bool{}
+	var ordered []string
+	add := func(t api.LLMFailoverTarget) {
+		id := primaryProviderID
+		if t.Provider != nil && strings.TrimSpace(*t.Provider) != "" {
+			id = strings.TrimSpace(*t.Provider)
+		}
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		ordered = append(ordered, id)
+	}
+	for _, entry := range failover.Targets {
+		add(entry.Target)
+		for _, fb := range entry.Fallbacks {
+			add(fb)
+		}
+	}
+	return ordered
+}
+
+// failoverUpstreamAuthPolicy builds one llm-upstream-provider-auth attachment
+// for a single failover-referenced provider's api-key credential - the
+// per-attempt counterpart to proxyUpstreamAuthPolicy's api-key case (which
+// only runs downstream, once, and cannot know in advance which provider a
+// failover-eligible request will actually be served by).
+//
+// oauth2 needs no equivalent here: proxyUpstreamAuthPolicy already injects
+// providerId into oauth2-generator's own params unconditionally, and that
+// policy self-gates via UpstreamAttemptContext.ResolvedProvider internally
+// (see its OnUpstreamRequestBody). "other" auth is a caller-supplied
+// policyName/policyParams pair of unknown shape - this transformer cannot
+// retrofit per-attempt awareness into an arbitrary third-party policy; an
+// operator wanting that for a custom "other" auth policy implements
+// UpstreamRequestPolicy themselves, using the same ResolvedProvider field.
+func (t *LLMProviderTransformer) failoverUpstreamAuthPolicy(auth *api.LLMUpstreamAuth, valuePrefix, providerID string) (*api.Policy, error) {
+	if auth.Header == nil || *auth.Header == "" {
+		return nil, fmt.Errorf("header is required")
+	}
+	if auth.Value == nil || *auth.Value == "" {
+		return nil, fmt.Errorf("value is required")
+	}
+	// Loopback re-enters the provider's own api-key-auth, so match its
+	// valuePrefix stripping - same rule proxyUpstreamAuthPolicy's api-key
+	// case already applies.
+	value := *auth.Value
+	if valuePrefix != "" {
+		value = valuePrefix + " " + value
+	}
+	version, err := t.resolvePolicyVersion(constants.UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]interface{}{
+		"header":     *auth.Header,
+		"value":      value,
+		"providerId": providerID,
+	}
+	return &api.Policy{
+		Name:    constants.UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME,
+		Version: version,
+		Params:  &params,
 	}, nil
 }
 

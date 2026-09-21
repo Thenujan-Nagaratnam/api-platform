@@ -106,7 +106,8 @@ func TestLLMTransformer_FailoverBlock_FullShapeEndToEnd(t *testing.T) {
 	routerCfg.ListenerPort = 8080
 
 	policyVersionResolver := utils.NewStaticPolicyVersionResolver(map[string]string{
-		constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME: "v1",
+		constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME:          "v1",
+		constants.UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME: "v1",
 	})
 	// Minimal definitions so buildPolicyChain's operation-level version resolution
 	// (set-headers for the upstream-auth/loopback-marker policies, llm-header-router
@@ -114,8 +115,9 @@ func TestLLMTransformer_FailoverBlock_FullShapeEndToEnd(t *testing.T) {
 	// instead of just logging and dropping the policy — keeps this test's output clean
 	// and exercises the same resolution path a real deploy goes through.
 	policyDefinitions := map[string]models.PolicyDefinition{
-		"set-headers":       {Name: constants.SET_HEADERS_POLICY_NAME, Version: "v1.0.0"},
-		"llm-header-router": {Name: "llm-header-router", Version: "v1.0.0"},
+		"set-headers":                {Name: constants.SET_HEADERS_POLICY_NAME, Version: "v1.0.0"},
+		"llm-header-router":          {Name: "llm-header-router", Version: "v1.0.0"},
+		"llm-upstream-provider-auth": {Name: constants.UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME, Version: "v1.0.0"},
 	}
 
 	llmTransformer := NewLLMTransformer(store, db, routerCfg, &config.Config{}, policyDefinitions, policyVersionResolver)

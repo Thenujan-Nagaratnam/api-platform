@@ -106,6 +106,103 @@ func TestTranslateRuntimeConfig_FailoverRouteGetsRetryPolicyAndHostRewrite(t *te
 	assert.True(t, isAutoRewrite, "a failover route must auto-rewrite Host, or per-attempt backend resolution can't tell attempts apart")
 }
 
+func failoverTestRDC(failover *models.RouteFailover) *models.RuntimeDeployConfig {
+	return &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"primary-cluster":  {BasePath: "/", Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+			"fallback-cluster": {BasePath: "/", Endpoints: []models.Endpoint{{Host: "anthropic.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+		},
+		Routes: map[string]*models.Route{
+			"POST|/chat/completions|main": {
+				Method: "POST",
+				Path:   "/chat/completions",
+				Vhost:  "main",
+				Upstream: models.RouteUpstream{
+					ClusterKey:       "primary-cluster",
+					UseClusterHeader: true,
+					DefaultCluster:   "primary-cluster",
+					Failover:         failover,
+				},
+			},
+		},
+	}
+}
+
+func translateSingleFailoverRoute(t *testing.T, failover *models.RouteFailover) *route.RouteAction {
+	t.Helper()
+	translator := createTestTranslator()
+	routes, _, err := translator.translateRuntimeConfig(failoverTestRDC(failover))
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+	action := routes[0].GetRoute()
+	require.NotNil(t, action)
+	require.NotNil(t, action.RetryPolicy)
+	return action
+}
+
+func TestTranslateRuntimeConfig_FailoverRoute_CustomRetryOn(t *testing.T) {
+	action := translateSingleFailoverRoute(t, &models.RouteFailover{
+		Targets: []models.RouteFailoverTarget{{
+			Model:     "gpt-4o",
+			Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+			Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
+		}},
+		RetryOn: []string{"reset", "connect-failure", "gateway-error"},
+	})
+
+	assert.Equal(t, "reset,connect-failure,gateway-error", action.RetryPolicy.RetryOn)
+}
+
+func TestTranslateRuntimeConfig_FailoverRoute_RetriableStatusCodes(t *testing.T) {
+	action := translateSingleFailoverRoute(t, &models.RouteFailover{
+		Targets: []models.RouteFailoverTarget{{
+			Model:     "gpt-4o",
+			Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+			Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
+		}},
+		RetryOn:              []string{"retriable-status-codes"},
+		RetriableStatusCodes: []uint32{409, 425},
+	})
+
+	assert.Equal(t, "retriable-status-codes", action.RetryPolicy.RetryOn)
+	assert.Equal(t, []uint32{409, 425}, action.RetryPolicy.RetriableStatusCodes)
+}
+
+func TestTranslateRuntimeConfig_FailoverRoute_RetriableHeaders(t *testing.T) {
+	action := translateSingleFailoverRoute(t, &models.RouteFailover{
+		Targets: []models.RouteFailoverTarget{{
+			Model:     "gpt-4o",
+			Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+			Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
+		}},
+		RetryOn:          []string{"retriable-headers"},
+		RetriableHeaders: []string{"X-Should-Retry"},
+	})
+
+	require.Len(t, action.RetryPolicy.RetriableHeaders, 1)
+	hm := action.RetryPolicy.RetriableHeaders[0]
+	assert.Equal(t, "x-should-retry", hm.Name, "header names must be lowercased for Envoy header matching")
+	presentMatch, ok := hm.HeaderMatchSpecifier.(*route.HeaderMatcher_PresentMatch)
+	require.True(t, ok, "expected a presence-match specifier, not a value match")
+	assert.True(t, presentMatch.PresentMatch)
+}
+
+// TestTranslateRuntimeConfig_FailoverRoute_EmptyRetryOnDefaultsTo5xx proves the
+// translator's own defensive default (not just applyFailoverToRoutes' one) —
+// a RouteFailover built any other way, with RetryOn left nil, must never
+// produce an empty retry_on (which Envoy treats as "never retry").
+func TestTranslateRuntimeConfig_FailoverRoute_EmptyRetryOnDefaultsTo5xx(t *testing.T) {
+	action := translateSingleFailoverRoute(t, &models.RouteFailover{
+		Targets: []models.RouteFailoverTarget{{
+			Model:     "gpt-4o",
+			Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+			Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
+		}},
+	})
+
+	assert.Equal(t, "5xx", action.RetryPolicy.RetryOn)
+}
+
 // TestTranslateRuntimeConfig_FailoverRetryPolicyNumRetriesMatchesDeepestChain asserts
 // NumRetries is set to the deepest fallback chain among the route's targets — Envoy
 // defaults num_retries to 1, so without this, a target with 2+ fallbacks could only

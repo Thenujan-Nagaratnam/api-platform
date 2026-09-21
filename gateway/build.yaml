@@ -44,6 +44,10 @@ policies:
     gomodule: github.com/wso2/gateway-controllers/policies/llm-cost-based-ratelimit@v1
   - name: llm-header-router
     gomodule: github.com/wso2/gateway-controllers/policies/llm-header-router@v0
+  # TEMPORARY (local failover e2e verification) — remove before committing;
+  # see gateway/dev-policies/FAILOVER_TESTING.md.
+  - name: llm-upstream-provider-auth
+    filePath: ./dev-policies/llm-upstream-provider-auth
   - name: log-message
     gomodule: github.com/wso2/gateway-controllers/policies/log-message@v1
   - name: mcp-acl-list
@@ -62,12 +66,19 @@ policies:
     gomodule: github.com/wso2/gateway-controllers/policies/model-weighted-round-robin@v1
   - name: nvidia-nemoguard-content-safety
     pipPackage: github.com/wso2/gateway-controllers/policies/nvidia-nemoguard-content-safety@v0
+  # TEMPORARY (local failover e2e verification) — filePath override for the
+  # dev-policies copy carrying the new OnUpstreamRequestBody method; remove
+  # (restore the gomodule line below) before committing. See
+  # gateway/dev-policies/FAILOVER_TESTING.md.
   - name: oauth2-generator
-    gomodule: github.com/wso2/gateway-controllers/policies/oauth2-generator@v0
+    filePath: ./dev-policies/oauth2-generator
+    # gomodule: github.com/wso2/gateway-controllers/policies/oauth2-generator@v0
   - name: opaque-token-auth
     gomodule: github.com/wso2/gateway-controllers/policies/opaque-token-auth@v1
+  # TEMPORARY (local failover e2e verification) — same as oauth2-generator above.
   - name: openai-to-anthropic-transformer
-    gomodule: github.com/wso2/gateway-controllers/policies/openai-to-anthropic-transformer@v0
+    filePath: ./dev-policies/openai-to-anthropic-transformer
+    # gomodule: github.com/wso2/gateway-controllers/policies/openai-to-anthropic-transformer@v0
   - name: openai-to-azure-openai-transformer
     gomodule: github.com/wso2/gateway-controllers/policies/openai-to-azure-openai-transformer@v0
   - name: openai-to-bedrock-transformer

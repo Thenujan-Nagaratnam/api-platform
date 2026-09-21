@@ -23,6 +23,7 @@ import (
 	"time"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	mutationrules "github.com/envoyproxy/go-control-plane/envoy/config/common/mutation_rules/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
@@ -31,6 +32,7 @@ import (
 	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 )
@@ -109,6 +111,10 @@ func attachUpstreamPolicyFilter(c *cluster.Cluster, upstreamPolicyEngineClusterN
 		// request must not reach the backend unauthenticated/untranslated —
 		// mirrors the downstream ext_proc filter's FailureModeAllow: false.
 		FailureModeAllow: false,
+		// Mirrors the downstream ext_proc filter's own AllowModeOverride —
+		// its doc comment there states plainly that without this, Envoy
+		// ignores a filter's body-mode config and never sends bodies at all.
+		AllowModeOverride: true,
 		RequestAttributes: []string{
 			constants.ExtProcRequestAttributeRouteName,
 			constants.ExtProcRequestAttributeClusterName,
@@ -116,6 +122,28 @@ func attachUpstreamPolicyFilter(c *cluster.Cluster, upstreamPolicyEngineClusterN
 		ProcessingMode: &extprocv3.ProcessingMode{
 			RequestHeaderMode: extprocv3.ProcessingMode_SEND,
 			RequestBodyMode:   extprocv3.ProcessingMode_BUFFERED,
+			// ResponseHeaderMode's zero value already behaves as SEND (its
+			// DEFAULT enum value), which is why response-phase signals (e.g.
+			// suspending a failed failover target) already worked without
+			// this. ResponseBodyMode's zero value is NONE/skip, though —
+			// confirmed live: with it unset, an upstream response policy's
+			// OnUpstreamResponseBody (e.g. translating a provider's response
+			// back to the client-facing shape) never runs at all, because
+			// Envoy never sends this filter a ResponseBody message to
+			// process in the first place.
+			ResponseHeaderMode: extprocv3.ProcessingMode_SEND,
+			ResponseBodyMode:   extprocv3.ProcessingMode_BUFFERED,
+		},
+		// Without this, Envoy's default HeaderMutationRules disallow mutating
+		// system (":"-prefixed) headers — silently dropping any ":path"
+		// rewrite a policy (e.g. a transformer) returns from the request-body
+		// phase, while the identical mutation at the request-headers phase is
+		// unaffected. Confirmed live: a failover attempt's transformer-set
+		// ":path" never reached the wire until this was added. Mirrors the
+		// downstream ext_proc filter's MutationRules in createExtProcFilter.
+		MutationRules: &mutationrules.HeaderMutationRules{
+			DisallowSystem:  wrapperspb.Bool(false),
+			DisallowIsError: wrapperspb.Bool(true),
 		},
 		MetadataOptions: &extprocv3.MetadataOptions{
 			ReceivingNamespaces: &extprocv3.MetadataOptions_MetadataNamespaces{

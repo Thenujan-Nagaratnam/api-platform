@@ -161,6 +161,21 @@ type RouteUpstream struct {
 type RouteFailover struct {
 	SuspendDurationSeconds int
 	Targets                []RouteFailoverTarget
+
+	// RetryOn is the set of Envoy RetryPolicy.retry_on conditions that
+	// trigger escalation to the next chain member. Always non-empty by the
+	// time this reaches the xDS translator — applyFailoverToRoutes defaults
+	// it to ["5xx"] when the source config omits resilience.failover.retryOn.
+	RetryOn []string
+
+	// RetriableStatusCodes is meaningful only when RetryOn contains
+	// "retriable-status-codes"; nil/empty otherwise.
+	RetriableStatusCodes []uint32
+
+	// RetriableHeaders is meaningful only when RetryOn contains
+	// "retriable-headers"; nil/empty otherwise. Header names only — each
+	// becomes a presence-match (any value) HeaderMatcher.
+	RetriableHeaders []string
 }
 
 // RouteFailoverTarget is one client-requested model's own failover chain.

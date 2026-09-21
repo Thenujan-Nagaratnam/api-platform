@@ -2270,6 +2270,63 @@ func TestValidateLLMProxy_Failover(t *testing.T) {
 		}, nil))
 		assertHasFieldError(t, errs, "spec.resilience.failover.suspendDuration")
 	})
+
+	t.Run("omitted retryOn is valid", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}}},
+		}, nil))
+		assert.Empty(t, errs)
+	})
+
+	t.Run("valid multi-condition retryOn", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}}},
+			RetryOn: &[]api.LLMFailoverConfigRetryOn{api.N5xx, api.Reset, api.ConnectFailure},
+		}, nil))
+		assert.Empty(t, errs)
+	})
+
+	t.Run("retriable-status-codes without retriableStatusCodes is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}}},
+			RetryOn: &[]api.LLMFailoverConfigRetryOn{api.RetriableStatusCodes},
+		}, nil))
+		assertHasFieldError(t, errs, "spec.resilience.failover.retriableStatusCodes")
+	})
+
+	t.Run("retriable-status-codes with retriableStatusCodes is valid", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets:              []api.LLMFailoverTargetEntry{{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}}},
+			RetryOn:              &[]api.LLMFailoverConfigRetryOn{api.RetriableStatusCodes},
+			RetriableStatusCodes: &[]int{409, 425},
+		}, nil))
+		assert.Empty(t, errs)
+	})
+
+	t.Run("retriable-headers without retriableHeaders is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}}},
+			RetryOn: &[]api.LLMFailoverConfigRetryOn{api.RetriableHeaders},
+		}, nil))
+		assertHasFieldError(t, errs, "spec.resilience.failover.retriableHeaders")
+	})
+
+	t.Run("retriable-headers with retriableHeaders is valid", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets:          []api.LLMFailoverTargetEntry{{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}}},
+			RetryOn:          &[]api.LLMFailoverConfigRetryOn{api.RetriableHeaders},
+			RetriableHeaders: &[]string{"x-should-retry"},
+		}, nil))
+		assert.Empty(t, errs)
+	})
+
+	t.Run("unsupported retryOn value is rejected", func(t *testing.T) {
+		errs := validator.Validate(validProxyWithFailover(&api.LLMFailoverConfig{
+			Targets: []api.LLMFailoverTargetEntry{{Target: api.LLMFailoverTarget{Model: "gpt-4o"}, Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}}}},
+			RetryOn: &[]api.LLMFailoverConfigRetryOn{"cancelled"}, // gRPC-only, not valid for HTTP LLM traffic
+		}, nil))
+		assertHasFieldError(t, errs, "spec.resilience.failover.retryOn[0]")
+	})
 }
 
 // validProxyWithAuth builds an LlmProxy whose primary provider.auth is set.

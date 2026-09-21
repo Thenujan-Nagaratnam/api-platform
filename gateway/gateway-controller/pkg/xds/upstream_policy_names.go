@@ -36,7 +36,10 @@ import "github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 // of it — an entry here for a policy that hasn't migrated yet would attach an
 // upstream filter that finds nothing to run, which is harmless but pointless.
 var upstreamPhasePolicyNames = map[string]bool{
-	"aws-authentication": true,
+	"aws-authentication":              true,
+	"openai-to-anthropic-transformer": true,
+	"llm-upstream-provider-auth":      true,
+	"oauth2-generator":                true,
 }
 
 // isUpstreamPhasePolicy reports whether name is known to implement an
@@ -61,9 +64,39 @@ func resolveChainForRoute(routeKey string, r *models.Route, rdc *models.RuntimeD
 // are shared/deduped across routes and APIs, so this is an OR across every
 // referencing route — a per-cluster attachment can't be scoped any tighter
 // than "some route landing here might need it".
+//
+// A route's failover chain member clusters (RouteFailover.Targets[].Target/
+// Fallbacks[].ClusterKey) are checked here too, not just the route's own
+// default Upstream.ClusterKey — confirmed live: when the primary attempt is
+// currently suspended, applyFailoverRouting dispatches straight to a
+// fallback's own real cluster, bypassing the aggregate entirely (see its doc
+// comment in translator.go). buildFailoverAggregateClusters unconditionally
+// attaches the filter to the AGGREGATE cluster for the normal retry-via-
+// aggregate path, but that attachment covers only requests that actually go
+// through the aggregate — the direct-bypass dispatch needs the SAME member
+// cluster to carry its own attachment too, or the transformer/auth policies
+// silently never run for it.
 func clusterNeedsUpstreamPolicyFilter(clusterName string, rdc *models.RuntimeDeployConfig) bool {
 	for routeKey, r := range rdc.Routes {
-		if r.Upstream.ClusterKey != clusterName {
+		matchesRoute := r.Upstream.ClusterKey == clusterName
+		if !matchesRoute && r.Upstream.Failover != nil {
+			for _, target := range r.Upstream.Failover.Targets {
+				if target.Target.ClusterKey == clusterName {
+					matchesRoute = true
+					break
+				}
+				for _, fb := range target.Fallbacks {
+					if fb.ClusterKey == clusterName {
+						matchesRoute = true
+						break
+					}
+				}
+				if matchesRoute {
+					break
+				}
+			}
+		}
+		if !matchesRoute {
 			continue
 		}
 		chain := resolveChainForRoute(routeKey, r, rdc)
