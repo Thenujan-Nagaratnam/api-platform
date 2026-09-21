@@ -35,6 +35,8 @@ import (
 	"github.com/wso2/api-platform/common/chainkey"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/xds"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
 // newTestRuntimeStore is a plain in-memory RuntimeConfigStore, so the tests below
@@ -631,4 +633,73 @@ func TestTranslateSkipsNilChainsAndRoutesWithoutPanicking(t *testing.T) {
 	assert.Contains(t, resources[RouteConfigTypeURL], "GET|/pets|h")
 	assert.NotContains(t, resources[PolicyChainTypeURL], "GET|/nil|h")
 	assert.NotContains(t, resources[RouteConfigTypeURL], "GET|/nil|h")
+}
+
+// ─── Name-addressable upstream registry ──────────────────────────────────────
+
+// upstream_definition_paths is the registry a policy's UpstreamName is resolved
+// against. An ordinary definition carries only its base path (its Envoy cluster
+// name follows the upstream_<kind>_<apiId>_<name> convention the policy engine
+// derives). A failover aggregate cluster is addressable by name but is named by
+// pkg/xds and follows no convention, so it must be registered with its cluster
+// name spelled out — otherwise the policy engine re-prefixes it into a cluster
+// that does not exist, and finds no base path to rewrite :path with either.
+func TestRouteConfigRegistersFailoverAggregateClusterByName(t *testing.T) {
+	const routeKey = "POST|/proxy/chat/completions|localhost"
+	rdc := &models.RuntimeDeployConfig{
+		Metadata:            models.Metadata{UUID: "proxy-1", Kind: "LlmProxy", Handle: "proxy"},
+		Context:             "/proxy",
+		PolicyChainResolver: models.RouteKeyResolverName,
+		Routes: map[string]*models.Route{
+			routeKey: {
+				Method: "POST", Path: "/proxy/chat/completions", OperationPath: "/chat/completions",
+				Vhost: "localhost",
+				Upstream: models.RouteUpstream{
+					ClusterKey: "upstream_main",
+					Failover: &models.RouteFailover{
+						Targets: []models.RouteFailoverTarget{
+							{
+								Model: "gpt-4o",
+								Target: models.RouteFailoverEntry{
+									Model:    "gpt-4o",
+									Upstream: policyenginev1.UpstreamInfo{BasePath: "/openai-provider"},
+								},
+								Fallbacks: []models.RouteFailoverEntry{{
+									Model:    "claude",
+									Provider: "anthropic-upstream",
+									Upstream: policyenginev1.UpstreamInfo{BasePath: "/anthropic-provider"},
+								}},
+							},
+						},
+					},
+				},
+			},
+		},
+		PolicyChains: map[string]*models.PolicyChain{routeKey: {}},
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"upstream_main": {BasePath: "/openai-provider", Endpoints: []models.Endpoint{{Host: "localhost", Port: 9090}}},
+			"upstream_anthropic": {
+				Name: "anthropic-upstream", BasePath: "/anthropic-provider",
+				Endpoints: []models.Endpoint{{Host: "localhost", Port: 9090}},
+			},
+		},
+	}
+
+	resources, err := testTranslator().TranslateRuntimeConfigs([]*models.RuntimeDeployConfig{rdc})
+	require.NoError(t, err)
+
+	data := decodeRouteConfig(t, resources[RouteConfigTypeURL][routeKey])
+	registry, ok := data["upstream_definition_paths"].(map[string]interface{})
+	require.True(t, ok)
+
+	named, ok := registry["anthropic-upstream"].(map[string]interface{})
+	require.True(t, ok, "a named upstream definition must still be registered")
+	assert.Equal(t, "/anthropic-provider", named["base_path"])
+	assert.Equal(t, "", named["cluster_name"], "an ordinary definition leaves the cluster name to the convention")
+
+	aggName := xds.AggregateClusterName(routeKey, 0)
+	agg, ok := registry[aggName].(map[string]interface{})
+	require.True(t, ok, "the aggregate cluster must be registered under the exact name the policy receives")
+	assert.Equal(t, aggName, agg["cluster_name"])
+	assert.Equal(t, "/openai-provider", agg["base_path"], "the aggregate dials the PRIMARY member first")
 }

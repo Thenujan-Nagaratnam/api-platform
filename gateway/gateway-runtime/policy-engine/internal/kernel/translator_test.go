@@ -32,6 +32,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/executor"
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/registry"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
 // =============================================================================
@@ -536,8 +537,8 @@ func TestTranslateRequestActionsCore_BodyPreservesHeaderPhaseUpstream(t *testing
 	execCtx.apiContext = "/proxy"
 	execCtx.upstreamBasePath = "/primary-provider"
 	execCtx.defaultUpstreamCluster = "upstream_main_127.0.0.1_8080"
-	execCtx.upstreamDefinitionPaths = map[string]string{
-		"anthropic-provider": "/anthropic-provider",
+	execCtx.upstreamDefinitionPaths = map[string]policyenginev1.UpstreamInfo{
+		"anthropic-provider": {BasePath: "/anthropic-provider"},
 	}
 	execCtx.dynamicMetadata[constants.ExtProcFilterName] = map[string]interface{}{
 		constants.TargetUpstreamNameKey: "anthropic-provider",
@@ -567,6 +568,51 @@ func TestTranslateRequestActionsCore_BodyPreservesHeaderPhaseUpstream(t *testing
 	require.NotNil(t, rsl.Mutations.Path)
 	assert.Equal(t, "/proxy/chat/completions", *rsl.Mutations.Path)
 	assert.Equal(t, "/anthropic-provider",
+		rsl.DynamicMetadata[constants.ExtProcFilterName]["target_upstream_base_path"])
+}
+
+// TestTranslateRequestActionsCore_UsesRegisteredClusterNameVerbatim pins the
+// escape hatch from the upstream_<kind>_<apiId>_<name> naming convention: a
+// registered target may carry its own Envoy cluster name (a failover aggregate
+// cluster is named by gateway-controller's pkg/xds and follows no convention),
+// and re-prefixing it would name a cluster that does not exist.
+func TestTranslateRequestActionsCore_UsesRegisteredClusterNameVerbatim(t *testing.T) {
+	kernel := NewKernel()
+	chainExecutor := executor.NewChainExecutor(nil, nil, nil)
+	server := NewExternalProcessorServer(kernel, chainExecutor, config.TracingConfig{}, "", testMaxDecompressedBytes, testMaxDecompressedBytes)
+
+	execCtx := newPolicyExecutionContext(server, "test-route", &registry.PolicyChain{})
+	execCtx.sharedCtx = &policy.SharedContext{APIKind: "LlmProxy", APIId: "proxy-123"}
+	execCtx.requestBodyCtx = &policy.RequestContext{
+		Path:          "/proxy/chat/completions",
+		SharedContext: execCtx.sharedCtx,
+	}
+	execCtx.apiContext = "/proxy"
+	execCtx.upstreamBasePath = "/primary-provider"
+	execCtx.upstreamDefinitionPaths = map[string]policyenginev1.UpstreamInfo{
+		"failover_agg_chat_0": {ClusterName: "failover_agg_chat_0", BasePath: "/primary-provider"},
+	}
+
+	targetUpstream := "failover_agg_chat_0"
+	result := &executor.RequestExecutionResult{
+		Results: []executor.RequestPolicyResult{{
+			Action: policy.UpstreamRequestModifications{UpstreamName: &targetUpstream},
+		}},
+	}
+
+	rsl, err := translateRequestActionsCore(result, execCtx)
+	require.NoError(t, err)
+	require.NotNil(t, rsl.HeaderMutation)
+
+	var targetCluster string
+	for _, h := range rsl.HeaderMutation.SetHeaders {
+		if h.Header.Key == constants.TargetUpstreamHeader {
+			targetCluster = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "failover_agg_chat_0", targetCluster,
+		"a registered cluster name must be used as-is, never re-prefixed with the definition convention")
+	assert.Equal(t, "/primary-provider",
 		rsl.DynamicMetadata[constants.ExtProcFilterName]["target_upstream_base_path"])
 }
 
@@ -930,7 +976,7 @@ func TestTranslateRequestHeaderActions_DynamicEndpoint(t *testing.T) {
 		}
 		execCtx.apiContext = "/api"
 		execCtx.upstreamBasePath = "/sandbox"
-		execCtx.upstreamDefinitionPaths = map[string]string{"alt-upstream": "/alternate"}
+		execCtx.upstreamDefinitionPaths = map[string]policyenginev1.UpstreamInfo{"alt-upstream": {BasePath: "/alternate"}}
 		return execCtx
 	}
 
@@ -1005,7 +1051,7 @@ func TestTranslateRequestHeaderActionsWithBodyMerge_DynamicEndpoint(t *testing.T
 		}
 		execCtx.apiContext = "/api"
 		execCtx.upstreamBasePath = "/sandbox"
-		execCtx.upstreamDefinitionPaths = map[string]string{"alt-upstream": "/alternate"}
+		execCtx.upstreamDefinitionPaths = map[string]policyenginev1.UpstreamInfo{"alt-upstream": {BasePath: "/alternate"}}
 		return execCtx
 	}
 	targetUpstream := "alt-upstream"

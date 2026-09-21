@@ -29,6 +29,8 @@ import (
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/xds"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -284,12 +286,34 @@ func (t *Translator) TranslateRuntimeConfigs(rdcs []*models.RuntimeDeployConfig)
 				upstreamBasePath = uc.BasePath
 			}
 
-			// Build upstream definition paths, keyed by definition name so the
-			// policy engine can resolve them from a policy's targetUpstream value.
-			upstreamDefPaths := make(map[string]string)
+			// Build the name-addressable upstream registry, keyed by the exact
+			// name a policy puts in UpstreamRequestModifications.UpstreamName.
+			//
+			// ClusterName is left empty for an ordinary upstream definition: its
+			// real Envoy cluster name follows the shared convention
+			// (upstream_<kind>_<apiId>_<sanitizedName>), which the policy engine
+			// still derives itself. Only an entry whose cluster name does NOT
+			// follow that convention spells it out, and the policy engine then
+			// uses the supplied name verbatim.
+			upstreamDefPaths := make(map[string]policyenginev1.UpstreamInfo)
 			for _, uc := range rdc.UpstreamClusters {
 				if uc.Name != "" {
-					upstreamDefPaths[uc.Name] = uc.BasePath
+					upstreamDefPaths[uc.Name] = policyenginev1.UpstreamInfo{BasePath: uc.BasePath}
+				}
+			}
+			// A failover aggregate cluster is addressable by name from a policy
+			// (model-failover returns its aggregateCluster param as UpstreamName)
+			// but is not an upstream definition — its Envoy cluster name is
+			// assigned by pkg/xds and follows no derivable convention, so it is
+			// registered explicitly. BasePath is the PRIMARY chain member's, which
+			// is what the aggregate's first attempt dials.
+			if route.Upstream.Failover != nil {
+				for i, tgt := range route.Upstream.Failover.Targets {
+					aggName := xds.AggregateClusterName(routeKey, i)
+					upstreamDefPaths[aggName] = policyenginev1.UpstreamInfo{
+						ClusterName: aggName,
+						BasePath:    tgt.Target.Upstream.BasePath,
+					}
 				}
 			}
 
@@ -371,7 +395,7 @@ func (t *Translator) createRouteConfigResource(
 	routeKey string,
 	rdc *models.RuntimeDeployConfig,
 	upstreamBasePath string,
-	upstreamDefPaths map[string]string,
+	upstreamDefPaths map[string]policyenginev1.UpstreamInfo,
 ) (types.Resource, error) {
 	route := rdc.Routes[routeKey]
 

@@ -482,3 +482,52 @@ func TestRouteConfigUpdate_ValidBodyLimitsAreAccepted(t *testing.T) {
 		})
 	}
 }
+
+// ─── Name-addressable upstream registry ──────────────────────────────────────
+
+// An entry that spells out its own cluster name (a failover aggregate cluster,
+// whose Envoy name follows no derivable convention) must survive the wire, so
+// resolveUpstreamRedirect can use it verbatim instead of re-prefixing it.
+func TestRouteConfigUpdate_UpstreamDefinitionPathsCarryExplicitClusterName(t *testing.T) {
+	h, k := newRouteHandler(t, resolver.DefaultRegistry())
+
+	require.NoError(t, h.HandleRouteConfigUpdate(context.Background(),
+		[]*anypb.Any{routeConfigResource(t, map[string]interface{}{
+			"route_key": "POST|/chat/completions|main",
+			"upstream_definition_paths": map[string]interface{}{
+				"anthropic-upstream": map[string]interface{}{"base_path": "/anthropic-provider"},
+				"failover_agg_chat_0": map[string]interface{}{
+					"cluster_name": "failover_agg_chat_0",
+					"base_path":    "/openai-provider",
+				},
+			},
+		})}, "v1"))
+
+	rc := k.GetRouteConfig("POST|/chat/completions|main")
+	require.NotNil(t, rc)
+	assert.Equal(t, "/anthropic-provider", rc.Metadata.UpstreamDefinitionPaths["anthropic-upstream"].BasePath)
+	assert.Empty(t, rc.Metadata.UpstreamDefinitionPaths["anthropic-upstream"].ClusterName,
+		"an ordinary definition leaves the cluster name to the naming convention")
+	assert.Equal(t, "failover_agg_chat_0", rc.Metadata.UpstreamDefinitionPaths["failover_agg_chat_0"].ClusterName)
+	assert.Equal(t, "/openai-provider", rc.Metadata.UpstreamDefinitionPaths["failover_agg_chat_0"].BasePath)
+}
+
+// A gateway-controller older than the widening sends a bare base-path string.
+// Accepting it keeps every named upstream's base path working through a rolling
+// upgrade instead of silently dropping it.
+func TestRouteConfigUpdate_UpstreamDefinitionPathsAcceptLegacyStringShape(t *testing.T) {
+	h, k := newRouteHandler(t, resolver.DefaultRegistry())
+
+	require.NoError(t, h.HandleRouteConfigUpdate(context.Background(),
+		[]*anypb.Any{routeConfigResource(t, map[string]interface{}{
+			"route_key": "POST|/chat/completions|main",
+			"upstream_definition_paths": map[string]interface{}{
+				"anthropic-upstream": "/anthropic-provider",
+			},
+		})}, "v1"))
+
+	rc := k.GetRouteConfig("POST|/chat/completions|main")
+	require.NotNil(t, rc)
+	assert.Equal(t, "/anthropic-provider", rc.Metadata.UpstreamDefinitionPaths["anthropic-upstream"].BasePath)
+	assert.Empty(t, rc.Metadata.UpstreamDefinitionPaths["anthropic-upstream"].ClusterName)
+}

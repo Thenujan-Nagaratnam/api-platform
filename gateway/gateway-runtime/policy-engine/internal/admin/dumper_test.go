@@ -31,6 +31,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/registry"
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/resolver"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
 // =============================================================================
@@ -263,8 +264,8 @@ func TestDumpRouteMetadata_WithRoutes(t *testing.T) {
 				APIKind:                "http/rest",
 				DefaultUpstreamCluster: "petstore_cluster",
 				UpstreamBasePath:       "/",
-				UpstreamDefinitionPaths: map[string]string{
-					"default": "/openapi.yaml",
+				UpstreamDefinitionPaths: map[string]policyenginev1.UpstreamInfo{
+					"default": {BasePath: "/openapi.yaml"},
 				},
 			},
 		},
@@ -287,7 +288,7 @@ func TestDumpRouteMetadata_WithRoutes(t *testing.T) {
 	assert.Equal(t, "http/rest", entry.APIKind)
 	assert.Equal(t, "petstore_cluster", entry.DefaultUpstreamCluster)
 	assert.Equal(t, "/", entry.UpstreamBasePath)
-	assert.Equal(t, map[string]string{"default": "/openapi.yaml"}, entry.UpstreamDefinitionPaths)
+	assert.Equal(t, map[string]policyenginev1.UpstreamInfo{"default": {BasePath: "/openapi.yaml"}}, entry.UpstreamDefinitionPaths)
 }
 
 // =============================================================================

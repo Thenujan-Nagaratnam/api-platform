@@ -394,10 +394,17 @@ func (h *ResourceHandler) HandleRouteConfigUpdate(ctx context.Context, resources
 		}
 
 		if pathsRaw, ok := data["upstream_definition_paths"].(map[string]interface{}); ok {
-			paths := make(map[string]string, len(pathsRaw))
+			paths := make(map[string]policyenginev1.UpstreamInfo, len(pathsRaw))
 			for k, v := range pathsRaw {
-				if s, ok := v.(string); ok {
-					paths[k] = s
+				switch value := v.(type) {
+				case map[string]interface{}:
+					paths[k] = policyenginev1.UpstreamInfoFromMap(value)
+				case string:
+					// Wire shape emitted by a gateway-controller older than the
+					// widening to {cluster_name, base_path}: a bare base path.
+					// Accepted so a rolling upgrade doesn't lose every named
+					// upstream's base path until both sides are on the new build.
+					paths[k] = policyenginev1.UpstreamInfo{BasePath: value}
 				}
 			}
 			rc.Metadata.UpstreamDefinitionPaths = paths

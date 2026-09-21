@@ -102,9 +102,11 @@ type PolicyExecutionContext struct {
 	// Used for computing path transformations when UpstreamName changes the upstream.
 	apiContext string
 
-	// Maps upstream definition names to their URL paths.
-	// Used when UpstreamName is set to compute the correct path transformation.
-	upstreamDefinitionPaths map[string]string
+	// Name-addressable upstream registry: every name a policy may set as
+	// UpstreamName, mapped to that target's base path (used to compute the path
+	// transformation) and, when it isn't derivable from the shared naming
+	// convention, its real Envoy cluster name. See RouteMetadata.UpstreamDefinitionPaths.
+	upstreamDefinitionPaths map[string]policyenginev1.UpstreamInfo
 
 	// defaultUpstream is this route's own compiled-in upstream (cluster name, URL, base
 	// path) — whichever slot it belongs to. Always present; surfaced to policies via the

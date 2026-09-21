@@ -90,14 +90,23 @@ func resolveUpstreamRedirect(execCtx *PolicyExecutionContext, d upstreamRedirect
 		apiKind := execCtx.sharedCtx.APIKind
 		apiId := execCtx.sharedCtx.APIId
 		sanitizedDefName := sanitizeUpstreamDefinitionName(*d.name)
+		// Default: the shared upstream-definition naming convention, which the
+		// controller applies when it creates a definition's Envoy cluster.
 		clusterName := constants.UpstreamDefinitionClusterPrefix + string(apiKind) + "_" + apiId + "_" + sanitizedDefName
-		info = policyenginev1.UpstreamInfo{ClusterName: clusterName}
 		if execCtx.upstreamDefinitionPaths != nil {
-			if bp, found := execCtx.upstreamDefinitionPaths[*d.name]; found {
-				info.BasePath = bp
+			if target, found := execCtx.upstreamDefinitionPaths[*d.name]; found {
+				// A registered target may carry its own Envoy cluster name when
+				// that name follows no derivable convention (a failover aggregate
+				// cluster, for instance). Use it verbatim — never re-prefix it,
+				// which would name a cluster that does not exist.
+				if target.ClusterName != "" {
+					clusterName = target.ClusterName
+				}
+				info.BasePath = target.BasePath
 				basePathKnown = true
 			}
 		}
+		info.ClusterName = clusterName
 		if !basePathKnown {
 			slog.Warn("UpstreamName: target upstream base path not found in upstreamDefinitionPaths",
 				"target_upstream", *d.name)
