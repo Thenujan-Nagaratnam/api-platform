@@ -38,6 +38,14 @@ const modelFailoverPolicyName = "model-failover"
 type modelFailoverTarget struct {
 	Model    string `json:"model"`
 	Provider string `json:"provider,omitempty"`
+	// BasePath is injected by the controller (never authored): the resolved
+	// upstream base path of the cluster this member dials. Every member of a
+	// chain on an LlmProxy is a loopback upstream on the SAME host:port, so
+	// auto_host_rewrite makes :authority identical across attempts and the
+	// base path in :path is the only thing that distinguishes one provider's
+	// loopback route from another's. Any author-supplied value is overwritten
+	// by buildRouteFailoverFromPolicy.
+	BasePath string `json:"basePath,omitempty"`
 }
 
 type modelFailoverTargetEntry struct {
@@ -52,6 +60,14 @@ type modelFailoverParams struct {
 	// PrimaryProvider is injected by the controller so the policy can resolve
 	// members authored without `provider:` to the primary provider identity.
 	PrimaryProvider string `json:"primaryProvider,omitempty"`
+	// OperationPath is injected by the controller (never authored): the
+	// route's own operation-relative path. Combined with a member's BasePath
+	// it yields that member's correct outbound :path, which the policy uses to
+	// re-point a retry that escalated to a different provider's loopback route
+	// (Envoy replays the first attempt's :path verbatim on a retry — unlike
+	// Host, it is not recomputed per attempt). Any author-supplied value is
+	// overwritten by buildRouteFailoverFromPolicy.
+	OperationPath string `json:"operationPath,omitempty"`
 }
 
 // parseModelFailoverParams parses raw policy params and validates that every
@@ -116,6 +132,7 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 	expanded := &modelFailoverParams{
 		SuspendDuration: params.SuspendDuration,
 		PrimaryProvider: primaryProviderID,
+		OperationPath:   r.OperationPath,
 		Targets:         make([]modelFailoverTargetEntry, len(params.Targets)),
 	}
 	targets := make([]models.RouteFailoverTarget, 0, len(params.Targets))
@@ -125,12 +142,15 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 			return nil, nil, fmt.Errorf("route %q: resolving failover target %q: %w", routeKey, entry.Target.Model, err)
 		}
 		fallbacks := make([]models.RouteFailoverEntry, 0, len(entry.Fallbacks))
+		expandedFallbacks := make([]modelFailoverTarget, 0, len(entry.Fallbacks))
 		for _, fb := range entry.Fallbacks {
 			fbEntry, err := resolveFailoverEntry(rdc, r, fb, primaryProviderID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("route %q: resolving failover fallback %q: %w", routeKey, fb.Model, err)
 			}
 			fallbacks = append(fallbacks, fbEntry)
+			fb.BasePath = fbEntry.Upstream.BasePath
+			expandedFallbacks = append(expandedFallbacks, fb)
 		}
 		targets = append(targets, models.RouteFailoverTarget{
 			Model:     entry.Target.Model,
@@ -138,9 +158,11 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 			Fallbacks: fallbacks,
 		})
 
+		expandedTarget := entry.Target
+		expandedTarget.BasePath = targetEntry.Upstream.BasePath
 		expanded.Targets[i] = modelFailoverTargetEntry{
-			Target:           entry.Target,
-			Fallbacks:        append([]modelFailoverTarget(nil), entry.Fallbacks...),
+			Target:           expandedTarget,
+			Fallbacks:        expandedFallbacks,
 			AggregateCluster: xds.AggregateClusterName(routeKey, i),
 		}
 	}

@@ -124,6 +124,56 @@ func TestBuildRouteFailoverFromPolicy_InjectsAggregateClusterName(t *testing.T) 
 	assert.Equal(t, "anthropic-upstream", expanded.Targets[0].Fallbacks[0].Provider)
 }
 
+// TestBuildRouteFailoverFromPolicy_InjectsMemberBasePathsAndOperationPath pins
+// the two fields the policy needs to correct a retry's :path: every chain
+// member is a loopback upstream on the same host:port, so auto_host_rewrite
+// leaves :authority identical across attempts and only the base path inside
+// :path distinguishes one provider's route from another's. The policy can
+// compute neither itself — the controller hands both down.
+func TestBuildRouteFailoverFromPolicy_InjectsMemberBasePathsAndOperationPath(t *testing.T) {
+	rdc, route := failoverTestRDC()
+	route.OperationPath = "/chat/completions"
+	route.Upstream.Default.BasePath = "/openai-provider"
+	rdc.UpstreamClusters["upstream_anthropic-upstream_anthropic_com_443"].BasePath = "/anthropic-provider"
+
+	params := &modelFailoverParams{
+		Targets: []modelFailoverTargetEntry{{
+			Target:    modelFailoverTarget{Model: "gpt-4o"},
+			Fallbacks: []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+		}},
+	}
+
+	_, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.NoError(t, err)
+	assert.Equal(t, "/chat/completions", expanded.OperationPath)
+	assert.Equal(t, "/openai-provider", expanded.Targets[0].Target.BasePath)
+	assert.Equal(t, "/anthropic-provider", expanded.Targets[0].Fallbacks[0].BasePath)
+	assert.Empty(t, params.Targets[0].Target.BasePath, "input params must not be mutated")
+	assert.Empty(t, params.Targets[0].Fallbacks[0].BasePath, "input params must not be mutated")
+}
+
+// An author-supplied basePath/operationPath is never trusted: the controller
+// resolves both, so whatever was written in the attachment is overwritten.
+func TestBuildRouteFailoverFromPolicy_OverwritesAuthoredBasePathAndOperationPath(t *testing.T) {
+	rdc, route := failoverTestRDC()
+	route.OperationPath = "/chat/completions"
+	route.Upstream.Default.BasePath = "/openai-provider"
+
+	params := &modelFailoverParams{
+		OperationPath: "/attacker-supplied",
+		Targets: []modelFailoverTargetEntry{{
+			Target: modelFailoverTarget{Model: "gpt-4o", BasePath: "/attacker-supplied"},
+		}},
+	}
+
+	_, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.NoError(t, err)
+	assert.Equal(t, "/chat/completions", expanded.OperationPath)
+	assert.Equal(t, "/openai-provider", expanded.Targets[0].Target.BasePath)
+}
+
 func TestBuildRouteFailoverFromPolicy_UnknownProviderIsAnError(t *testing.T) {
 	rdc, route := failoverTestRDC()
 	params := &modelFailoverParams{Targets: []modelFailoverTargetEntry{{

@@ -65,6 +65,13 @@ const attemptIndexMetadataKey = "model_failover_attempt_index"
 type FailoverTarget struct {
 	Model    string `json:"model"`
 	Provider string `json:"provider,omitempty"`
+	// BasePath is injected by gateway-controller: the resolved upstream base
+	// path of the cluster this member dials. Every member of a chain is a
+	// loopback upstream on the SAME host:port, so auto_host_rewrite leaves
+	// :authority identical across attempts and this base path inside :path is
+	// the only thing distinguishing one provider's loopback route from
+	// another's. See OnRequestHeaders' per-attempt :path correction.
+	BasePath string `json:"basePath,omitempty"`
 }
 
 // FailoverTargetEntry is one client-requested-model's primary + fallback chain.
@@ -84,6 +91,10 @@ type ModelFailoverParams struct {
 	// authored without `provider:` resolves to (the primary provider ID). Used
 	// for selected_provider metadata and suspension keys; never as a cluster name.
 	PrimaryProvider string `json:"primaryProvider,omitempty"`
+	// OperationPath is injected by gateway-controller: the route's own
+	// operation-relative path (e.g. "/chat/completions"). Joined with a
+	// member's BasePath it yields that member's correct outbound :path.
+	OperationPath string `json:"operationPath,omitempty"`
 }
 
 // Policy implements downstream target selection and, per upstream attempt,
@@ -128,6 +139,9 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 	}
 	if pp, ok := raw["primaryProvider"].(string); ok {
 		params.PrimaryProvider = pp
+	}
+	if op, ok := raw["operationPath"].(string); ok {
+		params.OperationPath = op
 	}
 
 	if suspendRaw, ok := raw["suspendDuration"]; ok {
@@ -328,10 +342,33 @@ func resolveAttempt(entry *FailoverTargetEntry, index int) *FailoverTarget {
 	return &entry.Fallbacks[fallbackIdx]
 }
 
+// joinBasePathAndOperation combines a chain member's base path with the
+// route's operation-relative path (e.g. "/anthropic-provider" +
+// "/chat/completions" -> "/anthropic-provider/chat/completions"), normalizing
+// the separator so neither a missing nor a doubled slash can occur regardless
+// of how either piece was stored (a root base path of "/" or "" must not
+// produce "//chat/completions"). Returns "" when operationPath is empty —
+// nothing to rewrite to, so the caller leaves :path untouched rather than
+// clobbering it. Deliberately identical to the kernel's own helper of the same
+// name, which produced these paths before failover moved into this policy.
+func joinBasePathAndOperation(basePath, operationPath string) string {
+	if operationPath == "" {
+		return ""
+	}
+	base := strings.TrimSuffix(basePath, "/")
+	op := operationPath
+	if !strings.HasPrefix(op, "/") {
+		op = "/" + op
+	}
+	return base + op
+}
+
 // OnRequestHeaders is meaningful only for an upstream-attempt invocation on a
 // cluster this instance's chain owns; otherwise a no-op. It resolves the chain
-// member for this attempt and seeds selected_provider/selected_model metadata
-// (plus the attempt index for the response phase).
+// member for this attempt, seeds selected_provider/selected_model metadata
+// (plus the attempt index for the response phase), tells the kernel which base
+// path this attempt actually dials, and corrects a stale :path left over from
+// an earlier attempt.
 func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeaderContext, _ map[string]interface{}) policy.RequestHeaderAction {
 	if reqCtx.Downstream != nil || reqCtx.Upstream == nil {
 		return nil
@@ -353,6 +390,33 @@ func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeade
 	reqCtx.SharedContext.Metadata[selectedModelMetadataKey] = member.Model
 	reqCtx.SharedContext.Metadata[selectedProviderMetadataKey] = p.resolvedProvider(*member)
 	reqCtx.SharedContext.Metadata[attemptIndexMetadataKey] = index
+
+	// The kernel resolves an attempt's backend by xds.cluster_name, which for
+	// an aggregate-routed attempt is the aggregate's own name and therefore
+	// resolves nothing. This policy does know which member this attempt is,
+	// so hand its base path back: the kernel adopts it for the rest of this
+	// attempt, and every later policy sees a correct Upstream.BasePath.
+	if member.BasePath != "" {
+		reqCtx.Upstream.BasePath = member.BasePath
+	}
+
+	// The outbound :path was rewritten exactly once, downstream, before Envoy
+	// ever dispatched — using the PRIMARY member's base path. Envoy replays
+	// that same :path verbatim on a retry; unlike Host (recomputed per attempt
+	// by auto_host_rewrite) it is never recalculated. Since every chain member
+	// is a loopback upstream on the same host:port, :path is the ONLY thing
+	// that selects one provider's route over another's, so an escalation to a
+	// different provider must correct it or the loopback listener sends the
+	// retry straight back to the provider that just failed.
+	//
+	// An empty BasePath means the controller supplied nothing for this member
+	// (nothing to correct TO), so :path is left exactly as Envoy delivered it
+	// rather than rewritten to a guessed root-relative path.
+	if member.BasePath != "" {
+		if corrected := joinBasePathAndOperation(member.BasePath, p.params.OperationPath); corrected != "" && corrected != reqCtx.Path {
+			return policy.UpstreamRequestHeaderModifications{Path: &corrected}
+		}
+	}
 
 	return nil
 }

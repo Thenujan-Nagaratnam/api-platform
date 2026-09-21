@@ -342,3 +342,138 @@ func TestOnResponseHeaders_5xxSuspendsUnderResolvedKeyAndDownstreamSeesIt(t *tes
 	require.NotNil(t, mods.UpstreamName)
 	assert.Equal(t, "anthropic-upstream", *mods.UpstreamName, "downstream must see the primary as suspended")
 }
+
+// ─── Suspension gating ───────────────────────────────────────────────────────
+
+func TestOnResponseHeaders_4xxDoesNotSuspend(t *testing.T) {
+	p := chainPolicy()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{attemptIndexMetadataKey: 1}},
+		ResponseStatus: 429,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "failover_agg_chat_0"},
+	}
+
+	p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	assert.False(t, p.isSuspended("gpt-4o", ""), "a 4xx is the client's problem, not a failing target")
+}
+
+func TestOnResponseHeaders_ZeroSuspendDurationDoesNotSuspend(t *testing.T) {
+	p := chainPolicy()
+	p.params.SuspendDuration = 0
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{attemptIndexMetadataKey: 1}},
+		ResponseStatus: 503,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "failover_agg_chat_0"},
+	}
+
+	p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	assert.False(t, p.isSuspended("gpt-4o", ""), "suspendDuration 0 disables suspension entirely")
+}
+
+// ─── Per-attempt :path correction ────────────────────────────────────────────
+
+// pathChainPolicy carries the basePath/operationPath the controller injects, so
+// each member's correct outbound :path is computable.
+func pathChainPolicy() *Policy {
+	p := chainPolicy()
+	p.params.OperationPath = "/chat/completions"
+	p.params.Targets[0].Target.BasePath = "/openai-provider"
+	p.params.Targets[0].Fallbacks[0].BasePath = "/anthropic-provider"
+	return p
+}
+
+func attemptReqCtxWithPath(cluster, attempt, path string) *policy.RequestHeaderContext {
+	reqCtx := attemptReqCtx(cluster, attempt)
+	reqCtx.Path = path
+	return reqCtx
+}
+
+// TestOnRequestHeaders_Attempt2RewritesStalePathToMembersBasePath is the
+// regression test for a bug caught by live e2e verification: the downstream
+// phase rewrites :path exactly once, before Envoy's first dispatch, using the
+// PRIMARY member's base path. Envoy replays that same :path verbatim on a
+// retry — unlike Host, it is not recomputed per attempt via auto_host_rewrite.
+// Every chain member being a loopback upstream on the same host:port, an
+// uncorrected :path sends the retry straight back to the provider that just
+// failed, regardless of which real cluster Envoy dialed.
+func TestOnRequestHeaders_Attempt2RewritesStalePathToMembersBasePath(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("failover_agg_chat_0", "2", "/openai-provider/chat/completions")
+
+	action := pathChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	require.True(t, ok, "an escalated attempt on a different provider's base path must correct :path")
+	require.NotNil(t, mods.Path)
+	assert.Equal(t, "/anthropic-provider/chat/completions", *mods.Path)
+}
+
+func TestOnRequestHeaders_Attempt1NoPathMutationWhenAlreadyCorrect(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("failover_agg_chat_0", "1", "/openai-provider/chat/completions")
+
+	action := pathChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Nil(t, action, "the primary attempt's :path is already this member's own — nothing to correct")
+}
+
+func TestOnRequestHeaders_EmptyBasePathLeavesPathUntouched(t *testing.T) {
+	p := pathChainPolicy()
+	p.params.Targets[0].Fallbacks[0].BasePath = ""
+	reqCtx := attemptReqCtxWithPath("failover_agg_chat_0", "2", "/openai-provider/chat/completions")
+
+	action := p.OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Nil(t, action, "no injected basePath means nothing to correct TO — never guess a root-relative path")
+	assert.Equal(t, "/openai-provider/chat/completions", reqCtx.Path)
+}
+
+func TestOnRequestHeaders_MissingOperationPathLeavesPathUntouched(t *testing.T) {
+	p := pathChainPolicy()
+	p.params.OperationPath = ""
+	reqCtx := attemptReqCtxWithPath("failover_agg_chat_0", "2", "/openai-provider/chat/completions")
+
+	assert.Nil(t, p.OnRequestHeaders(context.Background(), reqCtx, nil))
+}
+
+// TestOnRequestHeaders_SetsUpstreamBasePathForThisAttempt pins the other half
+// of the aggregate-attempt gap: the kernel resolves a backend by
+// xds.cluster_name, which for an aggregate attempt is the aggregate's own name
+// and resolves nothing, so BasePath would otherwise stay empty for every later
+// policy in the attempt.
+func TestOnRequestHeaders_SetsUpstreamBasePathForThisAttempt(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("failover_agg_chat_0", "2", "/openai-provider/chat/completions")
+
+	pathChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "/anthropic-provider", reqCtx.Upstream.BasePath)
+}
+
+func TestParseParams_CarriesInjectedBasePathAndOperationPath(t *testing.T) {
+	params, err := parseParams(map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"target": map[string]interface{}{"model": "gpt-4o", "basePath": "/openai-provider"},
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude", "provider": "anthropic-upstream", "basePath": "/anthropic-provider"},
+				},
+				"aggregateCluster": "failover_agg_chat_0",
+			},
+		},
+		"operationPath": "/chat/completions",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "/chat/completions", params.OperationPath)
+	assert.Equal(t, "/openai-provider", params.Targets[0].Target.BasePath)
+	assert.Equal(t, "/anthropic-provider", params.Targets[0].Fallbacks[0].BasePath)
+}
+
+func TestJoinBasePathAndOperation(t *testing.T) {
+	assert.Equal(t, "/p/chat", joinBasePathAndOperation("/p", "/chat"))
+	assert.Equal(t, "/p/chat", joinBasePathAndOperation("/p/", "/chat"))
+	assert.Equal(t, "/p/chat", joinBasePathAndOperation("/p", "chat"))
+	assert.Equal(t, "/chat", joinBasePathAndOperation("/", "/chat"))
+	assert.Equal(t, "/chat", joinBasePathAndOperation("", "/chat"))
+	assert.Equal(t, "", joinBasePathAndOperation("/p", ""))
+}
