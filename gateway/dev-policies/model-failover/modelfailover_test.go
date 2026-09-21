@@ -2,6 +2,7 @@ package modelfailover
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -102,4 +103,201 @@ func TestOnRequestBody_SuspendedTargetSkipsToFallback(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, mods.UpstreamName)
 	assert.Equal(t, "anthropic-upstream", *mods.UpstreamName, "must bypass the aggregate and target the fallback's own upstream directly")
+}
+
+func TestOnRequestBody_SkipsFallbackWithEmptyProvider(t *testing.T) {
+	p := &Policy{
+		params: ModelFailoverParams{
+			Targets: []FailoverTargetEntry{{
+				Target: FailoverTarget{Model: "gpt-4o"},
+				Fallbacks: []FailoverTarget{
+					{Model: "same-provider-model"},
+					{Model: "claude", Provider: "anthropic-upstream"},
+				},
+				AggregateCluster: "failover_agg_chat_0",
+			}},
+		},
+		suspendedTargets: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)},
+	}
+	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+
+	mods := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
+
+	require.NotNil(t, mods.UpstreamName)
+	assert.Equal(t, "anthropic-upstream", *mods.UpstreamName)
+}
+
+func TestOnRequestBody_OnlyEmptyProviderFallbacksRoutesToAggregate(t *testing.T) {
+	p := &Policy{
+		params: ModelFailoverParams{
+			Targets: []FailoverTargetEntry{{
+				Target:           FailoverTarget{Model: "gpt-4o"},
+				Fallbacks:        []FailoverTarget{{Model: "same-provider-model"}},
+				AggregateCluster: "failover_agg_chat_0",
+			}},
+		},
+		suspendedTargets: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)},
+	}
+	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+
+	mods := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
+
+	require.NotNil(t, mods.UpstreamName)
+	assert.Equal(t, "failover_agg_chat_0", *mods.UpstreamName)
+}
+
+func TestOnRequestBody_EmptyAggregateClusterIsNoop(t *testing.T) {
+	p := &Policy{
+		params:           ModelFailoverParams{Targets: []FailoverTargetEntry{{Target: FailoverTarget{Model: "gpt-4o"}}}},
+		suspendedTargets: make(map[string]time.Time),
+	}
+	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+
+	mods := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
+
+	assert.Nil(t, mods.UpstreamName, "no injected aggregate cluster means normal routing, never a pointer to an empty string")
+}
+
+func TestSuspension_ConcurrentAccess(t *testing.T) {
+	p := &Policy{
+		params:           ModelFailoverParams{SuspendDuration: 60},
+		suspendedTargets: make(map[string]time.Time),
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); p.suspend("gpt-4o", "") }()
+		go func() { defer wg.Done(); _ = p.isSuspended("gpt-4o", "") }()
+	}
+	wg.Wait()
+	assert.True(t, p.isSuspended("gpt-4o", ""))
+}
+
+func chainPolicy() *Policy {
+	return &Policy{
+		params: ModelFailoverParams{
+			Targets: []FailoverTargetEntry{{
+				Target:           FailoverTarget{Model: "gpt-4o"},
+				Fallbacks:        []FailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+				AggregateCluster: "failover_agg_chat_0",
+			}},
+			SuspendDuration: 900,
+		},
+		suspendedTargets: make(map[string]time.Time),
+	}
+}
+
+func attemptReqCtx(cluster, attempt string) *policy.RequestHeaderContext {
+	h := map[string][]string{}
+	if attempt != "" {
+		h["x-envoy-attempt-count"] = []string{attempt}
+	}
+	return &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Headers:       policy.NewHeaders(h),
+		Upstream:      &policy.UpstreamRequestContext{RouteCluster: cluster},
+	}
+}
+
+func TestOnRequestHeaders_ResolvesTargetAttemptAndSeedsMetadata(t *testing.T) {
+	reqCtx := attemptReqCtx("failover_agg_chat_0", "1")
+	chainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "gpt-4o", reqCtx.SharedContext.Metadata[selectedModelMetadataKey])
+	provider, present := reqCtx.SharedContext.Metadata[selectedProviderMetadataKey]
+	assert.True(t, present)
+	assert.Equal(t, "", provider)
+}
+
+func TestOnRequestHeaders_ResolvesFallbackAttempt(t *testing.T) {
+	reqCtx := attemptReqCtx("failover_agg_chat_0", "2")
+	chainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "claude-sonnet-4-5-20250929", reqCtx.SharedContext.Metadata[selectedModelMetadataKey])
+	assert.Equal(t, "anthropic-upstream", reqCtx.SharedContext.Metadata[selectedProviderMetadataKey])
+}
+
+func TestOnRequestHeaders_MissingAttemptHeaderIsPrimary(t *testing.T) {
+	reqCtx := attemptReqCtx("failover_agg_chat_0", "")
+	chainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "gpt-4o", reqCtx.SharedContext.Metadata[selectedModelMetadataKey])
+}
+
+func TestOnRequestHeaders_PastChainEndIsNoop(t *testing.T) {
+	reqCtx := attemptReqCtx("failover_agg_chat_0", "5")
+	chainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Empty(t, reqCtx.SharedContext.Metadata)
+}
+
+func TestOnRequestHeaders_UnknownClusterIsNoop(t *testing.T) {
+	reqCtx := attemptReqCtx("some-unrelated-cluster", "1")
+	chainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Empty(t, reqCtx.SharedContext.Metadata)
+}
+
+func TestOnRequestHeaders_DownstreamInvocationIsNoop(t *testing.T) {
+	reqCtx := attemptReqCtx("failover_agg_chat_0", "1")
+	reqCtx.Downstream = &policy.DownstreamContext{}
+	chainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Empty(t, reqCtx.SharedContext.Metadata)
+}
+
+func TestOnResponseHeaders_RecordsSuspensionOn5xx(t *testing.T) {
+	p := chainPolicy()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{attemptIndexMetadataKey: 1}},
+		ResponseStatus: 500,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "failover_agg_chat_0"},
+	}
+
+	action := p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	assert.Nil(t, action, "primary attempt sets no resolved-provider header")
+	assert.True(t, p.isSuspended("gpt-4o", ""))
+}
+
+func TestOnResponseHeaders_FallbackAttemptSetsResolvedProviderHeader(t *testing.T) {
+	p := chainPolicy()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{attemptIndexMetadataKey: 2}},
+		ResponseStatus: 200,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "failover_agg_chat_0"},
+	}
+
+	action := p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	mods, ok := action.(policy.DownstreamResponseHeaderModifications)
+	require.True(t, ok)
+	assert.Equal(t, "anthropic-upstream", mods.HeadersToSet[ResolvedFailoverProviderHeader])
+	assert.False(t, p.isSuspended("claude-sonnet-4-5-20250929", "anthropic-upstream"))
+}
+
+func TestOnResponseHeaders_FallsBackToRequestHeadersWhenNoMetadata(t *testing.T) {
+	p := chainPolicy()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{}},
+		RequestHeaders: policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"2"}}),
+		ResponseStatus: 503,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "failover_agg_chat_0"},
+	}
+
+	p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	assert.True(t, p.isSuspended("claude-sonnet-4-5-20250929", "anthropic-upstream"))
+}
+
+func TestOnResponseHeaders_UnknownClusterIsNoop(t *testing.T) {
+	p := chainPolicy()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{}},
+		ResponseStatus: 500,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "other"},
+	}
+
+	assert.Nil(t, p.OnResponseHeaders(context.Background(), respCtx, nil))
+	assert.False(t, p.isSuspended("gpt-4o", ""))
 }

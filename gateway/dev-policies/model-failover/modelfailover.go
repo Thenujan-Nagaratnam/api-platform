@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,7 +49,17 @@ const ResolvedFailoverProviderHeader = "x-wso2-resolved-failover-provider"
 var (
 	_ policy.Policy        = (*Policy)(nil)
 	_ policy.RequestPolicy = (*Policy)(nil)
+
+	_ policy.RequestHeaderPolicy  = (*Policy)(nil)
+	_ policy.ResponseHeaderPolicy = (*Policy)(nil)
 )
+
+// attemptIndexMetadataKey carries this attempt's 1-based chain index from the
+// request-header phase to the response-header phase of the same attempt: the
+// response context has no request headers, so x-envoy-attempt-count is not
+// otherwise visible there. SharedContext is shared across both phases of one
+// attempt.
+const attemptIndexMetadataKey = "model_failover_attempt_index"
 
 // FailoverTarget identifies one chain member.
 type FailoverTarget struct {
@@ -137,7 +148,7 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 // two apart inside the handlers).
 func (p *Policy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestHeaderMode:  policy.HeaderModeProcess,
 		RequestBodyMode:    policy.BodyModeBuffer,
 		ResponseHeaderMode: policy.HeaderModeProcess,
 		ResponseBodyMode:   policy.BodyModeSkip,
@@ -222,12 +233,22 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 		return policy.UpstreamRequestModifications{}
 	}
 
+	// The controller injects AggregateCluster; if it is absent there is no
+	// chain to route into, so use normal routing rather than pointing
+	// UpstreamName at "".
+	if entry.AggregateCluster == "" {
+		return policy.UpstreamRequestModifications{}
+	}
+
 	if !p.isSuspended(entry.Target.Model, entry.Target.Provider) {
 		cluster := entry.AggregateCluster
 		return policy.UpstreamRequestModifications{UpstreamName: &cluster}
 	}
 
 	for _, fallback := range entry.Fallbacks {
+		if fallback.Provider == "" {
+			continue // no addressable upstream for this fallback
+		}
 		if !p.isSuspended(fallback.Model, fallback.Provider) {
 			// Route directly to the fallback's own upstream, bypassing the
 			// aggregate entirely — a known-bad primary is skipped, at the
@@ -244,4 +265,118 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 	// own retry exhaustion behavior applies; nothing left to skip to).
 	cluster := entry.AggregateCluster
 	return policy.UpstreamRequestModifications{UpstreamName: &cluster}
+}
+
+// findEntryByAggregateCluster returns the target entry whose AggregateCluster
+// matches cluster, or nil.
+func (p *Policy) findEntryByAggregateCluster(cluster string) *FailoverTargetEntry {
+	if cluster == "" {
+		return nil
+	}
+	for i := range p.params.Targets {
+		if p.params.Targets[i].AggregateCluster == cluster {
+			return &p.params.Targets[i]
+		}
+	}
+	return nil
+}
+
+// attemptCount reads x-envoy-attempt-count, defaulting to 1 (the primary
+// attempt) for a missing or unparseable header.
+func attemptCount(headers *policy.Headers) int {
+	if headers == nil {
+		return 1
+	}
+	values := headers.Get("x-envoy-attempt-count")
+	if len(values) == 0 {
+		return 1
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(values[0]))
+	if err != nil || n <= 0 {
+		return 1
+	}
+	return n
+}
+
+// resolveAttempt returns the chain member for the 1-based attempt index
+// (1 = primary target, 2 = Fallbacks[0], ...), or nil past the chain's end.
+func resolveAttempt(entry *FailoverTargetEntry, index int) *FailoverTarget {
+	if index <= 1 {
+		return &entry.Target
+	}
+	fallbackIdx := index - 2
+	if fallbackIdx >= len(entry.Fallbacks) {
+		return nil
+	}
+	return &entry.Fallbacks[fallbackIdx]
+}
+
+// OnRequestHeaders is meaningful only for an upstream-attempt invocation on a
+// cluster this instance's chain owns; otherwise a no-op. It resolves the chain
+// member for this attempt and seeds selected_provider/selected_model metadata
+// (plus the attempt index for the response phase).
+func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeaderContext, _ map[string]interface{}) policy.RequestHeaderAction {
+	if reqCtx.Downstream != nil || reqCtx.Upstream == nil {
+		return nil
+	}
+	entry := p.findEntryByAggregateCluster(reqCtx.Upstream.RouteCluster)
+	if entry == nil {
+		return nil
+	}
+
+	index := attemptCount(reqCtx.Headers)
+	member := resolveAttempt(entry, index)
+	if member == nil {
+		return nil
+	}
+
+	if reqCtx.SharedContext.Metadata == nil {
+		reqCtx.SharedContext.Metadata = map[string]interface{}{}
+	}
+	reqCtx.SharedContext.Metadata[selectedModelMetadataKey] = member.Model
+	reqCtx.SharedContext.Metadata[selectedProviderMetadataKey] = member.Provider
+	reqCtx.SharedContext.Metadata[attemptIndexMetadataKey] = index
+
+	return nil
+}
+
+// responseAttemptIndex recovers the attempt index in the response phase: from
+// metadata written by OnRequestHeaders, else request headers if present, else 1.
+func responseAttemptIndex(respCtx *policy.ResponseHeaderContext) int {
+	if respCtx.SharedContext != nil {
+		if n, ok := respCtx.SharedContext.Metadata[attemptIndexMetadataKey].(int); ok && n > 0 {
+			return n
+		}
+	}
+	return attemptCount(respCtx.RequestHeaders)
+}
+
+// OnResponseHeaders records suspension for a failing attempt (any 5xx) and,
+// for an attempt that escalated past the primary, sets
+// ResolvedFailoverProviderHeader for downstream analytics attribution.
+func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
+	if respCtx.Downstream != nil || respCtx.Upstream == nil {
+		return nil
+	}
+	entry := p.findEntryByAggregateCluster(respCtx.Upstream.RouteCluster)
+	if entry == nil {
+		return nil
+	}
+
+	index := responseAttemptIndex(respCtx)
+	member := resolveAttempt(entry, index)
+	if member == nil {
+		return nil
+	}
+
+	if respCtx.ResponseStatus >= 500 {
+		p.suspend(member.Model, member.Provider)
+	}
+
+	if index > 1 {
+		return policy.DownstreamResponseHeaderModifications{
+			HeadersToSet: map[string]string{ResolvedFailoverProviderHeader: member.Provider},
+		}
+	}
+	return nil
 }
