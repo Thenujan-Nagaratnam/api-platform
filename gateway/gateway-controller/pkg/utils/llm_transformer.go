@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +13,13 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
 	"gopkg.in/yaml.v3"
 )
+
+// modelFailoverPolicyName is the policy whose operationPolicies: attachment
+// declares an LlmProxy's failover chains. Its presence is what triggers the
+// failover attachment/xDS generation that the resilience.failover schema block
+// used to trigger. Kept in lockstep with pkg/transform's constant of the same
+// name (the two packages cannot share one: pkg/transform imports pkg/utils).
+const modelFailoverPolicyName = "model-failover"
 
 type LLMProviderTransformer struct {
 	store                 *storage.ConfigStore
@@ -280,6 +288,12 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 	// provider is also reachable via the ordinary downstream selection path.
 	authByProviderID := map[string]*api.LLMUpstreamAuth{}
 	valuePrefixByProviderID := map[string]string{}
+	// providerAuthPolicyByID/providerTransformerPolicyByID capture the built
+	// provider-scoped policies by provider identity, so Step 3.7 can re-attach
+	// the exact same content as an upstream-attempt instance instead of
+	// constructing it a second, divergent way.
+	providerAuthPolicyByID := map[string]api.Policy{}
+	providerTransformerPolicyByID := map[string]api.Policy{}
 	if proxy.Spec.Provider.Auth != nil {
 		authByProviderID[proxy.Spec.Provider.Id] = proxy.Spec.Provider.Auth
 		valuePrefixByProviderID[proxy.Spec.Provider.Id] = apiKeyAuthValuePrefix(providerConfig.Spec.GlobalPolicies)
@@ -292,6 +306,7 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 			condition := selectedProviderExecutionCondition(proxy.Spec.Provider.Id, true)
 			pol.ExecutionCondition = &condition
 			upstreamAuthPolicies = append(upstreamAuthPolicies, *pol)
+			providerAuthPolicyByID[proxy.Spec.Provider.Id] = *pol
 		}
 	}
 	if proxy.Spec.AdditionalProviders != nil {
@@ -313,6 +328,7 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 					condition := selectedProviderExecutionCondition(name, false)
 					pol.ExecutionCondition = &condition
 					upstreamAuthPolicies = append(upstreamAuthPolicies, *pol)
+					providerAuthPolicyByID[name] = *pol
 				}
 			}
 
@@ -322,6 +338,7 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 					return nil, err
 				}
 				transformerPolicies = append(transformerPolicies, *pol)
+				providerTransformerPolicyByID[name] = *pol
 			}
 		}
 	}
@@ -353,6 +370,58 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 		}
 	}
 
+	// Step 3.7: model-failover policy attachments. A model-failover entry under
+	// operationPolicies: declares the proxy's failover chains (the replacement
+	// for the resilience.failover schema block). When one is present the
+	// controller synthesizes two further attachments:
+	//
+	//  a) a second, unconditioned instance of model-failover itself under
+	//     upstreamPolicies:, carrying the exact same params — it is what resolves
+	//     each attempt's chain position and seeds selected_provider/selected_model
+	//     into the shared request metadata during the upstream-attempt phase.
+	//  b) one upstream-attempt instance of every provider-scoped
+	//     credential/transform policy, per provider the chain references, each
+	//     gated by the same selectedProviderExecutionCondition CEL expression
+	//     that already gates its downstream counterpart. The policies themselves
+	//     need no code changes — only the attachment point and the condition
+	//     differ (design doc §8).
+	//
+	// (a) is attached by appending to upstreamPolicies below, so it flows through
+	// the ordinary Phase 2 attachment loop and therefore lands ahead of every
+	// provider-scoped attachment appended in Phase 3 — the ordering the metadata
+	// hand-off requires (design doc §9).
+	opLevelPolicies := collectOperationLevelLLMPolicies(proxy.Spec.OperationPolicies, proxy.Spec.Policies)
+	upstreamPolicies := derefOperationPolicies(proxy.Spec.UpstreamPolicies)
+	var modelFailoverProviderPolicies []api.Policy
+	if modelFailoverAttachments := operationPoliciesNamed(opLevelPolicies, modelFailoverPolicyName); len(modelFailoverAttachments) > 0 {
+		if len(operationPoliciesNamed(upstreamPolicies, modelFailoverPolicyName)) == 0 {
+			// Copy rather than append in place: derefOperationPolicies hands back
+			// the caller's own slice, whose spare capacity is not ours to write.
+			combined := make([]api.OperationPolicy, 0, len(upstreamPolicies)+len(modelFailoverAttachments))
+			combined = append(combined, upstreamPolicies...)
+			combined = append(combined, modelFailoverAttachments...)
+			upstreamPolicies = combined
+		}
+
+		referencedProviders, err := modelFailoverReferencedProviders(modelFailoverAttachments, proxy.Spec.Provider.Id)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", modelFailoverPolicyName, err)
+		}
+		for _, providerID := range referencedProviders {
+			condition := selectedProviderExecutionCondition(providerID, false)
+			// Translators must run before upstream auth so the request is
+			// rewritten into the selected provider's shape before its key is
+			// added — the same order Phase 3 applies downstream.
+			for _, base := range providerScopedPoliciesFor(providerID, providerTransformerPolicyByID, providerAuthPolicyByID) {
+				instance := base
+				instance.Params = copyPolicyParams(base.Params)
+				instance.Upstream = upstreamFlag(true)
+				instance.ExecutionCondition = &condition
+				modelFailoverProviderPolicies = append(modelFailoverProviderPolicies, instance)
+			}
+		}
+	}
+
 	// Step 4: Build operations (AllowAll mode without exceptions)
 	// This follows the same pattern as transformProvider AllowAll mode but simplified
 	var ops []api.Operation
@@ -368,9 +437,9 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 		operationRegistry[pathMethodKey{path: op.EffectivePath(), method: method}] = op
 	}
 
-	// Phase 2: Process User-Defined Policies (operationPolicies + deprecated policies)
-	opLevelPolicies := collectOperationLevelLLMPolicies(proxy.Spec.OperationPolicies, proxy.Spec.Policies)
-	upstreamPolicies := derefOperationPolicies(proxy.Spec.UpstreamPolicies)
+	// Phase 2: Process User-Defined Policies (operationPolicies + deprecated policies).
+	// opLevelPolicies/upstreamPolicies were resolved in Step 3.7 above, which may have
+	// appended the synthesized model-failover upstream attachment to the latter.
 	if len(opLevelPolicies) > 0 || len(upstreamPolicies) > 0 {
 		registerExplicitLLMPolicyOperations(operationRegistry, append(append([]api.OperationPolicy{}, opLevelPolicies...), upstreamPolicies...), nil)
 
@@ -446,6 +515,18 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 		for i := range ops {
 			for _, failoverUpstreamAuthPolicy := range failoverUpstreamAuthPolicies {
 				appendOperationPolicy(&ops[i], failoverUpstreamAuthPolicy)
+			}
+		}
+	}
+	// The provider-scoped upstream-attempt instances the model-failover
+	// attachment synthesized (Step 3.7b). Appended after the downstream
+	// attachments above and after Phase 2 — which already emitted
+	// model-failover's own upstream instance — so the metadata that instance
+	// seeds exists before any of these conditions is evaluated.
+	if len(modelFailoverProviderPolicies) > 0 {
+		for i := range ops {
+			for _, modelFailoverProviderPolicy := range modelFailoverProviderPolicies {
+				appendOperationPolicy(&ops[i], modelFailoverProviderPolicy)
 			}
 		}
 	}
@@ -1104,6 +1185,85 @@ func (t *LLMProviderTransformer) failoverUpstreamAuthPolicy(auth *api.LLMUpstrea
 		Version: version,
 		Params:  &params,
 	}, nil
+}
+
+// operationPoliciesNamed returns every attachment of the named policy, in
+// declaration order.
+func operationPoliciesNamed(policies []api.OperationPolicy, name string) []api.OperationPolicy {
+	var out []api.OperationPolicy
+	for _, p := range policies {
+		if p.Name == name {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// providerScopedPoliciesFor returns the provider-scoped policies attached for
+// providerID, translator first and credential second — the same relative order
+// the downstream Phase 3 attachment applies, so the request is rewritten into
+// the selected provider's shape before its key is added.
+func providerScopedPoliciesFor(providerID string, transformers, auths map[string]api.Policy) []api.Policy {
+	var out []api.Policy
+	if pol, ok := transformers[providerID]; ok {
+		out = append(out, pol)
+	}
+	if pol, ok := auths[providerID]; ok {
+		out = append(out, pol)
+	}
+	return out
+}
+
+// copyPolicyParams deep-enough-copies a policy's params map so an
+// upstream-attempt instance built from a downstream one cannot alias (and later
+// mutate) the other's map.
+func copyPolicyParams(params *map[string]interface{}) *map[string]interface{} {
+	if params == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(*params))
+	for k, v := range *params {
+		out[k] = v
+	}
+	return &out
+}
+
+// modelFailoverReferencedProviders returns every provider identity referenced
+// anywhere in the failover chains declared by the given model-failover
+// attachments, deduplicated and in first-seen order.
+//
+// The policy's own params shape ({targets: [{target, fallbacks}]}) is JSON-tag
+// identical to api.LLMFailoverConfig's, so the params are decoded into that type
+// and handed to the existing failoverReferencedProviders helper rather than
+// re-implementing the same traversal (and the same "omitted provider means the
+// primary" rule) a second time. Params keys the schema doesn't carry
+// (aggregateCluster) are simply ignored by the decode.
+func modelFailoverReferencedProviders(attachments []api.OperationPolicy, primaryProviderID string) ([]string, error) {
+	seen := map[string]bool{}
+	var ordered []string
+	for _, attachment := range attachments {
+		for _, pathEntry := range attachment.Paths {
+			if pathEntry.Params == nil {
+				continue
+			}
+			blob, err := json.Marshal(pathEntry.Params)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal params for path %q: %w", pathEntry.Path, err)
+			}
+			var failover api.LLMFailoverConfig
+			if err := json.Unmarshal(blob, &failover); err != nil {
+				return nil, fmt.Errorf("failed to parse params for path %q: %w", pathEntry.Path, err)
+			}
+			for _, providerID := range failoverReferencedProviders(&failover, primaryProviderID) {
+				if seen[providerID] {
+					continue
+				}
+				seen[providerID] = true
+				ordered = append(ordered, providerID)
+			}
+		}
+	}
+	return ordered, nil
 }
 
 func selectedProviderExecutionCondition(providerName string, includeDefault bool) string {

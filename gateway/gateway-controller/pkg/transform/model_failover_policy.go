@@ -168,3 +168,105 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 		RetryOn:                []string{"5xx"},
 	}, expanded, nil
 }
+
+// llmProxyProviderIdentities returns every provider identity a model-failover
+// chain may legally reference on this proxy: each additionalProviders entry's
+// `as` (or `id` when `as` is omitted). The primary is added separately by
+// parseModelFailoverParams.
+func llmProxyProviderIdentities(proxy *api.LLMProxyConfiguration) []string {
+	if proxy.Spec.AdditionalProviders == nil {
+		return nil
+	}
+	names := make([]string, 0, len(*proxy.Spec.AdditionalProviders))
+	for _, ap := range *proxy.Spec.AdditionalProviders {
+		name := ap.Id
+		if ap.As != nil && *ap.As != "" {
+			name = *ap.As
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// applyModelFailoverPolicyToRoutes resolves every route whose policy chain
+// carries a model-failover attachment, and returns the set of route keys it
+// handled so the (still-present) resilience.failover schema path can skip them
+// rather than resolving the same route a second time with a different chain.
+//
+// Two things happen per handled route, both required by the design's §3/§5:
+//
+//   - the resolved models.RouteFailover is written onto the route, which is the
+//     unchanged trigger for aggregate-cluster/retry_policy xDS generation — the
+//     policy attachment replaces the schema field as the *trigger*, not the
+//     generation itself;
+//   - the controller-assigned aggregate cluster name is injected back into every
+//     model-failover instance in that route's chain (the downstream one and the
+//     synthesized upstream one alike), so the policy only ever string-compares a
+//     name it was handed instead of recomputing one.
+//
+// Params are merged key-wise rather than replaced so keys the chain builder
+// added (attachedTo) survive.
+func applyModelFailoverPolicyToRoutes(rdc *models.RuntimeDeployConfig, availableProviders []string,
+	primaryProviderID string) (map[string]bool, error) {
+	handled := map[string]bool{}
+	for routeKey, r := range rdc.Routes {
+		chain := rdc.PolicyChains[rdc.EffectiveCanonicalChainKey(routeKey, r)]
+		if chain == nil {
+			continue
+		}
+		var instances []*models.Policy
+		for i := range chain.Policies {
+			if chain.Policies[i].Name == modelFailoverPolicyName {
+				instances = append(instances, &chain.Policies[i])
+			}
+		}
+		if len(instances) == 0 {
+			continue
+		}
+
+		params, err := parseModelFailoverParams(instances[0].Params, availableProviders, primaryProviderID)
+		if err != nil {
+			return nil, fmt.Errorf("route %q: %w", routeKey, err)
+		}
+		failover, expanded, err := buildRouteFailoverFromPolicy(rdc, r, params, routeKey, primaryProviderID)
+		if err != nil {
+			return nil, err
+		}
+		expandedParams, err := modelFailoverParamsToMap(expanded)
+		if err != nil {
+			return nil, fmt.Errorf("route %q: %w", routeKey, err)
+		}
+
+		r.Upstream.Failover = failover
+		if !r.Upstream.UseClusterHeader {
+			r.Upstream.UseClusterHeader = true
+			r.Upstream.DefaultCluster = r.Upstream.ClusterKey
+		}
+		for _, instance := range instances {
+			if instance.Params == nil {
+				instance.Params = map[string]interface{}{}
+			}
+			for k, v := range expandedParams {
+				instance.Params[k] = v
+			}
+		}
+		handled[routeKey] = true
+	}
+	return handled, nil
+}
+
+// modelFailoverParamsToMap renders the expanded params back into the generic
+// map the policy instance carries on the wire. It round-trips through JSON so
+// the emitted keys are exactly the policy's own JSON tags — the same contract
+// parseModelFailoverParams reads back.
+func modelFailoverParamsToMap(params *modelFailoverParams) (map[string]interface{}, error) {
+	blob, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal expanded model-failover params: %w", err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(blob, &out); err != nil {
+		return nil, fmt.Errorf("failed to render expanded model-failover params: %w", err)
+	}
+	return out, nil
+}

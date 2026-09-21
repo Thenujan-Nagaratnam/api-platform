@@ -69,7 +69,7 @@ func TestApplyFailoverToRoutes_ResolvesPrimaryAndNamedProvider(t *testing.T) {
 		}},
 	}
 
-	err := applyFailoverToRoutes(rdc, failover, "openai-provider")
+	err := applyFailoverToRoutes(rdc, failover, "openai-provider", nil)
 	require.NoError(t, err)
 
 	route := rdc.Routes["POST|/chat/completions|main"]
@@ -111,7 +111,7 @@ func TestApplyFailoverToRoutes_UnknownProviderIsAnError(t *testing.T) {
 		}},
 	}
 
-	err := applyFailoverToRoutes(rdc, failover, "openai-provider")
+	err := applyFailoverToRoutes(rdc, failover, "openai-provider", nil)
 	assert.Error(t, err)
 }
 
@@ -121,7 +121,7 @@ func TestApplyFailoverToRoutes_NilFailoverIsNoOp(t *testing.T) {
 			"r": {Upstream: models.RouteUpstream{ClusterKey: "c"}},
 		},
 	}
-	require.NoError(t, applyFailoverToRoutes(rdc, nil, "openai-provider"))
+	require.NoError(t, applyFailoverToRoutes(rdc, nil, "openai-provider", nil))
 	assert.Nil(t, rdc.Routes["r"].Upstream.Failover)
 	assert.False(t, rdc.Routes["r"].Upstream.UseClusterHeader)
 }
@@ -163,7 +163,7 @@ func TestApplyFailoverToRoutes_DefaultsRetryOnTo5xx(t *testing.T) {
 		}},
 	}
 
-	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider"))
+	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider", nil))
 
 	route := rdc.Routes["POST|/chat/completions|main"]
 	assert.Equal(t, []string{"5xx"}, route.Upstream.Failover.RetryOn)
@@ -181,7 +181,7 @@ func TestApplyFailoverToRoutes_CopiesCustomRetryOn(t *testing.T) {
 		RetryOn: &[]api.LLMFailoverConfigRetryOn{api.Reset, api.ConnectFailure, api.GatewayError},
 	}
 
-	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider"))
+	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider", nil))
 
 	route := rdc.Routes["POST|/chat/completions|main"]
 	assert.Equal(t, []string{"reset", "connect-failure", "gateway-error"}, route.Upstream.Failover.RetryOn)
@@ -199,7 +199,7 @@ func TestApplyFailoverToRoutes_CopiesRetriableStatusCodesAndHeaders(t *testing.T
 		RetriableHeaders:     &[]string{"x-should-retry"},
 	}
 
-	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider"))
+	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider", nil))
 
 	route := rdc.Routes["POST|/chat/completions|main"]
 	assert.Equal(t, []string{"retriable-status-codes", "retriable-headers"}, route.Upstream.Failover.RetryOn)

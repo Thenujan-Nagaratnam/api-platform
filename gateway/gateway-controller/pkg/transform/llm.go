@@ -107,12 +107,25 @@ func (t *LLMTransformer) Transform(cfg *models.StoredConfig) (*models.RuntimeDep
 	}
 	rdc.SensitiveValues = cfg.SensitiveValues
 
-	// Step 5: Resolve resilience.failover (LlmProxy-only) into the generic
-	// RouteFailover shape every route carries. No-op for any other kind or
-	// any LlmProxy with no failover block.
-	if proxy, ok := cfg.SourceConfiguration.(api.LLMProxyConfiguration); ok && proxy.Spec.Resilience != nil {
-		if err := applyFailoverToRoutes(rdc, proxy.Spec.Resilience.Failover, proxy.Spec.Provider.Id); err != nil {
-			return nil, fmt.Errorf("resolving resilience.failover: %w", err)
+	// Step 5: Resolve failover (LlmProxy-only) into the generic RouteFailover
+	// shape every route carries. Two sources feed it, in this order:
+	//
+	//  1. a model-failover policy attachment (the supported surface), which
+	//     resolves only the routes the policy is actually attached to; and
+	//  2. the legacy resilience.failover schema block, which applies proxy-wide.
+	//
+	// A route resolved by (1) is excluded from (2) so the two can never both
+	// write the same route's chain. No-op for any other kind, and for any
+	// LlmProxy carrying neither.
+	if proxy, ok := cfg.SourceConfiguration.(api.LLMProxyConfiguration); ok {
+		handled, err := applyModelFailoverPolicyToRoutes(rdc, llmProxyProviderIdentities(&proxy), proxy.Spec.Provider.Id)
+		if err != nil {
+			return nil, fmt.Errorf("resolving %s policy: %w", modelFailoverPolicyName, err)
+		}
+		if proxy.Spec.Resilience != nil {
+			if err := applyFailoverToRoutes(rdc, proxy.Spec.Resilience.Failover, proxy.Spec.Provider.Id, handled); err != nil {
+				return nil, fmt.Errorf("resolving resilience.failover: %w", err)
+			}
 		}
 	}
 
@@ -190,7 +203,11 @@ func resolveFailoverRetryOn(failover *api.LLMFailoverConfig) (retryOn []string, 
 	return retryOn, retriableStatusCodes, retriableHeaders
 }
 
-func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFailoverConfig, primaryProviderID string) error {
+// alreadyResolved names the routes a model-failover policy attachment already
+// resolved; they are skipped here so the two triggers can never both write one
+// route's chain (nil when there are none).
+func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFailoverConfig, primaryProviderID string,
+	alreadyResolved map[string]bool) error {
 	if failover == nil || len(failover.Targets) == 0 {
 		return nil
 	}
@@ -203,6 +220,9 @@ func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFai
 	retryOn, retriableStatusCodes, retriableHeaders := resolveFailoverRetryOn(failover)
 
 	for routeKey, r := range rdc.Routes {
+		if alreadyResolved[routeKey] {
+			continue
+		}
 		targets := make([]models.RouteFailoverTarget, 0, len(failover.Targets))
 		for _, entry := range failover.Targets {
 			targetEntry, err := resolveFailoverEntry(rdc, r, entry.Target, primaryProviderID)
