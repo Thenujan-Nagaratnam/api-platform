@@ -246,7 +246,3 @@ in the synced config determines execution order, same as today).
    action returns — confirm this fits `RequestPolicy.OnRequestBody`'s existing single-pass shape
    cleanly (it should; `openai-to-anthropic-transformer` already does body-parse + `UpstreamName` in one
    `OnRequestBody` today).
-5. **Migration path for existing `resilience.failover` config.** Removing the schema field is a
-   breaking change for any already-deployed LlmProxy using it — needs a deprecation/migration story
-   (config transformer emitting the policy attachment automatically from the old field for one release?
-   hard cutover?) before this ships, not decided in this design.
