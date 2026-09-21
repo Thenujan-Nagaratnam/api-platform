@@ -203,6 +203,18 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 					state.path = reqHdrCtx.Path
 					pathMutation = buildHeaderValueOptions(map[string]string{":path": reqHdrCtx.Path})
 				}
+
+				// A header-phase policy may know this attempt's real backend when
+				// cluster-name-keyed resolution could not: resolveBackend keys off
+				// xds.cluster_name, which for an envoy.clusters.aggregate attempt is
+				// the aggregate's own name and therefore resolves nothing. Adopting
+				// whatever the chain left on the context keeps state.basePath correct
+				// for the later body phase (joinBasePathAndOperation) and for the
+				// Upstream.BasePath every later policy in this attempt sees — without
+				// the kernel knowing anything about what kind of chain it is.
+				if reqHdrCtx.Upstream != nil && reqHdrCtx.Upstream.BasePath != state.basePath {
+					state.basePath = reqHdrCtx.Upstream.BasePath
+				}
 			}
 
 			if immediate != nil {

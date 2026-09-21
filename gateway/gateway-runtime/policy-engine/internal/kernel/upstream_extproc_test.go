@@ -299,6 +299,76 @@ func TestUpstreamProcess_AggregateClusterAttempt_ResolvesFromAuthorityHeader(t *
 	assert.Equal(t, "http://backend-b.internal:18092", headers["x-resolved-url"])
 }
 
+// upstreamHeaderResolvingStub stands in for a chain-aware upstream-attempt
+// policy (model-failover) that knows this attempt's real backend when
+// cluster-name-keyed resolution could not: it writes the base path back onto
+// the context and corrects :path. Its body phase echoes what the kernel
+// carried forward, which is what the test below asserts on.
+type upstreamHeaderResolvingStub struct{}
+
+func (upstreamHeaderResolvingStub) Mode() policy.ProcessingMode {
+	return policy.ProcessingMode{RequestHeaderMode: policy.HeaderModeProcess, RequestBodyMode: policy.BodyModeBuffer}
+}
+
+func (upstreamHeaderResolvingStub) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeaderContext, _ map[string]interface{}) policy.RequestHeaderAction {
+	reqCtx.Upstream.BasePath = "/anthropic-provider"
+	corrected := "/anthropic-provider/chat/completions"
+	return policy.UpstreamRequestHeaderModifications{Path: &corrected}
+}
+
+func (upstreamHeaderResolvingStub) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+	return policy.UpstreamRequestModifications{
+		HeadersToSet: map[string]string{
+			"x-resolved-base-path": reqCtx.Upstream.BasePath,
+			"x-resolved-path":      reqCtx.Path,
+		},
+	}
+}
+
+// TestUpstreamProcess_AdoptsBasePathAHeaderPhasePolicyResolved pins the generic
+// hand-back: resolveBackend keys off xds.cluster_name, which for an
+// envoy.clusters.aggregate attempt is the aggregate's own name and resolves
+// nothing, leaving state.basePath empty. A header-phase policy that does know
+// the member writes it onto the context, and the kernel carries it into the
+// rest of the attempt — with no knowledge of what kind of chain it is.
+func TestUpstreamProcess_AdoptsBasePathAHeaderPhasePolicyResolved(t *testing.T) {
+	k := NewKernel()
+	chain := &registry.PolicyChain{
+		UpstreamPolicies:        []policy.Policy{upstreamHeaderResolvingStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-header-resolving-stub", Version: "v1", Enabled: true}},
+		RequiresUpstreamRequest: true,
+	}
+	k.RegisterRoute("chat-route", chain)
+	k.ApplyWholeRouteConfigs(map[string]*RouteConfig{"chat-route": {Metadata: RouteMetadata{}}})
+
+	server := NewUpstreamExternalProcessorServer(k, executor.NewChainExecutor(nil, nil, noop.NewTracerProvider().Tracer("test")))
+
+	stream := newMockStream([]*extprocv3.ProcessingRequest{
+		requestHeadersReqWithRouteAndCluster("chat-route", "failover_agg_chat_0"),
+		requestBodyReq([]byte(`{"model":"gpt-4o"}`)),
+	})
+
+	err := server.Process(stream)
+	require.NoError(t, err)
+	require.Len(t, stream.responses, 2)
+
+	// The policy's corrected :path reaches Envoy as a header mutation.
+	pathMutation := stream.responses[0].GetRequestHeaders().GetResponse().GetHeaderMutation()
+	require.NotNil(t, pathMutation)
+	var correctedPath string
+	for _, h := range pathMutation.SetHeaders {
+		if h.Header.Key == ":path" {
+			correctedPath = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "/anthropic-provider/chat/completions", correctedPath)
+
+	// ...and the base path it resolved is what the body phase sees.
+	headers := headerMutationMap(t, stream.responses[1])
+	assert.Equal(t, "/anthropic-provider", headers["x-resolved-base-path"])
+	assert.Equal(t, "/anthropic-provider/chat/completions", headers["x-resolved-path"])
+}
+
 // upstreamResponseTranslatorStub mimics a shape-translating response policy
 // (e.g. openai-to-anthropic-transformer's OnResponseBody): it rewrites the
 // body and sets its own header, and runs FIRST in the chain. Attached via
