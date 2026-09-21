@@ -147,6 +147,9 @@ func TestBuildRouteFailoverFromPolicy_InjectsAggregateClusterName(t *testing.T) 
 	assert.Equal(t, xds.AggregateClusterName(routeKey, 0), expanded.Targets[0].AggregateCluster)
 	assert.Equal(t, xds.AggregateClusterName(routeKey, 1), expanded.Targets[1].AggregateCluster)
 	assert.Empty(t, params.Targets[0].AggregateCluster, "input params must not be mutated")
+	assert.Equal(t, "openai-primary", expanded.PrimaryProvider)
+	assert.Equal(t, "", expanded.Targets[0].Target.Provider, "member providers stay verbatim")
+	assert.Equal(t, "anthropic-upstream", expanded.Targets[0].Fallbacks[0].Provider)
 }
 
 func TestBuildRouteFailoverFromPolicy_UnknownProviderIsAnError(t *testing.T) {

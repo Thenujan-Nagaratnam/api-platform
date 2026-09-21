@@ -62,6 +62,9 @@ type modelFailoverTargetEntry struct {
 type modelFailoverParams struct {
 	Targets         []modelFailoverTargetEntry `json:"targets"`
 	SuspendDuration int                        `json:"suspendDuration"`
+	// PrimaryProvider is injected by the controller so the policy can resolve
+	// members authored without `provider:` to the primary provider identity.
+	PrimaryProvider string `json:"primaryProvider,omitempty"`
 }
 
 // parseModelFailoverParams parses raw policy params and validates that every
@@ -133,6 +136,7 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 
 	expanded := &modelFailoverParams{
 		SuspendDuration: params.SuspendDuration,
+		PrimaryProvider: primaryProviderID,
 		Targets:         make([]modelFailoverTargetEntry, len(params.Targets)),
 	}
 	targets := make([]models.RouteFailoverTarget, 0, len(params.Targets))

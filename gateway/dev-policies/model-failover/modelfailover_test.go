@@ -301,3 +301,44 @@ func TestOnResponseHeaders_UnknownClusterIsNoop(t *testing.T) {
 	assert.Nil(t, p.OnResponseHeaders(context.Background(), respCtx, nil))
 	assert.False(t, p.isSuspended("gpt-4o", ""))
 }
+
+func primaryResolvingPolicy() *Policy {
+	p := chainPolicy()
+	p.params.PrimaryProvider = "openai-primary"
+	return p
+}
+
+func TestParseParams_CarriesPrimaryProvider(t *testing.T) {
+	params, err := parseParams(map[string]interface{}{
+		"targets":         []interface{}{map[string]interface{}{"target": map[string]interface{}{"model": "gpt-4o"}, "fallbacks": []interface{}{}}},
+		"primaryProvider": "openai-primary",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "openai-primary", params.PrimaryProvider)
+}
+
+func TestOnRequestHeaders_EmptyProviderTargetSeedsPrimaryProvider(t *testing.T) {
+	reqCtx := attemptReqCtx("failover_agg_chat_0", "1")
+	primaryResolvingPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "openai-primary", reqCtx.SharedContext.Metadata[selectedProviderMetadataKey])
+}
+
+func TestOnResponseHeaders_5xxSuspendsUnderResolvedKeyAndDownstreamSeesIt(t *testing.T) {
+	p := primaryResolvingPolicy()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{attemptIndexMetadataKey: 1}},
+		ResponseStatus: 503,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "failover_agg_chat_0"},
+	}
+	p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	assert.True(t, p.isSuspended("gpt-4o", "openai-primary"))
+	assert.False(t, p.isSuspended("gpt-4o", ""), "must not be recorded under the empty key")
+
+	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+	mods, ok := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
+	require.True(t, ok)
+	require.NotNil(t, mods.UpstreamName)
+	assert.Equal(t, "anthropic-upstream", *mods.UpstreamName, "downstream must see the primary as suspended")
+}

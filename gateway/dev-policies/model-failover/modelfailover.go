@@ -80,6 +80,10 @@ type FailoverTargetEntry struct {
 type ModelFailoverParams struct {
 	Targets         []FailoverTargetEntry `json:"targets"`
 	SuspendDuration int                   `json:"suspendDuration"`
+	// PrimaryProvider is injected by gateway-controller: the identity a member
+	// authored without `provider:` resolves to (the primary provider ID). Used
+	// for selected_provider metadata and suspension keys; never as a cluster name.
+	PrimaryProvider string `json:"primaryProvider,omitempty"`
 }
 
 // Policy implements downstream target selection and, per upstream attempt,
@@ -121,6 +125,9 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 	}
 	if len(params.Targets) == 0 {
 		return params, fmt.Errorf("'targets' must have at least one entry")
+	}
+	if pp, ok := raw["primaryProvider"].(string); ok {
+		params.PrimaryProvider = pp
 	}
 
 	if suspendRaw, ok := raw["suspendDuration"]; ok {
@@ -189,6 +196,16 @@ func suspensionKey(model, provider string) string {
 // isSuspended checks and lazily clears an expired suspension entry — same
 // check-and-delete-if-expired pattern model-round-robin uses (no background
 // sweep).
+// resolvedProvider returns the member's provider identity, defaulting an
+// empty (primary-authored) provider to PrimaryProvider. Do not use for
+// cluster-name routing.
+func (p *Policy) resolvedProvider(m FailoverTarget) string {
+	if m.Provider == "" {
+		return p.params.PrimaryProvider
+	}
+	return m.Provider
+}
+
 func (p *Policy) isSuspended(model, provider string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -240,7 +257,7 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 		return policy.UpstreamRequestModifications{}
 	}
 
-	if !p.isSuspended(entry.Target.Model, entry.Target.Provider) {
+	if !p.isSuspended(entry.Target.Model, p.resolvedProvider(entry.Target)) {
 		cluster := entry.AggregateCluster
 		return policy.UpstreamRequestModifications{UpstreamName: &cluster}
 	}
@@ -249,7 +266,7 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 		if fallback.Provider == "" {
 			continue // no addressable upstream for this fallback
 		}
-		if !p.isSuspended(fallback.Model, fallback.Provider) {
+		if !p.isSuspended(fallback.Model, p.resolvedProvider(fallback)) {
 			// Route directly to the fallback's own upstream, bypassing the
 			// aggregate entirely — a known-bad primary is skipped, at the
 			// cost of no further in-request retry if this fallback also
@@ -334,7 +351,7 @@ func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeade
 		reqCtx.SharedContext.Metadata = map[string]interface{}{}
 	}
 	reqCtx.SharedContext.Metadata[selectedModelMetadataKey] = member.Model
-	reqCtx.SharedContext.Metadata[selectedProviderMetadataKey] = member.Provider
+	reqCtx.SharedContext.Metadata[selectedProviderMetadataKey] = p.resolvedProvider(*member)
 	reqCtx.SharedContext.Metadata[attemptIndexMetadataKey] = index
 
 	return nil
@@ -370,12 +387,12 @@ func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHe
 	}
 
 	if respCtx.ResponseStatus >= 500 {
-		p.suspend(member.Model, member.Provider)
+		p.suspend(member.Model, p.resolvedProvider(*member))
 	}
 
 	if index > 1 {
 		return policy.DownstreamResponseHeaderModifications{
-			HeadersToSet: map[string]string{ResolvedFailoverProviderHeader: member.Provider},
+			HeadersToSet: map[string]string{ResolvedFailoverProviderHeader: p.resolvedProvider(*member)},
 		}
 	}
 	return nil
