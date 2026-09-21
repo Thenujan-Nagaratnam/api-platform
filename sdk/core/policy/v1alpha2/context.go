@@ -56,83 +56,17 @@ type UpstreamRequestContext struct {
 	Name     string
 	URL      string
 	BasePath string
-}
 
-// UpstreamAttemptContext is passed to UpstreamRequestPolicy.OnUpstreamRequestBody
-// and UpstreamResponsePolicy.OnUpstreamResponseBody. It carries the resolved
-// backend for this specific attempt plus the original client request, captured
-// once downstream and replayed unchanged to every attempt — so a retry to a
-// different backend always re-translates/re-authenticates from the client's
-// actual bytes, never from a previous attempt's already-mutated output.
-type UpstreamAttemptContext struct {
-	*SharedContext
-	*UpstreamRequestContext
-
-	// ResolvedModel and ResolvedProvider identify which model/provider this
-	// specific attempt represents, for a route whose upstream was resolved
-	// from a declared resilience.failover chain (see gateway-runtime's
-	// UpstreamExternalProcessorServer.resolveBackend). Both are empty for an
-	// attempt resolved any other way (a route's plain DefaultUpstream, the
-	// global cluster index, or the :authority fallback) — a policy checking
-	// ResolvedProvider before branching its transform direction naturally
-	// no-ops on every non-failover route without an extra feature flag.
-	ResolvedModel    string
-	ResolvedProvider string
-
-	// Method and Path are this attempt's resolved outbound request line — the
-	// method/path that will actually be dialed against this backend (already
-	// combined with the backend's BasePath and any earlier routing mutation),
-	// not the client-facing request line. A policy that needs to build a
-	// synthetic *http.Request for signing (e.g. AWS SigV4) uses these plus URL
-	// directly; unlike RequestContext, there is no separate APIContext to
-	// strip — Path is already the correct outbound path for this backend.
-	Method string
-	Path   string
-
-	// Headers are this attempt's request headers (read-only for policies via
-	// Get()/Has()/Iterate(); mutated by the kernel via UnsafeInternalValues()),
-	// seeded fresh from the client's original headers on every attempt.
-	Headers *Headers
-
-	// Body is this attempt's working request body — seeded from
-	// OriginalRequestRaw at the start of every attempt, then threaded through
-	// each policy in the chain as it mutates it (e.g. a transformer runs
-	// before an auth policy that must sign the transformed bytes). Never
-	// carried over from a previous attempt.
-	Body *Body
-
-	// OriginalRequestRaw is the client's original request body, captured once
-	// downstream before any policy (upstream or downstream) mutated it, and
-	// replayed unchanged into Body at the start of every attempt — a retry to
-	// a different backend always starts from these bytes, never from a
-	// previous attempt's already-translated output.
-	OriginalRequestRaw []byte
-
-	// IsRetry is true when this is not the first attempt for this client
-	// request — i.e. a prior attempt against a different (or the same)
-	// backend already failed. Set from genuine per-invocation state, not
-	// inferred from an Envoy attempt-count header.
-	IsRetry bool
-
-	// ResponseStatusCode is this attempt's upstream HTTP response status,
-	// valid only from UpstreamResponsePolicy.OnUpstreamResponseBody — always
-	// 0 during the request phase (OnUpstreamRequestBody), since no response
-	// exists yet. A response-shape-translating policy (e.g. an OpenAI ->
-	// Anthropic transformer choosing between its success and error response
-	// shape) reads this rather than inspecting Body for a heuristic
-	// error/success marker.
-	ResponseStatusCode int
-
-	// ResponseStatusOverride is the OUTPUT counterpart to ResponseStatusCode:
-	// nil leaves the real upstream status code unchanged; the kernel sets it
-	// from the accumulated DownstreamResponseModifications.StatusCode of
-	// every response-phase policy that ran in this attempt's chain (last
-	// non-nil write wins, mirroring HeadersToSet semantics), then applies it
-	// to the response actually sent downstream. Policies never set this
-	// directly — it exists on this struct only so the kernel can accumulate
-	// it across the whole chain the same way it does Headers/Body, rather
-	// than reading only the last-executed policy's own returned action.
-	ResponseStatusOverride *int
+	// RouteCluster is the raw xds.cluster_name Envoy reported for this
+	// attempt, before any kernel-side member-cluster resolution. For an
+	// attempt routed through an envoy.clusters.aggregate cluster (e.g. a
+	// model-failover chain), this is the aggregate cluster's own name,
+	// stable across every attempt against it — Name above is the resolved
+	// real member cluster instead. Empty for a route with no
+	// aggregate/failover involvement. Only ever populated for an
+	// upstream-attempt invocation (Downstream == nil on the enclosing
+	// context); always empty for a genuine downstream invocation.
+	RouteCluster string
 }
 
 // UpstreamResponseContext identifies the route's resolved upstream target during
@@ -141,6 +75,18 @@ type UpstreamResponseContext struct {
 	Name     string
 	URL      string
 	BasePath string
+
+	// RouteCluster is the raw xds.cluster_name Envoy reported for this
+	// attempt, before any kernel-side member-cluster resolution. For an
+	// attempt routed through an envoy.clusters.aggregate cluster (e.g. a
+	// model-failover chain), this is the aggregate cluster's own name,
+	// stable across every attempt against it — Name above is the resolved
+	// real member cluster instead. Empty for a route with no
+	// aggregate/failover involvement. Only ever populated for an
+	// upstream-attempt invocation (Downstream == nil on the enclosing
+	// context); always empty for a genuine downstream invocation.
+	RouteCluster string
+
 	Response *UpstreamResponse
 }
 
@@ -245,11 +191,22 @@ type RequestHeaderContext struct {
 	Vhost     string
 
 	// Downstream holds the snapshot of the client request headers, captured
-	// before any policy mutation.
+	// before any policy mutation. Nil when this method is instead being
+	// invoked for a specific upstream attempt (this policy is attached via
+	// upstreamPolicies: — see the LlmProvider/LlmProxy schema) —
+	// the one signal distinguishing the two invocations, since both use this
+	// same context type and interface. In that case Authority/Scheme/Vhost are
+	// zero-valued, Path/Method are the attempt's resolved outbound request
+	// line (already combined with the backend's base path — no separate
+	// APIContext prefix to strip, unlike the downstream invocation), Headers
+	// starts fresh per attempt (not the client's real headers), and Upstream
+	// identifies the specific backend this attempt is dialing rather than the
+	// route's static default.
 	Downstream *DownstreamContext
 
 	// Upstream identifies the route's resolved upstream target for this
-	// request.
+	// request — or, for an upstream-attempt invocation (Downstream == nil),
+	// the specific backend this attempt is dialing.
 	Upstream *UpstreamRequestContext
 }
 
@@ -271,16 +228,30 @@ type RequestContext struct {
 
 	// Deprecated: UpstreamInfo exposes the internal Envoy cluster name and its
 	// resolved-upstream shape was incorrect. Use Upstream (*UpstreamRequestContext)
-	// instead, which exposes Name rather than the internal cluster name.
+	// instead, which exposes Name rather than the internal cluster name. Also
+	// never populated for an upstream-attempt invocation (see Downstream) —
+	// use Upstream there too.
 	// Retained for backward compatibility; will be removed in a future release.
 	UpstreamInfo *policyenginev1.UpstreamInfo
 
 	// Downstream holds the snapshot of the client request headers, captured
-	// before any policy mutation.
+	// before any policy mutation. Nil when this method is instead being
+	// invoked for a specific upstream attempt (this policy is attached via
+	// upstreamPolicies: — see the LlmProvider/LlmProxy schema) —
+	// the one signal distinguishing the two invocations, since both use this
+	// same context type and interface. In that case Authority/Scheme/Vhost are
+	// zero-valued, Path/Method are the attempt's resolved outbound request
+	// line (already combined with the backend's base path — no separate
+	// APIContext prefix to strip, unlike the downstream invocation), Headers
+	// starts fresh per attempt (not the client's real headers) and is seeded
+	// from the client's original request body (replayed unchanged into every
+	// attempt), and Upstream identifies the specific backend this attempt is
+	// dialing rather than the route's static default.
 	Downstream *DownstreamContext
 
 	// Upstream identifies the route's resolved upstream target for this
-	// request.
+	// request — or, for an upstream-attempt invocation (Downstream == nil),
+	// the specific backend this attempt is dialing.
 	Upstream *UpstreamRequestContext
 }
 
@@ -304,12 +275,21 @@ type ResponseHeaderContext struct {
 	ResponseStatus int
 
 	// Downstream holds the snapshot of the client request headers, captured
-	// before any policy mutation.
+	// before any policy mutation. Nil when this method is instead being
+	// invoked for a specific upstream attempt's response (this policy is
+	// attached via upstreamPolicies: — see the LlmProvider/LlmProxy schema) —
+	// the one signal distinguishing
+	// the two invocations. In that case RequestBody is the client's original
+	// request body (replayed unchanged into every attempt, never a previous
+	// attempt's already-mutated output), and Upstream identifies the specific
+	// backend that produced this attempt's response rather than the route's
+	// static default.
 	Downstream *DownstreamContext
 
 	// Upstream identifies the route's resolved upstream target and carries the
 	// snapshot of the upstream response headers, captured before any policy
-	// mutation.
+	// mutation — or, for an upstream-attempt invocation (Downstream == nil),
+	// the specific backend that produced this attempt's response.
 	Upstream *UpstreamResponseContext
 }
 
@@ -337,12 +317,21 @@ type ResponseContext struct {
 	ResponseStatus int
 
 	// Downstream holds the snapshot of the client request headers, captured
-	// before any policy mutation.
+	// before any policy mutation. Nil when this method is instead being
+	// invoked for a specific upstream attempt's response (this policy is
+	// attached via upstreamPolicies: — see the LlmProvider/LlmProxy schema) —
+	// the one signal distinguishing
+	// the two invocations. In that case RequestBody is the client's original
+	// request body (replayed unchanged into every attempt, never a previous
+	// attempt's already-mutated output), and Upstream identifies the specific
+	// backend that produced this attempt's response rather than the route's
+	// static default.
 	Downstream *DownstreamContext
 
 	// Upstream identifies the route's resolved upstream target and carries the
 	// snapshot of the upstream response headers, captured before any policy
-	// mutation.
+	// mutation — or, for an upstream-attempt invocation (Downstream == nil),
+	// the specific backend that produced this attempt's response.
 	Upstream *UpstreamResponseContext
 }
 
