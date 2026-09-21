@@ -24,197 +24,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
-func TestApplyFailoverToRoutes_ResolvesPrimaryAndNamedProvider(t *testing.T) {
-	rdc := &models.RuntimeDeployConfig{
-		UpstreamClusters: map[string]*models.UpstreamCluster{
-			"upstream_main_openai_com_443": {
-				Name:      "", // main slot cluster
-				BasePath:  "/",
-				Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}},
-				TLS:       &models.UpstreamTLS{Enabled: true},
-			},
-			"upstream_anthropic-upstream_anthropic_com_443": {
-				Name:      "anthropic-upstream",
-				BasePath:  "/",
-				Endpoints: []models.Endpoint{{Host: "anthropic.com", Port: 443}},
-				TLS:       &models.UpstreamTLS{Enabled: true},
-			},
-		},
-		Routes: map[string]*models.Route{
-			"POST|/chat/completions|main": {
-				Upstream: models.RouteUpstream{
-					ClusterKey: "upstream_main_openai_com_443",
-					Default: &policyenginev1.UpstreamInfo{
-						ClusterName: "upstream_main_openai_com_443",
-						URL:         "https://openai.com",
-						BasePath:    "/",
-					},
-				},
-			},
-		},
-	}
-
-	failover := &api.LLMFailoverConfig{
-		Targets: []api.LLMFailoverTargetEntry{{
-			Target: api.LLMFailoverTarget{Model: "gpt-4o"},
-			Fallbacks: []api.LLMFailoverTarget{{
-				Model:    "claude-sonnet-4-5-20250929",
-				Provider: strPtr("anthropic-upstream"),
-			}},
-		}},
-	}
-
-	err := applyFailoverToRoutes(rdc, failover, "openai-provider", nil)
-	require.NoError(t, err)
-
-	route := rdc.Routes["POST|/chat/completions|main"]
-	require.NotNil(t, route.Upstream.Failover)
-	require.Len(t, route.Upstream.Failover.Targets, 1)
-
-	target := route.Upstream.Failover.Targets[0]
-	assert.Equal(t, "gpt-4o", target.Model)
-	assert.Equal(t, "upstream_main_openai_com_443", target.Target.ClusterKey)
-	assert.Equal(t, "https://openai.com", target.Target.Upstream.URL)
-	assert.Equal(t, "openai-provider", target.Target.Provider, "the primary target entry must carry the primary provider's id")
-
-	require.Len(t, target.Fallbacks, 1)
-	assert.Equal(t, "claude-sonnet-4-5-20250929", target.Fallbacks[0].Model)
-	assert.Equal(t, "upstream_anthropic-upstream_anthropic_com_443", target.Fallbacks[0].ClusterKey)
-	assert.Equal(t, "https://anthropic.com", target.Fallbacks[0].Upstream.URL)
-	assert.Equal(t, "anthropic-upstream", target.Fallbacks[0].Provider, "a named-provider fallback must carry the resolved provider name")
-
-	assert.True(t, route.Upstream.UseClusterHeader, "a failover route must use cluster_header dynamic routing")
-	assert.Equal(t, "upstream_main_openai_com_443", route.Upstream.DefaultCluster, "no-match requests must still fall back to the plain primary cluster")
-}
-
-func TestApplyFailoverToRoutes_UnknownProviderIsAnError(t *testing.T) {
-	rdc := &models.RuntimeDeployConfig{
-		UpstreamClusters: map[string]*models.UpstreamCluster{},
-		Routes: map[string]*models.Route{
-			"POST|/chat/completions|main": {
-				Upstream: models.RouteUpstream{
-					ClusterKey: "upstream_main_openai_com_443",
-					Default:    &policyenginev1.UpstreamInfo{ClusterName: "upstream_main_openai_com_443", URL: "https://openai.com"},
-				},
-			},
-		},
-	}
-	failover := &api.LLMFailoverConfig{
-		Targets: []api.LLMFailoverTargetEntry{{
-			Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
-			Fallbacks: []api.LLMFailoverTarget{{Model: "x", Provider: strPtr("nonexistent")}},
-		}},
-	}
-
-	err := applyFailoverToRoutes(rdc, failover, "openai-provider", nil)
-	assert.Error(t, err)
-}
-
-func TestApplyFailoverToRoutes_NilFailoverIsNoOp(t *testing.T) {
-	rdc := &models.RuntimeDeployConfig{
-		Routes: map[string]*models.Route{
-			"r": {Upstream: models.RouteUpstream{ClusterKey: "c"}},
-		},
-	}
-	require.NoError(t, applyFailoverToRoutes(rdc, nil, "openai-provider", nil))
-	assert.Nil(t, rdc.Routes["r"].Upstream.Failover)
-	assert.False(t, rdc.Routes["r"].Upstream.UseClusterHeader)
-}
-
-// primaryOnlyFailoverRDC builds a minimal RDC with a single primary-provider
-// route, for tests that only exercise RetryOn/RetriableStatusCodes/
-// RetriableHeaders threading and don't need a second named provider.
-func primaryOnlyFailoverRDC() *models.RuntimeDeployConfig {
-	return &models.RuntimeDeployConfig{
-		UpstreamClusters: map[string]*models.UpstreamCluster{
-			"upstream_main_openai_com_443": {
-				Name:      "",
-				BasePath:  "/",
-				Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}},
-				TLS:       &models.UpstreamTLS{Enabled: true},
-			},
-		},
-		Routes: map[string]*models.Route{
-			"POST|/chat/completions|main": {
-				Upstream: models.RouteUpstream{
-					ClusterKey: "upstream_main_openai_com_443",
-					Default: &policyenginev1.UpstreamInfo{
-						ClusterName: "upstream_main_openai_com_443",
-						URL:         "https://openai.com",
-						BasePath:    "/",
-					},
-				},
-			},
-		},
-	}
-}
-
-func TestApplyFailoverToRoutes_DefaultsRetryOnTo5xx(t *testing.T) {
-	rdc := primaryOnlyFailoverRDC()
-	failover := &api.LLMFailoverConfig{
-		Targets: []api.LLMFailoverTargetEntry{{
-			Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
-			Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}},
-		}},
-	}
-
-	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider", nil))
-
-	route := rdc.Routes["POST|/chat/completions|main"]
-	assert.Equal(t, []string{"5xx"}, route.Upstream.Failover.RetryOn)
-	assert.Empty(t, route.Upstream.Failover.RetriableStatusCodes)
-	assert.Empty(t, route.Upstream.Failover.RetriableHeaders)
-}
-
-func TestApplyFailoverToRoutes_CopiesCustomRetryOn(t *testing.T) {
-	rdc := primaryOnlyFailoverRDC()
-	failover := &api.LLMFailoverConfig{
-		Targets: []api.LLMFailoverTargetEntry{{
-			Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
-			Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}},
-		}},
-		RetryOn: &[]api.LLMFailoverConfigRetryOn{api.Reset, api.ConnectFailure, api.GatewayError},
-	}
-
-	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider", nil))
-
-	route := rdc.Routes["POST|/chat/completions|main"]
-	assert.Equal(t, []string{"reset", "connect-failure", "gateway-error"}, route.Upstream.Failover.RetryOn)
-}
-
-func TestApplyFailoverToRoutes_CopiesRetriableStatusCodesAndHeaders(t *testing.T) {
-	rdc := primaryOnlyFailoverRDC()
-	failover := &api.LLMFailoverConfig{
-		Targets: []api.LLMFailoverTargetEntry{{
-			Target:    api.LLMFailoverTarget{Model: "gpt-4o"},
-			Fallbacks: []api.LLMFailoverTarget{{Model: "gpt-4o-mini"}},
-		}},
-		RetryOn:              &[]api.LLMFailoverConfigRetryOn{api.RetriableStatusCodes, api.RetriableHeaders},
-		RetriableStatusCodes: &[]int{409, 425},
-		RetriableHeaders:     &[]string{"x-should-retry"},
-	}
-
-	require.NoError(t, applyFailoverToRoutes(rdc, failover, "openai-provider", nil))
-
-	route := rdc.Routes["POST|/chat/completions|main"]
-	assert.Equal(t, []string{"retriable-status-codes", "retriable-headers"}, route.Upstream.Failover.RetryOn)
-	assert.Equal(t, []uint32{409, 425}, route.Upstream.Failover.RetriableStatusCodes)
-	assert.Equal(t, []string{"x-should-retry"}, route.Upstream.Failover.RetriableHeaders)
-}
-
 // TestResolveFailoverEntry_AllThreeWaysOfNamingThePrimaryProvider covers the
-// three ways a validated failover target can refer to the proxy's own primary
-// provider — omitting `provider`, and explicitly naming it either as the
+// three ways a validated failover chain member can refer to the proxy's own
+// primary provider — omitting `provider`, and explicitly naming it either as the
 // primary's own id or (bundled here per the fix report) as an additionalProvider's
 // bare .Id with no .As set — and confirms all resolve to a correct entry rather
 // than a translate-time error. Regression test for the fix that made an explicit
-// `provider: <primary's own id>` (accepted by llm_validator.go's
-// validUpstreamNames, since it seeds the primary's own id) fall through to the
+// `provider: <primary's own id>` (accepted by parseModelFailoverParams, which
+// seeds the primary's own id into its allowed set) fall through to the
 // named-cluster scan instead of the primary path, where it could never be found
 // (the primary's own cluster is stored with an empty Name).
 func TestResolveFailoverEntry_AllThreeWaysOfNamingThePrimaryProvider(t *testing.T) {
@@ -247,25 +68,23 @@ func TestResolveFailoverEntry_AllThreeWaysOfNamingThePrimaryProvider(t *testing.
 	const primaryProviderID = "openai-provider"
 
 	t.Run("provider omitted", func(t *testing.T) {
-		entry, err := resolveFailoverEntry(rdc, r, api.LLMFailoverTarget{Model: "gpt-4o"}, primaryProviderID)
+		entry, err := resolveFailoverEntry(rdc, r, modelFailoverTarget{Model: "gpt-4o"}, primaryProviderID)
 		require.NoError(t, err)
 		assert.Equal(t, "upstream_main_openai_com_443", entry.ClusterKey)
 		assert.Equal(t, primaryProviderID, entry.Provider)
 	})
 
 	t.Run("provider explicitly names the primary's own id", func(t *testing.T) {
-		entry, err := resolveFailoverEntry(rdc, r, api.LLMFailoverTarget{Model: "gpt-4o", Provider: strPtr(primaryProviderID)}, primaryProviderID)
+		entry, err := resolveFailoverEntry(rdc, r, modelFailoverTarget{Model: "gpt-4o", Provider: primaryProviderID}, primaryProviderID)
 		require.NoError(t, err)
 		assert.Equal(t, "upstream_main_openai_com_443", entry.ClusterKey)
 		assert.Equal(t, primaryProviderID, entry.Provider)
 	})
 
 	t.Run("provider names an additionalProvider's bare id with no as set", func(t *testing.T) {
-		entry, err := resolveFailoverEntry(rdc, r, api.LLMFailoverTarget{Model: "command-r", Provider: strPtr("cohere-provider")}, primaryProviderID)
+		entry, err := resolveFailoverEntry(rdc, r, modelFailoverTarget{Model: "command-r", Provider: "cohere-provider"}, primaryProviderID)
 		require.NoError(t, err)
 		assert.Equal(t, "upstream_cohere-provider_cohere_com_443", entry.ClusterKey)
 		assert.Equal(t, "cohere-provider", entry.Provider)
 	})
 }
-
-func strPtr(s string) *string { return &s }

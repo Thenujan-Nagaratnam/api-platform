@@ -108,24 +108,12 @@ func (t *LLMTransformer) Transform(cfg *models.StoredConfig) (*models.RuntimeDep
 	rdc.SensitiveValues = cfg.SensitiveValues
 
 	// Step 5: Resolve failover (LlmProxy-only) into the generic RouteFailover
-	// shape every route carries. Two sources feed it, in this order:
-	//
-	//  1. a model-failover policy attachment (the supported surface), which
-	//     resolves only the routes the policy is actually attached to; and
-	//  2. the legacy resilience.failover schema block, which applies proxy-wide.
-	//
-	// A route resolved by (1) is excluded from (2) so the two can never both
-	// write the same route's chain. No-op for any other kind, and for any
-	// LlmProxy carrying neither.
+	// shape every route carries. A model-failover policy attachment is the one
+	// and only source: it resolves exactly the routes the policy is attached to.
+	// No-op for any other kind, and for any LlmProxy without the attachment.
 	if proxy, ok := cfg.SourceConfiguration.(api.LLMProxyConfiguration); ok {
-		handled, err := applyModelFailoverPolicyToRoutes(rdc, llmProxyProviderIdentities(&proxy), proxy.Spec.Provider.Id)
-		if err != nil {
+		if err := applyModelFailoverPolicyToRoutes(rdc, llmProxyProviderIdentities(&proxy), proxy.Spec.Provider.Id); err != nil {
 			return nil, fmt.Errorf("resolving %s policy: %w", modelFailoverPolicyName, err)
-		}
-		if proxy.Spec.Resilience != nil {
-			if err := applyFailoverToRoutes(rdc, proxy.Spec.Resilience.Failover, proxy.Spec.Provider.Id, handled); err != nil {
-				return nil, fmt.Errorf("resolving resilience.failover: %w", err)
-			}
 		}
 	}
 
@@ -159,120 +147,21 @@ func (t *LLMTransformer) extractLLMMetadata(cfg *models.StoredConfig) *models.LL
 	return meta
 }
 
-// applyFailoverToRoutes resolves failover (the LLM-public {model, provider}
-// shorthand) into models.RouteFailover on every route in rdc, using
-// rdc.UpstreamClusters (already built by RestAPITransformer) to translate a
-// named provider into a real cluster key + upstream info. A target/fallback
-// with no provider uses the route's OWN already-resolved primary upstream
-// (route.Upstream.ClusterKey / .Default) directly — never a name lookup —
-// because the primary/sandbox slot clusters are stored with an empty Name
-// (see models.UpstreamCluster.Name's doc comment), which is not a usable
-// lookup key on its own. primaryProviderID is the proxy's own spec.provider.id,
-// needed so an explicit `provider: <primary's own id>` also takes this same
-// primary path instead of falling through to the (failing) named-cluster scan.
+// resolveFailoverEntry resolves one {model, provider} chain member (as authored
+// in a model-failover policy attachment's params) into a real cluster reference,
+// using rdc.UpstreamClusters (already built by RestAPITransformer) to translate
+// a named provider into a real cluster key + upstream info.
 //
-// Known v1 scope limitation, not a bug: this applies to every route the LlmProxy
-// owns, including operations with no client-supplied model to match against
-// (e.g. a "/models" listing endpoint) — such a route still gets retry-on-5xx and
-// forced host-rewrite it never had before. Properly scoping this to only
-// model-bearing operations needs per-operation request-shape awareness that
-// belongs in a later plan's downstream target-selection work (which already has
-// to parse the client-requested model out of the request body), not here.
-// resolveFailoverRetryOn defaults failover.RetryOn to ["5xx"] — this
-// feature's original, byte-identical-on-omission behavior — and copies
-// across the two companion lists verbatim (validateLLMFailoverRetryOn
-// already guarantees they're non-empty whenever their triggering retryOn
-// condition is present, so no further defaulting is needed here).
-func resolveFailoverRetryOn(failover *api.LLMFailoverConfig) (retryOn []string, retriableStatusCodes []uint32, retriableHeaders []string) {
-	if failover.RetryOn == nil || len(*failover.RetryOn) == 0 {
-		return []string{"5xx"}, nil, nil
-	}
-	retryOn = make([]string, 0, len(*failover.RetryOn))
-	for _, cond := range *failover.RetryOn {
-		retryOn = append(retryOn, string(cond))
-	}
-	if failover.RetriableStatusCodes != nil {
-		retriableStatusCodes = make([]uint32, 0, len(*failover.RetriableStatusCodes))
-		for _, code := range *failover.RetriableStatusCodes {
-			retriableStatusCodes = append(retriableStatusCodes, uint32(code))
-		}
-	}
-	if failover.RetriableHeaders != nil {
-		retriableHeaders = append(retriableHeaders, *failover.RetriableHeaders...)
-	}
-	return retryOn, retriableStatusCodes, retriableHeaders
-}
-
-// alreadyResolved names the routes a model-failover policy attachment already
-// resolved; they are skipped here so the two triggers can never both write one
-// route's chain (nil when there are none).
-func applyFailoverToRoutes(rdc *models.RuntimeDeployConfig, failover *api.LLMFailoverConfig, primaryProviderID string,
-	alreadyResolved map[string]bool) error {
-	if failover == nil || len(failover.Targets) == 0 {
-		return nil
-	}
-
-	suspendSeconds := 0
-	if failover.SuspendDuration != nil {
-		suspendSeconds = *failover.SuspendDuration
-	}
-
-	retryOn, retriableStatusCodes, retriableHeaders := resolveFailoverRetryOn(failover)
-
-	for routeKey, r := range rdc.Routes {
-		if alreadyResolved[routeKey] {
-			continue
-		}
-		targets := make([]models.RouteFailoverTarget, 0, len(failover.Targets))
-		for _, entry := range failover.Targets {
-			targetEntry, err := resolveFailoverEntry(rdc, r, entry.Target, primaryProviderID)
-			if err != nil {
-				return fmt.Errorf("route %q: resolving failover target %q: %w", routeKey, entry.Target.Model, err)
-			}
-			fallbacks := make([]models.RouteFailoverEntry, 0, len(entry.Fallbacks))
-			for _, fb := range entry.Fallbacks {
-				fbEntry, err := resolveFailoverEntry(rdc, r, fb, primaryProviderID)
-				if err != nil {
-					return fmt.Errorf("route %q: resolving failover fallback %q: %w", routeKey, fb.Model, err)
-				}
-				fallbacks = append(fallbacks, fbEntry)
-			}
-			targets = append(targets, models.RouteFailoverTarget{
-				Model:     entry.Target.Model,
-				Target:    targetEntry,
-				Fallbacks: fallbacks,
-			})
-		}
-
-		r.Upstream.Failover = &models.RouteFailover{
-			SuspendDurationSeconds: suspendSeconds,
-			Targets:                targets,
-			RetryOn:                retryOn,
-			RetriableStatusCodes:   retriableStatusCodes,
-			RetriableHeaders:       retriableHeaders,
-		}
-		if !r.Upstream.UseClusterHeader {
-			r.Upstream.UseClusterHeader = true
-			r.Upstream.DefaultCluster = r.Upstream.ClusterKey
-		}
-	}
-	return nil
-}
-
-// resolveFailoverEntry resolves one {model, provider} shorthand into a real
-// cluster reference. provider == nil/empty, or provider == the proxy's own
-// primaryProviderID, both mean the route's own primary upstream — a validated
-// config can legally spell out `provider: <primary's own id>` explicitly
-// (llm_validator.go seeds it into validUpstreamNames), and that must resolve
-// exactly like omitting the field, not fall through to the named-cluster scan
-// below, whose clusters are keyed by additionalProviders[].as/id and would
-// never contain the primary (its cluster is stored with an empty Name — see
-// models.UpstreamCluster.Name's doc comment).
-func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t api.LLMFailoverTarget, primaryProviderID string) (models.RouteFailoverEntry, error) {
-	providerName := ""
-	if t.Provider != nil {
-		providerName = strings.TrimSpace(*t.Provider)
-	}
+// An empty provider, or a provider equal to the proxy's own primaryProviderID,
+// both mean the route's OWN already-resolved primary upstream
+// (route.Upstream.ClusterKey / .Default) — never a name lookup. A config can
+// legally spell out `provider: <primary's own id>` explicitly, and that must
+// resolve exactly like omitting the field rather than falling through to the
+// named-cluster scan below, whose clusters are keyed by
+// additionalProviders[].as/id and would never contain the primary (its cluster
+// is stored with an empty Name — see models.UpstreamCluster.Name's doc comment).
+func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t modelFailoverTarget, primaryProviderID string) (models.RouteFailoverEntry, error) {
+	providerName := strings.TrimSpace(t.Provider)
 	if providerName == "" || providerName == primaryProviderID {
 		if r.Upstream.Default == nil {
 			return models.RouteFailoverEntry{}, fmt.Errorf("route has no default upstream to use as the primary failover target")

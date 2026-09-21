@@ -198,7 +198,7 @@ const (
 	// UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME is the per-attempt counterpart to
 	// UPSTREAM_AUTH_APIKEY_POLICY_NAME ("set-headers"): set-headers only runs
 	// downstream, once, before Envoy dispatches, so it cannot know which
-	// provider will actually serve a resilience.failover-eligible request.
+	// provider will actually serve a failover-eligible request.
 	// This policy self-gates on the kernel-seeded "selected_provider" SharedContext
 	// metadata key instead (see gateway-runtime's kernel.NewUpstreamAttemptSharedContext).
 	UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME = "llm-upstream-provider-auth"

@@ -30,19 +30,6 @@ import (
 
 const modelFailoverPolicyName = "model-failover"
 
-// findModelFailoverPolicy scans a policy list for a model-failover attachment.
-func findModelFailoverPolicy(policies *[]api.Policy) (*api.Policy, bool) {
-	if policies == nil {
-		return nil, false
-	}
-	for i := range *policies {
-		if (*policies)[i].Name == modelFailoverPolicyName {
-			return &(*policies)[i], true
-		}
-	}
-	return nil, false
-}
-
 // modelFailoverTarget/modelFailoverTargetEntry/modelFailoverParams mirror the
 // policy's own ModelFailoverParams/FailoverTargetEntry/FailoverTarget shape
 // (gateway/dev-policies/model-failover) — hand-written here because
@@ -114,21 +101,13 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 	return &params, nil
 }
 
-func (t modelFailoverTarget) toAPITarget() api.LLMFailoverTarget {
-	out := api.LLMFailoverTarget{Model: t.Model}
-	if t.Provider != "" {
-		p := t.Provider
-		out.Provider = &p
-	}
-	return out
-}
-
 // buildRouteFailoverFromPolicy resolves a model-failover policy's params into
 // the *models.RouteFailover the existing xDS generation consumes (reusing
 // resolveFailoverEntry), and returns a copy of params with each entry's
 // AggregateCluster set via xds.AggregateClusterName(routeKey, index) — the
 // copy the policy instance carries at runtime. The input params are not
-// mutated. retryOn defaults to ["5xx"], as the schema-driven path does.
+// mutated. retryOn is always ["5xx"]: this feature's original behavior, and no
+// longer configurable (design §5).
 func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Route, params *modelFailoverParams, routeKey, primaryProviderID string) (*models.RouteFailover, *modelFailoverParams, error) {
 	if params == nil || len(params.Targets) == 0 {
 		return nil, nil, fmt.Errorf("model-failover: no targets to build failover from")
@@ -141,13 +120,13 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 	}
 	targets := make([]models.RouteFailoverTarget, 0, len(params.Targets))
 	for i, entry := range params.Targets {
-		targetEntry, err := resolveFailoverEntry(rdc, r, entry.Target.toAPITarget(), primaryProviderID)
+		targetEntry, err := resolveFailoverEntry(rdc, r, entry.Target, primaryProviderID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("route %q: resolving failover target %q: %w", routeKey, entry.Target.Model, err)
 		}
 		fallbacks := make([]models.RouteFailoverEntry, 0, len(entry.Fallbacks))
 		for _, fb := range entry.Fallbacks {
-			fbEntry, err := resolveFailoverEntry(rdc, r, fb.toAPITarget(), primaryProviderID)
+			fbEntry, err := resolveFailoverEntry(rdc, r, fb, primaryProviderID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("route %q: resolving failover fallback %q: %w", routeKey, fb.Model, err)
 			}
@@ -193,16 +172,15 @@ func llmProxyProviderIdentities(proxy *api.LLMProxyConfiguration) []string {
 }
 
 // applyModelFailoverPolicyToRoutes resolves every route whose policy chain
-// carries a model-failover attachment, and returns the set of route keys it
-// handled so the (still-present) resilience.failover schema path can skip them
-// rather than resolving the same route a second time with a different chain.
+// carries a model-failover attachment. It is the one and only trigger for
+// failover resolution — a route without the attachment is left untouched.
 //
-// Two things happen per handled route, both required by the design's §3/§5:
+// Two things happen per resolved route, both required by the design's §3/§5:
 //
 //   - the resolved models.RouteFailover is written onto the route, which is the
 //     unchanged trigger for aggregate-cluster/retry_policy xDS generation — the
-//     policy attachment replaces the schema field as the *trigger*, not the
-//     generation itself;
+//     policy attachment replaced the removed resilience.failover schema field as
+//     the *trigger*, not the generation itself;
 //   - the controller-assigned aggregate cluster name is injected back into every
 //     model-failover instance in that route's chain (the downstream one and the
 //     synthesized upstream one alike), so the policy only ever string-compares a
@@ -211,8 +189,7 @@ func llmProxyProviderIdentities(proxy *api.LLMProxyConfiguration) []string {
 // Params are merged key-wise rather than replaced so keys the chain builder
 // added (attachedTo) survive.
 func applyModelFailoverPolicyToRoutes(rdc *models.RuntimeDeployConfig, availableProviders []string,
-	primaryProviderID string) (map[string]bool, error) {
-	handled := map[string]bool{}
+	primaryProviderID string) error {
 	for routeKey, r := range rdc.Routes {
 		chain := rdc.PolicyChains[rdc.EffectiveCanonicalChainKey(routeKey, r)]
 		if chain == nil {
@@ -230,15 +207,15 @@ func applyModelFailoverPolicyToRoutes(rdc *models.RuntimeDeployConfig, available
 
 		params, err := parseModelFailoverParams(instances[0].Params, availableProviders, primaryProviderID)
 		if err != nil {
-			return nil, fmt.Errorf("route %q: %w", routeKey, err)
+			return fmt.Errorf("route %q: %w", routeKey, err)
 		}
 		failover, expanded, err := buildRouteFailoverFromPolicy(rdc, r, params, routeKey, primaryProviderID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		expandedParams, err := modelFailoverParamsToMap(expanded)
 		if err != nil {
-			return nil, fmt.Errorf("route %q: %w", routeKey, err)
+			return fmt.Errorf("route %q: %w", routeKey, err)
 		}
 
 		r.Upstream.Failover = failover
@@ -254,9 +231,8 @@ func applyModelFailoverPolicyToRoutes(rdc *models.RuntimeDeployConfig, available
 				instance.Params[k] = v
 			}
 		}
-		handled[routeKey] = true
 	}
-	return handled, nil
+	return nil
 }
 
 // modelFailoverParamsToMap renders the expanded params back into the generic

@@ -24,38 +24,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/xds"
 	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
-
-func TestFindModelFailoverPolicy_Found(t *testing.T) {
-	params := map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{"target": map[string]interface{}{"model": "gpt-4o"}},
-		},
-	}
-	policies := []api.Policy{
-		{Name: "some-other-policy", Version: "v1"},
-		{Name: "model-failover", Version: "v0", Params: &params},
-	}
-
-	found, ok := findModelFailoverPolicy(&policies)
-
-	require.True(t, ok)
-	assert.Equal(t, "model-failover", found.Name)
-}
-
-func TestFindModelFailoverPolicy_NotFound(t *testing.T) {
-	policies := []api.Policy{{Name: "some-other-policy", Version: "v1"}}
-
-	_, ok := findModelFailoverPolicy(&policies)
-	assert.False(t, ok)
-
-	_, ok = findModelFailoverPolicy(nil)
-	assert.False(t, ok)
-}
 
 func TestParseModelFailoverParams_ValidatesProviderReference(t *testing.T) {
 	params := map[string]interface{}{

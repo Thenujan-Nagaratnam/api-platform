@@ -188,7 +188,7 @@ func TestTranslateRuntimeConfig_FailoverRoute_RetriableHeaders(t *testing.T) {
 }
 
 // TestTranslateRuntimeConfig_FailoverRoute_EmptyRetryOnDefaultsTo5xx proves the
-// translator's own defensive default (not just applyFailoverToRoutes' one) —
+// translator's own defensive default (not just buildRouteFailoverFromPolicy's one) —
 // a RouteFailover built any other way, with RetryOn left nil, must never
 // produce an empty retry_on (which Envoy treats as "never retry").
 func TestTranslateRuntimeConfig_FailoverRoute_EmptyRetryOnDefaultsTo5xx(t *testing.T) {

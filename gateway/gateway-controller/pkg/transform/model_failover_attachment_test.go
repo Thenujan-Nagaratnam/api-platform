@@ -21,6 +21,7 @@ package transform
 import (
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,15 +30,16 @@ import (
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/metrics"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/utils"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/xds"
 )
 
-// modelFailoverE2EHarness builds the same real store/template/provider set the
-// resilience.failover end-to-end test uses, so the two paths are compared under
-// identical conditions.
+// modelFailoverE2EHarness builds a real SQLite-backed store/template/provider
+// set, so a model-failover attachment is resolved end-to-end through the same
+// LLMProviderTransformer -> RestAPITransformer chain a real deploy runs.
 func modelFailoverE2EHarness(t *testing.T) (*LLMTransformer, *config.RouterConfig) {
 	t.Helper()
 
@@ -174,8 +176,8 @@ func chainInstancesNamed(t *testing.T, chain *models.PolicyChain, name string) [
 
 // TestLLMTransformer_ModelFailoverPolicy_ResolvesFailoverAndInjectsAggregateCluster
 // is the end-to-end proof that a model-failover policy attachment drives the
-// same failover resolution resilience.failover used to: the route gains a
-// resolved RouteFailover (which is what triggers the unchanged aggregate
+// full failover resolution: the route gains a resolved RouteFailover
+// (which is what triggers the unchanged aggregate
 // cluster / retry_policy xDS generation), and both the downstream and the
 // upstream instance of the policy get the controller-assigned aggregate cluster
 // name injected into their params — the single source of truth the policy
@@ -248,52 +250,6 @@ func TestLLMTransformer_ModelFailoverPolicy_ResolvesFailoverAndInjectsAggregateC
 	}
 }
 
-// TestLLMTransformer_ModelFailoverPolicy_WinsOverResilienceFailoverForSameRoute
-// guards the transient window in which both the policy attachment and the
-// (not-yet-removed) resilience.failover schema block can be present: a route the
-// policy already resolved must not be resolved a second time by the schema path,
-// which would silently replace the policy's chain with a different one.
-func TestLLMTransformer_ModelFailoverPolicy_WinsOverResilienceFailoverForSameRoute(t *testing.T) {
-	llmTransformer, routerCfg := modelFailoverE2EHarness(t)
-
-	proxy := modelFailoverProxyConfig()
-	proxy.Spec.Resilience = &api.LLMResilience{
-		Failover: &api.LLMFailoverConfig{
-			SuspendDuration: api.Ptr(17),
-			Targets: []api.LLMFailoverTargetEntry{{
-				Target:    api.LLMFailoverTarget{Model: "schema-only-model"},
-				Fallbacks: []api.LLMFailoverTarget{},
-			}},
-		},
-	}
-
-	rdc, err := llmTransformer.Transform(modelFailoverStoredConfig(proxy))
-	require.NoError(t, err)
-
-	routeKey := "POST|/chat/completions|" + routerCfg.VHosts.Main.Default
-	chatRoute, ok := rdc.Routes[routeKey]
-	require.True(t, ok)
-	require.NotNil(t, chatRoute.Upstream.Failover)
-	require.Len(t, chatRoute.Upstream.Failover.Targets, 1)
-	assert.Equal(t, "gpt-4o", chatRoute.Upstream.Failover.Targets[0].Model,
-		"the policy attachment owns this route's failover chain; the schema block must not overwrite it")
-	assert.Equal(t, 900, chatRoute.Upstream.Failover.SuspendDurationSeconds)
-
-	// Routes the policy was not attached to still fall through to the schema
-	// block for as long as it exists.
-	var schemaResolvedRoutes int
-	for key, r := range rdc.Routes {
-		if key == routeKey || r.Upstream.Failover == nil {
-			continue
-		}
-		require.Len(t, r.Upstream.Failover.Targets, 1)
-		assert.Equal(t, "schema-only-model", r.Upstream.Failover.Targets[0].Model)
-		schemaResolvedRoutes++
-	}
-	assert.Greater(t, schemaResolvedRoutes, 0,
-		"the resilience.failover block must still apply to routes the policy does not cover")
-}
-
 // TestLLMTransformer_ModelFailoverPolicy_UnknownProviderRejected proves the
 // validation Task 7 put in parseModelFailoverParams actually runs on this path,
 // so a bad provider reference fails the deploy rather than producing an
@@ -315,4 +271,23 @@ func TestLLMTransformer_ModelFailoverPolicy_UnknownProviderRejected(t *testing.T
 	_, err := llmTransformer.Transform(modelFailoverStoredConfig(proxy))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not-a-configured-provider")
+}
+
+func newTestSQLiteStorageForFailoverE2E(t *testing.T, logger *slog.Logger) storage.Storage {
+	t.Helper()
+
+	metrics.Init()
+
+	dbPath := filepath.Join(t.TempDir(), "llm_failover_e2e.db")
+	db, err := storage.NewStorage(storage.BackendConfig{
+		Type:       "sqlite",
+		SQLitePath: dbPath,
+	}, logger)
+	if err != nil {
+		t.Fatalf("failed to create sqlite storage: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	return db
 }

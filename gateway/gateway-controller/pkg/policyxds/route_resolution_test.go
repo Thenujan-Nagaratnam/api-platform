@@ -638,7 +638,7 @@ func TestTranslateSkipsNilChainsAndRoutesWithoutPanicking(t *testing.T) {
 // ─── Failover metadata sync (Task 6) ─────────────────────────────────────────
 
 // failoverRDC is a RuntimeDeployConfig for a single route carrying a
-// resilience.failover-resolved RouteFailover, so the emitted RouteConfig can be
+// model-failover-resolved RouteFailover, so the emitted RouteConfig can be
 // asserted against the exact wire shape Plan B's policy-engine xDS handler
 // (gateway-runtime/policy-engine/internal/xdsclient/handler.go) parses.
 func failoverRDC() *models.RuntimeDeployConfig {
@@ -698,12 +698,12 @@ func TestRouteConfigEmitsFailoverTargets(t *testing.T) {
 	// RouteFailover.SuspendDurationSeconds's own route-level scope), as a float64 —
 	// structpb-based wire encoding rejects a bare Go int, same as max_request_body_bytes.
 	suspendDuration, ok := data["failover_suspend_duration"]
-	require.True(t, ok, "a route with resilience.failover must emit failover_suspend_duration")
+	require.True(t, ok, "a route with a resolved failover chain must emit failover_suspend_duration")
 	assert.Equal(t, float64(900), suspendDuration)
 	assert.IsType(t, float64(0), suspendDuration, "must be emitted as float64, not a bare int")
 
 	raw, ok := data["failover_targets"]
-	require.True(t, ok, "a route with resilience.failover must emit failover_targets")
+	require.True(t, ok, "a route with a resolved failover chain must emit failover_targets")
 	targets, ok := raw.([]interface{})
 	require.True(t, ok)
 	require.Len(t, targets, 1)
@@ -729,7 +729,7 @@ func TestRouteConfigEmitsFailoverTargets(t *testing.T) {
 	assert.Equal(t, "anthropic-provider", second["provider"])
 }
 
-// A route with no resilience.failover block must not gain the field — mirrors
+// A route with no resolved failover chain must not gain the field — mirrors
 // the omission discipline TestEmptyResolutionFieldsAreOmitted pins for the
 // other optional fields, so a route without failover doesn't re-version on
 // every deploy for no behavioural reason.
@@ -740,8 +740,8 @@ func TestRouteConfigOmitsFailoverTargetsWhenUnset(t *testing.T) {
 	for routeKey, res := range resources[RouteConfigTypeURL] {
 		data := decodeRouteConfig(t, res)
 		_, present := data["failover_targets"]
-		assert.False(t, present, "route %q without resilience.failover must omit failover_targets", routeKey)
+		assert.False(t, present, "route %q without a failover chain must omit failover_targets", routeKey)
 		_, suspendPresent := data["failover_suspend_duration"]
-		assert.False(t, suspendPresent, "route %q without resilience.failover must omit failover_suspend_duration", routeKey)
+		assert.False(t, suspendPresent, "route %q without a failover chain must omit failover_suspend_duration", routeKey)
 	}
 }

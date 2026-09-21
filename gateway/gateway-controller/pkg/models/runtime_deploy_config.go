@@ -150,13 +150,14 @@ type RouteUpstream struct {
 	Default *policyenginev1.UpstreamInfo
 
 	// Failover is this route's failover configuration (nil unless the source
-	// LlmProxy declared resilience.failover). See RouteFailover.
+	// LlmProxy attached the model-failover policy to this route). See
+	// RouteFailover.
 	Failover *RouteFailover
 }
 
 // RouteFailover declares, for one route, the ordered failover chains a
 // client-requested model can match against. Populated only when the source
-// LlmProxy has a resilience.failover block; nil otherwise. See
+// LlmProxy attaches the model-failover policy; nil otherwise. See
 // docs/superpowers/specs/2026-09-17-llm-model-failover-design.md.
 type RouteFailover struct {
 	SuspendDurationSeconds int
@@ -164,8 +165,8 @@ type RouteFailover struct {
 
 	// RetryOn is the set of Envoy RetryPolicy.retry_on conditions that
 	// trigger escalation to the next chain member. Always non-empty by the
-	// time this reaches the xDS translator — applyFailoverToRoutes defaults
-	// it to ["5xx"] when the source config omits resilience.failover.retryOn.
+	// time this reaches the xDS translator — buildRouteFailoverFromPolicy
+	// (pkg/transform) always sets it to ["5xx"], which is not configurable.
 	RetryOn []string
 
 	// RetriableStatusCodes is meaningful only when RetryOn contains

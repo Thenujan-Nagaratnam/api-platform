@@ -19,20 +19,89 @@
 package utils
 
 import (
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
 )
 
 const testTransformerPolicyName = "openai-to-anthropic-transformer"
 
+// saveFailoverAuthTestProvider registers a minimal openai-templated LlmProvider
+// so the LlmProxy transform below can resolve it during additionalProviders processing.
+func saveFailoverAuthTestProvider(t *testing.T, db storage.Storage, name, context string) {
+	t.Helper()
+	providerSourceConfig := api.LLMProviderConfiguration{
+		ApiVersion: api.LLMProviderConfigurationApiVersionGatewayApiPlatformWso2Comv1,
+		Kind:       api.LLMProviderConfigurationKindLlmProvider,
+		Metadata:   api.Metadata{Name: name},
+		Spec: api.LLMProviderConfigData{
+			DisplayName:   name,
+			Version:       "v1.0",
+			Context:       stringPtr(context),
+			Template:      "openai",
+			Upstream:      api.LLMProviderConfigData_Upstream{Url: stringPtr("https://example.com")},
+			AccessControl: api.LLMAccessControl{Mode: api.AllowAll},
+		},
+	}
+	require.NoError(t, db.SaveConfig(&models.StoredConfig{
+		UUID:                name + "-uuid",
+		Kind:                string(api.LLMProviderConfigurationKindLlmProvider),
+		Handle:              name,
+		DisplayName:         name,
+		Version:             "v1.0",
+		SourceConfiguration: providerSourceConfig,
+		DesiredState:        models.StateDeployed,
+	}))
+}
+
+func newFailoverAuthTestStore(t *testing.T) (storage.Storage, *LLMProviderTransformer) {
+	t.Helper()
+	store := storage.NewConfigStore()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db := newTestSQLiteStorage(t, logger)
+
+	template := &models.StoredLLMProviderTemplate{
+		UUID: "failover-auth-test-template",
+		Configuration: api.LLMProviderTemplate{
+			ApiVersion: api.LLMProviderTemplateApiVersionGatewayApiPlatformWso2Comv1,
+			Kind:       api.LLMProviderTemplateKindLlmProviderTemplate,
+			Metadata:   api.Metadata{Name: "openai"},
+			Spec:       api.LLMProviderTemplateData{DisplayName: "openai"},
+		},
+	}
+	require.NoError(t, db.SaveLLMProviderTemplate(template))
+
+	saveFailoverAuthTestProvider(t, db, "openai-provider", "/openai-provider")
+	saveFailoverAuthTestProvider(t, db, "anthropic-provider", "/anthropic-provider")
+
+	transformer := NewLLMProviderTransformer(store, db, &config.RouterConfig{ListenerPort: 8080}, newTestPolicyVersionResolver())
+	return db, transformer
+}
+
+func findChatCompletionsOperation(t *testing.T, ops []api.Operation) *api.Operation {
+	t.Helper()
+	for i := range ops {
+		if ops[i].Path != nil && *ops[i].Path == "/chat/completions" &&
+			ops[i].Method != nil && *ops[i].Method == api.OperationMethod("POST") {
+			return &ops[i]
+		}
+	}
+	t.Fatal("expected a /chat/completions POST operation")
+	return nil
+}
+
 // modelFailoverOperationPolicy is the author-facing attachment shape from the
 // design doc's §3: an ordinary operationPolicies: entry whose params carry the
-// same {targets, suspendDuration} shape resilience.failover used to.
+// policy's {targets, suspendDuration} shape.
 func modelFailoverOperationPolicy() api.OperationPolicy {
 	return api.OperationPolicy{
 		Name:    modelFailoverPolicyName,
@@ -209,6 +278,9 @@ func TestTransform_ModelFailoverPolicy_AttachedDownstreamAndUpstreamWithProvider
 	downstreamOauth2 := downstreamAttachments(policies, constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME)
 	require.Len(t, downstreamOauth2, 1)
 	require.NotNil(t, downstreamOauth2[0].ExecutionCondition)
+	require.NotNil(t, downstreamOauth2[0].Params)
+	assert.Equal(t, "anthropic-upstream", (*downstreamOauth2[0].Params)["providerId"],
+		"proxyUpstreamAuthPolicy must inject providerId into oauth2-generator's own params so it can self-gate a failover attempt")
 	downstreamTransformer := downstreamAttachments(policies, testTransformerPolicyName)
 	require.Len(t, downstreamTransformer, 1)
 	require.NotNil(t, downstreamTransformer[0].ExecutionCondition)

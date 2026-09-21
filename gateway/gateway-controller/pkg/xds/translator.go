@@ -287,7 +287,7 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		clusters = append(clusters, c)
 	}
 
-	// Build one aggregate cluster per resilience.failover targets[] entry,
+	// Build one aggregate cluster per model-failover targets[] entry,
 	// deduped by route key + entry index (multiple operations of the same
 	// LlmProxy share the identical failover block, so this avoids emitting
 	// duplicate aggregate clusters with colliding names).
@@ -430,9 +430,9 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 			}
 		}
 		// RetryOn is expected non-empty by the time it reaches here —
-		// applyFailoverToRoutes (pkg/transform/llm.go) defaults it to ["5xx"]
-		// when the source config omits resilience.failover.retryOn — but
-		// default defensively here too, so a RouteFailover built any other
+		// buildRouteFailoverFromPolicy (pkg/transform/model_failover_policy.go)
+		// always sets it to ["5xx"] — but default defensively here too, so a
+		// RouteFailover built any other
 		// way never produces an empty retry_on (which Envoy treats as "never
 		// retry", silently defeating the whole feature). Envoy's retry_on
 		// accepts a comma-separated list of conditions in one string.
@@ -541,7 +541,7 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 }
 
 // buildRetriableHeaderMatchers builds a presence-match (any value) HeaderMatcher
-// per configured name for RetryPolicy.RetriableHeaders — resilience.failover's
+// per configured name for RetryPolicy.RetriableHeaders — a RouteFailover's
 // retryOn: ["retriable-headers"] only needs to know a header is present at all,
 // never a specific value, unlike buildMatchHeaders' route-selection matchers.
 func buildRetriableHeaderMatchers(headerNames []string) []*route.HeaderMatcher {

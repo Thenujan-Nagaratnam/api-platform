@@ -146,7 +146,7 @@ func aggregateMembersOf(t *testing.T, c *cluster.Cluster) []string {
 
 // TestLLMTransform_NoFailoverBlock_OutputUnchangedFromBeforeThisFeature is the
 // concrete proof of this plan's Global Constraint: a route with no
-// resilience.failover block produces byte-identical xDS output to before
+// model-failover attachment produces byte-identical xDS output to before
 // this feature existed — no aggregate cluster, no retry policy, no
 // failover-driven host rewrite, and the containing virtual host does not
 // request the attempt-count header. This is the same fixture Task 5's test
@@ -193,7 +193,7 @@ func TestLLMTransform_NoFailoverBlock_OutputUnchangedFromBeforeThisFeature(t *te
 }
 
 // TestLLMTransform_FailoverBlock_FullShapeEndToEnd asserts the full xDS shape
-// for a route with one resilience.failover targets[] entry: primary provider
+// for a route with one model-failover targets[] entry: primary provider
 // "openai-provider" attempting model "gpt-4o", falling back to
 // "claude-sonnet-4-5-20250929" on additionalProvider "anthropic-provider"
 // (as: "anthropic-upstream"). The provider/template resolution half of this

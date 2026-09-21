@@ -855,20 +855,6 @@ func (v *LLMValidator) validateProxyData(spec *api.LLMProxyConfigData) []Validat
 	// The deprecated `policies` list must not coexist with the new policy lists
 	errors = append(errors, v.validatePolicyListExclusivity(spec.GlobalPolicies, spec.OperationPolicies, spec.Policies)...)
 
-	if spec.Resilience != nil && spec.Resilience.Failover != nil {
-		validUpstreamNames := map[string]bool{spec.Provider.Id: true}
-		if spec.AdditionalProviders != nil {
-			for _, ap := range *spec.AdditionalProviders {
-				name := ap.Id
-				if ap.As != nil && *ap.As != "" {
-					name = *ap.As
-				}
-				validUpstreamNames[name] = true
-			}
-		}
-		errors = append(errors, v.validateLLMFailover("spec.resilience.failover", spec.Resilience.Failover, validUpstreamNames)...)
-	}
-
 	// Validate API-level resilience (timeout / idleTimeout). LLM kinds support resilience at
 	// the API level only.
 	errors = append(errors, validateResilienceTimeouts("spec.resilience", ToBaseResilience(spec.Resilience))...)
@@ -878,7 +864,9 @@ func (v *LLMValidator) validateProxyData(spec *api.LLMProxyConfigData) []Validat
 
 // ToBaseResilience adapts LlmProxy's LLMResilience down to the shared
 // Resilience shape so the one existing timeout/idleTimeout validator serves
-// every kind. nil in, nil out.
+// every kind. nil in, nil out. LLMResilience is kept as its own schema rather
+// than collapsed into Resilience so LlmProxy-only resilience settings can be
+// added without widening the shared one.
 func ToBaseResilience(r *api.LLMResilience) *api.Resilience {
 	if r == nil {
 		return nil
@@ -904,132 +892,6 @@ func (v *LLMValidator) validateLLMProxyTransformer(fieldPrefix string, transform
 			Field:   fieldPrefix + ".version",
 			Message: "Transformer version must be major-only (e.g. v1)",
 		})
-	}
-	return errors
-}
-
-func (v *LLMValidator) validateLLMFailover(fieldPrefix string, failover *api.LLMFailoverConfig, validUpstreamNames map[string]bool) []ValidationError {
-	var errors []ValidationError
-
-	if failover.SuspendDuration != nil && *failover.SuspendDuration < 0 {
-		errors = append(errors, ValidationError{
-			Field:   fieldPrefix + ".suspendDuration",
-			Message: fieldPrefix + ".suspendDuration must be >= 0",
-		})
-	}
-
-	errors = append(errors, v.validateLLMFailoverRetryOn(fieldPrefix, failover)...)
-
-	seenModels := map[string]bool{}
-	for i, entry := range failover.Targets {
-		entryPrefix := fmt.Sprintf("%s.targets[%d]", fieldPrefix, i)
-
-		// The "is required" check for entry.Target.Model itself lives in
-		// validateLLMFailoverTarget below (called on the next line) — this
-		// loop only adds the duplicate-detection check that's specific to
-		// the target position, not shared with fallbacks.
-		if entry.Target.Model != "" && seenModels[entry.Target.Model] {
-			errors = append(errors, ValidationError{
-				Field:   entryPrefix + ".target.model",
-				Message: fmt.Sprintf("duplicate target model %q in resilience.failover.targets", entry.Target.Model),
-			})
-		}
-		seenModels[entry.Target.Model] = true
-
-		errors = append(errors, v.validateLLMFailoverTarget(entryPrefix+".target", entry.Target, validUpstreamNames)...)
-
-		if len(entry.Fallbacks) == 0 {
-			errors = append(errors, ValidationError{
-				Field:   entryPrefix + ".fallbacks",
-				Message: entryPrefix + ".fallbacks must have at least one entry",
-			})
-		}
-		for j, fb := range entry.Fallbacks {
-			errors = append(errors, v.validateLLMFailoverTarget(fmt.Sprintf("%s.fallbacks[%d]", entryPrefix, j), fb, validUpstreamNames)...)
-		}
-	}
-
-	return errors
-}
-
-// validLLMFailoverRetryOn is the exact set Envoy's HTTP RetryPolicy.retry_on
-// accepts (the gRPC-only conditions — cancelled/deadline-exceeded/internal/
-// resource-exhausted/unavailable — are deliberately excluded: LLM proxy
-// traffic is plain HTTP/JSON, never gRPC).
-var validLLMFailoverRetryOn = map[api.LLMFailoverConfigRetryOn]bool{
-	api.N5xx:                 true,
-	api.GatewayError:         true,
-	api.Reset:                true,
-	api.ResetBeforeRequest:   true,
-	api.ConnectFailure:       true,
-	api.EnvoyRatelimited:     true,
-	api.Retriable4xx:         true,
-	api.RefusedStream:        true,
-	api.RetriableStatusCodes: true,
-	api.RetriableHeaders:     true,
-}
-
-// validateLLMFailoverRetryOn validates resilience.failover.retryOn against
-// Envoy's actual supported HTTP retry_on values, and enforces the two
-// conditions that need a companion list to mean anything
-// (retriable-status-codes/retriable-headers) actually got one. A nil/empty
-// retryOn is valid — applyFailoverToRoutes defaults it to ["5xx"] at
-// translate time, preserving this feature's original hardcoded behavior.
-func (v *LLMValidator) validateLLMFailoverRetryOn(fieldPrefix string, failover *api.LLMFailoverConfig) []ValidationError {
-	var errors []ValidationError
-	if failover.RetryOn == nil {
-		return errors
-	}
-
-	hasRetriableStatusCodes := false
-	hasRetriableHeaders := false
-	for i, cond := range *failover.RetryOn {
-		if !validLLMFailoverRetryOn[cond] {
-			errors = append(errors, ValidationError{
-				Field:   fmt.Sprintf("%s.retryOn[%d]", fieldPrefix, i),
-				Message: fmt.Sprintf("unsupported retryOn value %q", cond),
-			})
-			continue
-		}
-		if cond == api.RetriableStatusCodes {
-			hasRetriableStatusCodes = true
-		}
-		if cond == api.RetriableHeaders {
-			hasRetriableHeaders = true
-		}
-	}
-
-	if hasRetriableStatusCodes && (failover.RetriableStatusCodes == nil || len(*failover.RetriableStatusCodes) == 0) {
-		errors = append(errors, ValidationError{
-			Field:   fieldPrefix + ".retriableStatusCodes",
-			Message: fieldPrefix + ".retriableStatusCodes must be non-empty when retryOn includes \"retriable-status-codes\"",
-		})
-	}
-	if hasRetriableHeaders && (failover.RetriableHeaders == nil || len(*failover.RetriableHeaders) == 0) {
-		errors = append(errors, ValidationError{
-			Field:   fieldPrefix + ".retriableHeaders",
-			Message: fieldPrefix + ".retriableHeaders must be non-empty when retryOn includes \"retriable-headers\"",
-		})
-	}
-
-	return errors
-}
-
-func (v *LLMValidator) validateLLMFailoverTarget(fieldPrefix string, target api.LLMFailoverTarget, validUpstreamNames map[string]bool) []ValidationError {
-	var errors []ValidationError
-	if strings.TrimSpace(target.Model) == "" {
-		errors = append(errors, ValidationError{
-			Field:   fieldPrefix + ".model",
-			Message: fieldPrefix + ".model is required",
-		})
-	}
-	if target.Provider != nil && strings.TrimSpace(*target.Provider) != "" {
-		if !validUpstreamNames[*target.Provider] {
-			errors = append(errors, ValidationError{
-				Field:   fieldPrefix + ".provider",
-				Message: fmt.Sprintf("%s.provider %q does not match the primary provider or any additionalProviders[].as/id", fieldPrefix, *target.Provider),
-			})
-		}
 	}
 	return errors
 }

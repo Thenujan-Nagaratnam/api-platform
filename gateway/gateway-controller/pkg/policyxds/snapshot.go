@@ -445,7 +445,7 @@ func (t *Translator) createRouteConfigResource(
 	}
 
 	// This route's resolved failover chains (nil unless the source LlmProxy declared
-	// resilience.failover). chain[0] is always the target itself, chain[1:] are the
+	// the model-failover policy). chain[0] is always the target itself, chain[1:] are the
 	// fallbacks in order — the same list x-envoy-attempt-count-1 indexes into per the
 	// design spec §6. aggregate_cluster must match xds.AggregateClusterName exactly,
 	// since that is the same name Envoy reports back via xds.cluster_name.

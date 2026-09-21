@@ -25,7 +25,7 @@ import (
 // AggregateClusterName deterministically names the aggregate cluster for the
 // targetIndex'th entry of routeKey's failover block. Stable across redeploys
 // (routeKey + index never change for the same declared target unless the
-// operator reorders resilience.failover.targets, which is an intentional
+// operator reorders the model-failover policy's targets, which is an intentional
 // config change, not a spurious xDS re-version). Exported: pkg/policyxds
 // needs this same name to know what to put on the xDS-metadata wire.
 func AggregateClusterName(routeKey string, targetIndex int) string {

@@ -3068,130 +3068,14 @@ components:
           pattern: '^\d+(\.\d+)?(ms|s|m|h)$'
           example: 5s
 
-    LLMFailoverTarget:
-      type: object
-      required:
-        - model
-      description: >
-        One attempt slot in a failover chain: which model to send, and
-        optionally which provider to send it to. Omitting provider means the
-        LlmProxy's primary provider.
-      properties:
-        model:
-          type: string
-          minLength: 1
-          description: Model name to send for this attempt.
-          example: gpt-4o
-        provider:
-          type: string
-          description: >
-            Must match an additionalProviders[].as (or .id when as is
-            omitted), or be omitted to mean the LlmProxy's primary provider.
-          minLength: 1
-          example: anthropic-upstream
-
-    LLMFailoverTargetEntry:
-      type: object
-      required:
-        - target
-        - fallbacks
-      description: >
-        One client-requested model's own failover chain: its primary attempt
-        plus an ordered list of fallbacks tried in order if the primary (or
-        an earlier fallback) fails within the same request.
-      properties:
-        target:
-          $ref: '#/components/schemas/LLMFailoverTarget'
-        fallbacks:
-          type: array
-          minItems: 1
-          items:
-            $ref: '#/components/schemas/LLMFailoverTarget'
-
-    LLMFailoverConfig:
-      type: object
-      required:
-        - targets
-      description: >
-        Declares genuine mid-request failover: if the request's target model
-        fails, Envoy itself retries the SAME request against the next
-        fallback, re-signed and re-transformed for that fallback's provider.
-      properties:
-        targets:
-          type: array
-          minItems: 1
-          description: >
-            One entry per client-requestable model this proxy protects with
-            failover. A request whose model matches no entry here is
-            unaffected by this block and uses the proxy's normal primary
-            provider.
-          items:
-            $ref: '#/components/schemas/LLMFailoverTargetEntry'
-        suspendDuration:
-          type: integer
-          minimum: 0
-          default: 0
-          description: >
-            Seconds a target is skipped for new requests after it fails.
-            0 disables suspension tracking entirely (a request can still
-            fail over mid-request; it just won't be pre-emptively skipped
-            on the next one).
-          example: 900
-        retryOn:
-          type: array
-          minItems: 1
-          default: [ "5xx" ]
-          description: >
-            Which conditions on the current attempt trigger a failover retry
-            to the next chain member. Maps directly to Envoy's RetryPolicy
-            retry_on values (HTTP policies only). "retriable-status-codes"
-            requires retriableStatusCodes to be non-empty; "retriable-headers"
-            requires retriableHeaders to be non-empty. Defaults to ["5xx"] —
-            byte-identical to this feature's original behavior — when omitted.
-          items:
-            type: string
-            enum:
-              - "5xx"
-              - gateway-error
-              - reset
-              - reset-before-request
-              - connect-failure
-              - envoy-ratelimited
-              - retriable-4xx
-              - refused-stream
-              - retriable-status-codes
-              - retriable-headers
-          example: [ "5xx", reset, connect-failure ]
-        retriableStatusCodes:
-          type: array
-          description: >
-            Additional HTTP status codes that trigger a retry, alongside
-            whatever retryOn already matches. Only meaningful when retryOn
-            includes "retriable-status-codes" — required and must be
-            non-empty in that case, ignored otherwise.
-          items:
-            type: integer
-            minimum: 100
-            maximum: 599
-          example: [ 409, 425 ]
-        retriableHeaders:
-          type: array
-          description: >
-            Response header names whose mere presence (any value) triggers a
-            retry, alongside whatever retryOn already matches. Only
-            meaningful when retryOn includes "retriable-headers" — required
-            and must be non-empty in that case, ignored otherwise.
-          items:
-            type: string
-            minLength: 1
-          example: [ "x-should-retry" ]
-
     LLMResilience:
       type: object
       description: >
         LlmProxy-only resilience: the same timeout/idleTimeout every other
-        kind's Resilience carries, plus failover. Not used by RestApi,
-        McpProxy, or LlmProvider — those keep the shared Resilience schema.
+        kind's Resilience carries. Kept as its own schema (rather than reusing
+        the shared Resilience) so LlmProxy-only resilience settings can be added
+        without widening RestApi/McpProxy/LlmProvider. Failover is not declared
+        here — it is configured by attaching the model-failover policy.
       properties:
         timeout:
           type: string
@@ -3203,8 +3087,6 @@ components:
           description: Per-route stream idle timeout (overrides the listener stream idle timeout for this route). "0s" disables the timeout.
           pattern: '^\d+(\.\d+)?(ms|s|m|h)$'
           example: 0s
-        failover:
-          $ref: '#/components/schemas/LLMFailoverConfig'
 
     Resilience:
       type: object
