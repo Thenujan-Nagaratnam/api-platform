@@ -254,6 +254,217 @@ func TestExecuteUpstreamAttemptRequestHeaderPolicies_HeaderOnlyPolicyRunsUnmodif
 	assert.Equal(t, []string{"1"}, reqCtx.Headers.UnsafeInternalValues()["x-set-headers"])
 }
 
+// ─── executionCondition gating (upstream-attempt phase) ──────────────────────
+//
+// Mirrors the downstream per-policy executionCondition check: a policy whose
+// spec carries a CEL executionCondition must be skipped when it evaluates
+// false, and must run when it evaluates true. reuses the package's existing
+// mockCELEvaluator (chain_test.go) rather than introducing a duplicate double.
+
+func TestExecuteUpstreamAttemptRequestHeaderPolicies_SkipsWhenConditionFalse(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	fakeCEL := &mockCELEvaluator{requestResult: false}
+	exec := NewChainExecutor(nil, fakeCEL, tracer)
+
+	ctx := context.Background()
+	reqCtx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Headers:       policy.NewHeaders(nil),
+		Upstream:      &policy.UpstreamRequestContext{Name: "test-backend"},
+	}
+	called := false
+	pol := &upstreamHeaderMockPolicy{
+		mode: policy.ProcessingMode{RequestHeaderMode: policy.HeaderModeProcess},
+		onReq: func(_ *policy.RequestHeaderContext) policy.RequestHeaderAction {
+			called = true
+			return nil
+		},
+	}
+	cond := "selected_provider == 'anthropic-upstream'"
+	specs := []policy.PolicySpec{newPolicySpec("oauth2-generator", "v0", true, &cond)}
+
+	_, err := exec.ExecuteUpstreamAttemptRequestHeaderPolicies(ctx, []policy.Policy{pol}, reqCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.False(t, called, "policy must not run when its executionCondition evaluates false")
+}
+
+func TestExecuteUpstreamAttemptRequestHeaderPolicies_RunsWhenConditionTrue(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	fakeCEL := &mockCELEvaluator{requestResult: true}
+	exec := NewChainExecutor(nil, fakeCEL, tracer)
+
+	ctx := context.Background()
+	reqCtx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{"selected_provider": "anthropic-upstream"}},
+		Headers:       policy.NewHeaders(nil),
+		Upstream:      &policy.UpstreamRequestContext{Name: "test-backend"},
+	}
+	called := false
+	pol := &upstreamHeaderMockPolicy{
+		mode: policy.ProcessingMode{RequestHeaderMode: policy.HeaderModeProcess},
+		onReq: func(_ *policy.RequestHeaderContext) policy.RequestHeaderAction {
+			called = true
+			return nil
+		},
+	}
+	cond := "selected_provider == 'anthropic-upstream'"
+	specs := []policy.PolicySpec{newPolicySpec("oauth2-generator", "v0", true, &cond)}
+
+	_, err := exec.ExecuteUpstreamAttemptRequestHeaderPolicies(ctx, []policy.Policy{pol}, reqCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.True(t, called, "policy must run when its executionCondition evaluates true")
+}
+
+func TestExecuteUpstreamAttemptRequestPolicies_SkipsWhenConditionFalse(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	fakeCEL := &mockCELEvaluator{requestResult: false}
+	exec := NewChainExecutor(nil, fakeCEL, tracer)
+
+	ctx := context.Background()
+	reqCtx := testutils.NewTestUpstreamAttemptRequestContext([]byte(`{}`))
+	called := false
+	pol := &testutils.ConfigurableUpstreamMockPolicy{
+		OnReqFn: func(_ *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+			called = true
+			return nil
+		},
+	}
+	cond := "selected_provider == 'anthropic-upstream'"
+	specs := []policy.PolicySpec{newPolicySpec("body-transformer", "v0", true, &cond)}
+
+	_, err := exec.ExecuteUpstreamAttemptRequestPolicies(ctx, []policy.Policy{pol}, reqCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.False(t, called, "policy must not run when its executionCondition evaluates false")
+}
+
+func TestExecuteUpstreamAttemptRequestPolicies_RunsWhenConditionTrue(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	fakeCEL := &mockCELEvaluator{requestResult: true}
+	exec := NewChainExecutor(nil, fakeCEL, tracer)
+
+	ctx := context.Background()
+	reqCtx := testutils.NewTestUpstreamAttemptRequestContext([]byte(`{}`))
+	called := false
+	pol := &testutils.ConfigurableUpstreamMockPolicy{
+		OnReqFn: func(_ *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+			called = true
+			return nil
+		},
+	}
+	cond := "selected_provider == 'anthropic-upstream'"
+	specs := []policy.PolicySpec{newPolicySpec("body-transformer", "v0", true, &cond)}
+
+	_, err := exec.ExecuteUpstreamAttemptRequestPolicies(ctx, []policy.Policy{pol}, reqCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.True(t, called, "policy must run when its executionCondition evaluates true")
+}
+
+func TestExecuteUpstreamAttemptResponseHeaderPolicies_SkipsWhenConditionFalse(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	fakeCEL := &mockCELEvaluator{responseResult: false}
+	exec := NewChainExecutor(nil, fakeCEL, tracer)
+
+	ctx := context.Background()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:   &policy.SharedContext{Metadata: map[string]interface{}{}},
+		ResponseHeaders: policy.NewHeaders(nil),
+		Upstream:        &policy.UpstreamResponseContext{Name: "test-backend"},
+	}
+	called := false
+	pol := &upstreamHeaderMockPolicy{
+		mode: policy.ProcessingMode{ResponseHeaderMode: policy.HeaderModeProcess},
+		onResp: func(_ *policy.ResponseHeaderContext) policy.ResponseHeaderAction {
+			called = true
+			return nil
+		},
+	}
+	cond := "selected_provider == 'anthropic-upstream'"
+	specs := []policy.PolicySpec{newPolicySpec("resp-hdr-policy", "v0", true, &cond)}
+
+	_, err := exec.ExecuteUpstreamAttemptResponseHeaderPolicies(ctx, []policy.Policy{pol}, respCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.False(t, called, "policy must not run when its executionCondition evaluates false")
+}
+
+func TestExecuteUpstreamAttemptResponseHeaderPolicies_RunsWhenConditionTrue(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	fakeCEL := &mockCELEvaluator{responseResult: true}
+	exec := NewChainExecutor(nil, fakeCEL, tracer)
+
+	ctx := context.Background()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:   &policy.SharedContext{Metadata: map[string]interface{}{"selected_provider": "anthropic-upstream"}},
+		ResponseHeaders: policy.NewHeaders(nil),
+		Upstream:        &policy.UpstreamResponseContext{Name: "test-backend"},
+	}
+	called := false
+	pol := &upstreamHeaderMockPolicy{
+		mode: policy.ProcessingMode{ResponseHeaderMode: policy.HeaderModeProcess},
+		onResp: func(_ *policy.ResponseHeaderContext) policy.ResponseHeaderAction {
+			called = true
+			return nil
+		},
+	}
+	cond := "selected_provider == 'anthropic-upstream'"
+	specs := []policy.PolicySpec{newPolicySpec("resp-hdr-policy", "v0", true, &cond)}
+
+	_, err := exec.ExecuteUpstreamAttemptResponseHeaderPolicies(ctx, []policy.Policy{pol}, respCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.True(t, called, "policy must run when its executionCondition evaluates true")
+}
+
+func TestExecuteUpstreamAttemptResponsePolicies_SkipsWhenConditionFalse(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	fakeCEL := &mockCELEvaluator{responseResult: false}
+	exec := NewChainExecutor(nil, fakeCEL, tracer)
+
+	ctx := context.Background()
+	respCtx := testutils.NewTestUpstreamAttemptResponseContext([]byte(`{}`), []byte(`{}`))
+	called := false
+	pol := &testutils.ConfigurableUpstreamMockPolicy{
+		OnRespFn: func(_ *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
+			called = true
+			return nil
+		},
+	}
+	cond := "selected_provider == 'anthropic-upstream'"
+	specs := []policy.PolicySpec{newPolicySpec("resp-body-policy", "v0", true, &cond)}
+
+	_, err := exec.ExecuteUpstreamAttemptResponsePolicies(ctx, []policy.Policy{pol}, respCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.False(t, called, "policy must not run when its executionCondition evaluates false")
+}
+
+func TestExecuteUpstreamAttemptResponsePolicies_RunsWhenConditionTrue(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	fakeCEL := &mockCELEvaluator{responseResult: true}
+	exec := NewChainExecutor(nil, fakeCEL, tracer)
+
+	ctx := context.Background()
+	respCtx := testutils.NewTestUpstreamAttemptResponseContext([]byte(`{}`), []byte(`{}`))
+	called := false
+	pol := &testutils.ConfigurableUpstreamMockPolicy{
+		OnRespFn: func(_ *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
+			called = true
+			return nil
+		},
+	}
+	cond := "selected_provider == 'anthropic-upstream'"
+	specs := []policy.PolicySpec{newPolicySpec("resp-body-policy", "v0", true, &cond)}
+
+	_, err := exec.ExecuteUpstreamAttemptResponsePolicies(ctx, []policy.Policy{pol}, respCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.True(t, called, "policy must run when its executionCondition evaluates true")
+}
+
 func TestExecuteUpstreamAttemptResponseHeaderPolicies_HeaderOnlyPolicyRunsUnmodified(t *testing.T) {
 	tracer := noop.NewTracerProvider().Tracer("test")
 	exec := NewChainExecutor(nil, nil, tracer)

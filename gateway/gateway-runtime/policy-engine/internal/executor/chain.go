@@ -665,11 +665,13 @@ func (c *ChainExecutor) ExecuteResponsePolicies(ctx context.Context, policyList 
 // at chain-build time), so these loops dispatch by interface type assertion
 // alone — every entry
 // here has already declared it wants to participate, via whichever
-// interface(s) it implements. Unlike the downstream phases above, CEL
-// execution conditions are not evaluated here — every enabled upstream-phase
-// policy attached to the route runs on every attempt. Per-policy result
-// tracking/spans are intentionally not kept here (unlike the downstream
-// phases): no caller has ever consumed them for this phase.
+// interface(s) it implements. As with the downstream phases above, a policy
+// whose spec carries a CEL executionCondition is skipped on this attempt
+// when the condition evaluates false — this is what lets a provider-scoped
+// policy instance (e.g. gated on selected_provider) run only for the leg it
+// was configured for. Per-policy result tracking/spans are intentionally not
+// kept here (unlike the downstream phases): no caller has ever consumed them
+// for this phase.
 
 // ExecuteUpstreamAttemptRequestHeaderPolicies invokes each RequestHeaderPolicy
 // in policyList, in order, against reqCtx — freshly, for one specific
@@ -692,6 +694,17 @@ func (c *ChainExecutor) ExecuteUpstreamAttemptRequestHeaderPolicies(
 		if !spec.Enabled {
 			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
 			continue
+		}
+
+		if spec.ExecutionCondition != nil && *spec.ExecutionCondition != "" {
+			conditionMet, err := c.celEvaluator.EvaluateRequestHeaderCondition(*spec.ExecutionCondition, reqCtx)
+			if err != nil {
+				return finalAction, fmt.Errorf("condition evaluation failed for policy %s:%s: %w", spec.Name, spec.Version, err)
+			}
+			if !conditionMet {
+				metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "condition_not_met").Inc()
+				continue
+			}
 		}
 
 		policyStartTime := time.Now()
@@ -738,6 +751,17 @@ func (c *ChainExecutor) ExecuteUpstreamAttemptRequestPolicies(
 		if !spec.Enabled {
 			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
 			continue
+		}
+
+		if spec.ExecutionCondition != nil && *spec.ExecutionCondition != "" {
+			conditionMet, err := c.celEvaluator.EvaluateRequestBodyCondition(*spec.ExecutionCondition, reqCtx)
+			if err != nil {
+				return finalAction, fmt.Errorf("condition evaluation failed for policy %s:%s: %w", spec.Name, spec.Version, err)
+			}
+			if !conditionMet {
+				metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "condition_not_met").Inc()
+				continue
+			}
 		}
 
 		policyStartTime := time.Now()
@@ -787,6 +811,17 @@ func (c *ChainExecutor) ExecuteUpstreamAttemptResponseHeaderPolicies(
 			continue
 		}
 
+		if spec.ExecutionCondition != nil && *spec.ExecutionCondition != "" {
+			conditionMet, err := c.celEvaluator.EvaluateResponseHeaderCondition(*spec.ExecutionCondition, respCtx)
+			if err != nil {
+				return finalAction, fmt.Errorf("condition evaluation failed for policy %s:%s: %w", spec.Name, spec.Version, err)
+			}
+			if !conditionMet {
+				metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "condition_not_met").Inc()
+				continue
+			}
+		}
+
 		policyStartTime := time.Now()
 		slog.Debug("[upstream-attempt] calling OnResponseHeaders", "policy", spec.Name, "version", spec.Version, "route", route)
 		action := hp.OnResponseHeaders(ctx, respCtx, spec.Parameters.Raw)
@@ -831,6 +866,17 @@ func (c *ChainExecutor) ExecuteUpstreamAttemptResponsePolicies(
 		if !spec.Enabled {
 			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
 			continue
+		}
+
+		if spec.ExecutionCondition != nil && *spec.ExecutionCondition != "" {
+			conditionMet, err := c.celEvaluator.EvaluateResponseBodyCondition(*spec.ExecutionCondition, respCtx)
+			if err != nil {
+				return finalAction, fmt.Errorf("condition evaluation failed for policy %s:%s: %w", spec.Name, spec.Version, err)
+			}
+			if !conditionMet {
+				metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "condition_not_met").Inc()
+				continue
+			}
 		}
 
 		policyStartTime := time.Now()
