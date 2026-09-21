@@ -193,9 +193,6 @@ func suspensionKey(model, provider string) string {
 	return model + "|" + provider
 }
 
-// isSuspended checks and lazily clears an expired suspension entry — same
-// check-and-delete-if-expired pattern model-round-robin uses (no background
-// sweep).
 // resolvedProvider returns the member's provider identity, defaulting an
 // empty (primary-authored) provider to PrimaryProvider. Do not use for
 // cluster-name routing.
@@ -206,6 +203,9 @@ func (p *Policy) resolvedProvider(m FailoverTarget) string {
 	return m.Provider
 }
 
+// isSuspended checks and lazily clears an expired suspension entry — same
+// check-and-delete-if-expired pattern model-round-robin uses (no background
+// sweep).
 func (p *Policy) isSuspended(model, provider string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
