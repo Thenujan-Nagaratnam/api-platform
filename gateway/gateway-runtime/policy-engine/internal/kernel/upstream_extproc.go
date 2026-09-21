@@ -95,13 +95,13 @@ type upstreamAttemptState struct {
 	// aggregate-routed attempt this is the aggregate cluster's own name —
 	// exposed to policies via RouteCluster (kernel.BuildUpstreamAttempt*Context).
 	rawClusterName string
-	chain       *registry.PolicyChain
-	method      string
-	path        string
-	backendURL  string
-	basePath    string
-	model       string
-	provider    string
+	chain          *registry.PolicyChain
+	method         string
+	path           string
+	backendURL     string
+	basePath       string
+	model          string
+	provider       string
 
 	// isFailoverEscalation is true when this attempt actually escalated to a
 	// fallback chain member (see backendResolution.IsFailoverEscalation) —

@@ -122,7 +122,7 @@ func BuildUpstreamAttemptResponseHeaderContext(
 		ResponseStatus:  statusCode,
 		Upstream: &policy.UpstreamResponseContext{
 			Name: backendName, URL: backendURL, BasePath: basePath,
-			Response: &policy.UpstreamResponse{Headers: responseHeaders, StatusCode: statusCode},
+			Response:     &policy.UpstreamResponse{Headers: responseHeaders, StatusCode: statusCode},
 			RouteCluster: rawClusterName,
 		},
 	}
@@ -159,7 +159,7 @@ func BuildUpstreamAttemptResponseContext(
 		ResponseStatus: statusCode,
 		Upstream: &policy.UpstreamResponseContext{
 			Name: backendName, URL: backendURL, BasePath: basePath,
-			Response: &policy.UpstreamResponse{Headers: responseHeaders, StatusCode: statusCode},
+			Response:     &policy.UpstreamResponse{Headers: responseHeaders, StatusCode: statusCode},
 			RouteCluster: rawClusterName,
 		},
 	}
