@@ -153,40 +153,6 @@ func TestTranslateRuntimeConfig_FailoverRoute_CustomRetryOn(t *testing.T) {
 	assert.Equal(t, "reset,connect-failure,gateway-error", action.RetryPolicy.RetryOn)
 }
 
-func TestTranslateRuntimeConfig_FailoverRoute_RetriableStatusCodes(t *testing.T) {
-	action := translateSingleFailoverRoute(t, &models.RouteFailover{
-		Targets: []models.RouteFailoverTarget{{
-			Model:     "gpt-4o",
-			Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
-			Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
-		}},
-		RetryOn:              []string{"retriable-status-codes"},
-		RetriableStatusCodes: []uint32{409, 425},
-	})
-
-	assert.Equal(t, "retriable-status-codes", action.RetryPolicy.RetryOn)
-	assert.Equal(t, []uint32{409, 425}, action.RetryPolicy.RetriableStatusCodes)
-}
-
-func TestTranslateRuntimeConfig_FailoverRoute_RetriableHeaders(t *testing.T) {
-	action := translateSingleFailoverRoute(t, &models.RouteFailover{
-		Targets: []models.RouteFailoverTarget{{
-			Model:     "gpt-4o",
-			Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
-			Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
-		}},
-		RetryOn:          []string{"retriable-headers"},
-		RetriableHeaders: []string{"X-Should-Retry"},
-	})
-
-	require.Len(t, action.RetryPolicy.RetriableHeaders, 1)
-	hm := action.RetryPolicy.RetriableHeaders[0]
-	assert.Equal(t, "x-should-retry", hm.Name, "header names must be lowercased for Envoy header matching")
-	presentMatch, ok := hm.HeaderMatchSpecifier.(*route.HeaderMatcher_PresentMatch)
-	require.True(t, ok, "expected a presence-match specifier, not a value match")
-	assert.True(t, presentMatch.PresentMatch)
-}
-
 // TestTranslateRuntimeConfig_FailoverRoute_EmptyRetryOnDefaultsTo5xx proves the
 // translator's own defensive default (not just buildRouteFailoverFromPolicy's one) —
 // a RouteFailover built any other way, with RetryOn left nil, must never

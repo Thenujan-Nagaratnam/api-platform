@@ -63,9 +63,6 @@ policies:
     - name: llm-header-router
       version: v0.9.0
       gomodule: github.com/wso2/gateway-controllers/policies/llm-header-router@v0
-    - name: llm-upstream-provider-auth
-      version: v1.0.0
-      filePath: ./dev-policies/llm-upstream-provider-auth
     - name: log-message
       version: v1.0.3
       gomodule: github.com/wso2/gateway-controllers/policies/log-message@v1

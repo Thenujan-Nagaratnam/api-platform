@@ -29,7 +29,6 @@ import (
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
-	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/xds"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -444,47 +443,13 @@ func (t *Translator) createRouteConfigResource(
 		data["default_upstream"] = route.Upstream.Default.ToMap()
 	}
 
-	// This route's resolved failover chains (nil unless the source LlmProxy declared
-	// the model-failover policy). chain[0] is always the target itself, chain[1:] are the
-	// fallbacks in order — the same list x-envoy-attempt-count-1 indexes into per the
-	// design spec §6. aggregate_cluster must match xds.AggregateClusterName exactly,
-	// since that is the same name Envoy reports back via xds.cluster_name.
-	if route.Upstream.Failover != nil {
-		targets := make([]interface{}, 0, len(route.Upstream.Failover.Targets))
-		for i, target := range route.Upstream.Failover.Targets {
-			chain := make([]interface{}, 0, len(target.Fallbacks)+1)
-			chain = append(chain, failoverEntryToMap(target.Target))
-			for _, fb := range target.Fallbacks {
-				chain = append(chain, failoverEntryToMap(fb))
-			}
-			targets = append(targets, map[string]interface{}{
-				"aggregate_cluster": xds.AggregateClusterName(routeKey, i),
-				"model":             target.Model,
-				"chain":             chain,
-			})
-		}
-		data["failover_targets"] = targets
-		// A single scalar shared by every target in this block, matching
-		// RouteFailover.SuspendDurationSeconds's own route-level scope — Plan C reads this
-		// to know how long a suspended target stays skipped. float64, not a bare Go int:
-		// structpb-based wire encoding rejects int (see max_request_body_bytes above).
-		data["failover_suspend_duration"] = float64(route.Upstream.Failover.SuspendDurationSeconds)
-	}
+	// A route's failover chain is deliberately NOT synced here: the model-failover
+	// policy carries its own resolved chain in its policy params (including each
+	// entry's aggregate cluster name), so the policy engine reads it from the policy
+	// chain rather than from RouteConfig metadata. Nothing consumes a
+	// "failover_targets"/"failover_suspend_duration" field on the wire any more.
 
 	return toAnyResource(data, RouteConfigTypeURL)
-}
-
-// failoverEntryToMap renders one failover chain slot (the target itself, or one of
-// its fallbacks) into the wire shape Plan B's policy-engine xDS handler parses.
-// "provider" is included alongside the shared UpstreamInfo fields because neither
-// cluster_name (empty-Name for the primary slot cluster) nor url (a loopback address
-// for a named provider, not the real backend) can be resolved back to a provider
-// identity by a future consumer's transformer-selection logic (spec §6.4/§7).
-func failoverEntryToMap(e models.RouteFailoverEntry) map[string]interface{} {
-	m := e.Upstream.ToMap()
-	m["model"] = e.Model
-	m["provider"] = e.Provider
-	return m
 }
 
 // toAnyResource converts a map to an anypb.Any resource with the given type URL.

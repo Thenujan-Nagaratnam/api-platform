@@ -16,7 +16,6 @@ const (
 	testRespondVersion              = "v9.9.8"
 	testOAuth2AuthenticationVersion = "v9.9.7"
 	testCustomAuthPolicyVersion     = "v9.9.6"
-	testFailoverUpstreamAuthVersion = "v9.9.5"
 )
 
 // testCustomAuthPolicyName is the example policy name used for auth type "other".
@@ -24,11 +23,10 @@ const testCustomAuthPolicyName = "my-custom-auth-policy"
 
 func newTestPolicyVersionResolver() PolicyVersionResolver {
 	return NewStaticPolicyVersionResolver(map[string]string{
-		constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME:          testSetHeadersVersion,
-		constants.ACCESS_CONTROL_DENY_POLICY_NAME:           testRespondVersion,
-		constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME:          testOAuth2AuthenticationVersion,
-		constants.UPSTREAM_AUTH_FAILOVER_APIKEY_POLICY_NAME: testFailoverUpstreamAuthVersion,
-		testCustomAuthPolicyName:                            testCustomAuthPolicyVersion,
+		constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME: testSetHeadersVersion,
+		constants.ACCESS_CONTROL_DENY_POLICY_NAME:  testRespondVersion,
+		constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME: testOAuth2AuthenticationVersion,
+		testCustomAuthPolicyName:                   testCustomAuthPolicyVersion,
 	})
 }
 

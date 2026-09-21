@@ -26,7 +26,6 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
-	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -38,13 +37,15 @@ import (
 )
 
 // ResolvedFailoverProviderHeader carries the winning attempt's resolved
-// provider identity (e.g. "anthropic-upstream") from the upstream (per-
-// cluster) ext_proc's response phase to the downstream ext_proc's own
-// response processing (execution_context.go's buildResponseContexts), which
-// reads it to correct the analytics event's provider attribution — the
-// route-level template_handle/provider_name the downstream phase otherwise
-// uses is fixed at request time and reflects only the PRIMARY provider,
-// wrong for a request a fallback actually served. Purely internal: the
+// provider identity (e.g. "anthropic-upstream") from an upstream-attempt
+// policy's response phase to the downstream ext_proc's own response
+// processing (execution_context.go's buildResponseContexts), which reads it
+// to correct the analytics event's provider attribution — the route-level
+// template_handle/provider_name the downstream phase otherwise uses is fixed
+// at request time and reflects only the PRIMARY provider, wrong for a request
+// a fallback actually served. The kernel only consumes and strips this header;
+// the model-failover policy (gateway/dev-policies/model-failover) is what sets
+// it, from its own upstream-attempt OnResponseHeaders. Purely internal: the
 // downstream phase strips it before the response reaches the client, the
 // same way an ordinary set-headers policy's internal markers are.
 const ResolvedFailoverProviderHeader = "x-wso2-resolved-failover-provider"
@@ -90,36 +91,28 @@ type upstreamAttemptState struct {
 	routeKey    string
 	clusterName string
 	// rawClusterName is the xds.cluster_name attribute exactly as Envoy
-	// reported it for this attempt, captured before resolveBackend
-	// substitutes the resolved real member cluster into clusterName. For an
-	// aggregate-routed attempt this is the aggregate cluster's own name —
-	// exposed to policies via RouteCluster (kernel.BuildUpstreamAttempt*Context).
+	// reported it for this attempt. For an aggregate-routed attempt this is
+	// the aggregate cluster's own name — exposed to policies via RouteCluster
+	// (kernel.BuildUpstreamAttempt*Context), which is how a chain-aware policy
+	// such as model-failover identifies which chain this attempt belongs to.
 	rawClusterName string
 	chain          *registry.PolicyChain
 	method         string
 	path           string
 	backendURL     string
 	basePath       string
-	model          string
-	provider       string
-
-	// isFailoverEscalation is true when this attempt actually escalated to a
-	// fallback chain member (see backendResolution.IsFailoverEscalation) —
-	// used to gate the resolved-provider analytics override so a request the
-	// primary served normally is never relabeled just because its route
-	// declares a resilience.failover block.
-	isFailoverEscalation bool
 
 	// statusCode is this attempt's upstream response status, captured at the
-	// ResponseHeaders phase for the suspension check below.
+	// ResponseHeaders phase and surfaced to response-phase policies.
 	statusCode int
 
-	// sharedContext is built once at the RequestHeaders phase (seeded with
-	// model/provider — see kernel.NewUpstreamAttemptSharedContext) and reused
-	// for every upstream-attempt policy phase in this attempt, so Metadata a
-	// header-phase policy writes (e.g. an AuthContext) is visible to the
-	// body-phase policies that run after it — mirroring how the downstream
-	// executor threads one SharedContext across its own phases.
+	// sharedContext is built once at the RequestHeaders phase (see
+	// kernel.NewUpstreamAttemptSharedContext) and reused for every
+	// upstream-attempt policy phase in this attempt, so Metadata a
+	// header-phase policy writes (e.g. an AuthContext, or model-failover's
+	// selected_provider/selected_model) is visible to the body-phase policies
+	// that run after it — mirroring how the downstream executor threads one
+	// SharedContext across its own phases.
 	sharedContext *policy.SharedContext
 
 	// requestHeaders/responseHeaders are built once (RequestHeaders/ResponseHeaders
@@ -167,43 +160,10 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 			state.rawClusterName = state.clusterName
 			state.chain = s.kernel.GetPolicyChainForKey(state.routeKey)
 			state.method, state.path = extractMethodAndPath(r.RequestHeaders)
-			attemptCount := extractAttemptCount(r.RequestHeaders)
-			resolved := s.resolveBackend(state.routeKey, state.clusterName, attemptCount)
+			resolved := s.resolveBackend(state.routeKey, state.clusterName)
 			state.backendURL = resolved.URL
 			state.basePath = resolved.BasePath
-			state.model = resolved.Model
-			state.provider = resolved.Provider
-			state.isFailoverEscalation = resolved.IsFailoverEscalation
 			var pathMutation *extprocv3.HeaderMutation
-			if resolved.ClusterName != "" {
-				// A failover-matched attempt: the real per-provider backend
-				// cluster identifies this attempt far better than the
-				// aggregate pseudo-cluster xds.cluster_name reported —
-				// resolveBackend was still called with the aggregate name
-				// above (its correct lookup key); this only affects what
-				// downstream policies see as this attempt's Name.
-				state.clusterName = resolved.ClusterName
-
-				// The outbound :path was rewritten exactly once, downstream,
-				// before Envoy ever dispatched — using whichever provider's
-				// base path the FIRST attempt resolved to (confirmed live:
-				// Envoy retries reuse that same :path verbatim; it does not
-				// get recomputed per attempt the way Host does via
-				// AutoHostRewrite). A retry escalating to a DIFFERENT
-				// provider's own loopback route needs :path corrected to
-				// THIS attempt's resolved base path, or the loopback
-				// listener's own path-prefix routing sends the retried
-				// request straight back to the original (failed) provider's
-				// route regardless of which real cluster Envoy just dialed.
-				if rc := s.kernel.GetRouteConfig(state.routeKey); rc != nil {
-					if corrected := joinBasePathAndOperation(resolved.BasePath, rc.Metadata.OperationPath); corrected != "" && corrected != state.path {
-						slog.DebugContext(ctx, "[upstream-extproc] rewriting :path for failover attempt",
-							"route", state.routeKey, "from", state.path, "to", corrected)
-						state.path = corrected
-						pathMutation = buildHeaderValueOptions(map[string]string{":path": corrected})
-					}
-				}
-			}
 			if state.backendURL == "" {
 				if authority := extractAuthority(r.RequestHeaders); authority != "" {
 					// Cluster-name-keyed resolution can't identify the real
@@ -226,7 +186,7 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 				"requires_upstream_request", state.chain != nil && state.chain.RequiresUpstreamRequest,
 				"resolved_url", state.backendURL, "method", state.method, "path", state.path)
 
-			state.sharedContext = NewUpstreamAttemptSharedContext(state.model, state.provider)
+			state.sharedContext = NewUpstreamAttemptSharedContext()
 			originalRequestHeaders := extractHeaderMap(r.RequestHeaders)
 			state.requestHeaders = policy.NewHeaders(originalRequestHeaders)
 
@@ -267,7 +227,6 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 
 		case *extprocv3.ProcessingRequest_ResponseHeaders:
 			state.statusCode = extractStatusCode(r.ResponseHeaders)
-			s.suspendIfFailoverAttemptFailed(ctx, &state)
 
 			originalResponseHeaders := extractHeaderMap(r.ResponseHeaders)
 			state.responseHeaders = policy.NewHeaders(originalResponseHeaders)
@@ -326,7 +285,7 @@ func (s *UpstreamExternalProcessorServer) processRequestBody(ctx context.Context
 	}
 
 	if state.sharedContext == nil {
-		state.sharedContext = NewUpstreamAttemptSharedContext(state.model, state.provider)
+		state.sharedContext = NewUpstreamAttemptSharedContext()
 	}
 	if state.requestHeaders == nil {
 		state.requestHeaders = policy.NewHeaders(nil)
@@ -417,7 +376,7 @@ func (s *UpstreamExternalProcessorServer) processResponseBody(ctx context.Contex
 
 	if state.chain != nil && state.chain.RequiresUpstreamResponse {
 		if state.sharedContext == nil {
-			state.sharedContext = NewUpstreamAttemptSharedContext(state.model, state.provider)
+			state.sharedContext = NewUpstreamAttemptSharedContext()
 		}
 		if state.responseHeaders == nil {
 			state.responseHeaders = policy.NewHeaders(nil)
@@ -459,31 +418,6 @@ func (s *UpstreamExternalProcessorServer) processResponseBody(ctx context.Contex
 				setContentLengthHeader(commonResp.HeaderMutation, len(respCtx.ResponseBody.Content))
 			}
 		}
-	}
-
-	// Deliberately unconditional — independent of state.chain/RequiresUpstreamResponse,
-	// since this is resolveBackend's own kernel-level knowledge of which provider
-	// actually served this attempt, not something a response-phase policy computes.
-	// A route with no response-phase policy at all (e.g. plain api-key auth on both
-	// sides, no transformer) still needs this for the downstream analytics
-	// attribution fix (see ResolvedFailoverProviderHeader's own doc comment) to work.
-	//
-	// Gated on IsFailoverEscalation, not merely "provider != ''": every attempt on a
-	// failover-configured route resolves a provider identity, including the primary
-	// succeeding normally on attempt 1 — only an attempt that actually escalated past
-	// the primary should relabel the analytics event away from the route's default.
-	if state.isFailoverEscalation && state.provider != "" {
-		if commonResp.HeaderMutation == nil {
-			commonResp.HeaderMutation = &extprocv3.HeaderMutation{}
-		}
-		commonResp.HeaderMutation.SetHeaders = append(commonResp.HeaderMutation.SetHeaders,
-			&corev3.HeaderValueOption{
-				Header: &corev3.HeaderValue{
-					Key:      ResolvedFailoverProviderHeader,
-					RawValue: []byte(state.provider),
-				},
-				AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
-			})
 	}
 
 	return &extprocv3.ProcessingResponse{
@@ -630,115 +564,22 @@ func headerValue(h *corev3.HeaderValue) string {
 	return h.GetValue()
 }
 
-// extractAttemptCount reads Envoy's x-envoy-attempt-count header (added to
-// every upstream request on a vhost that carries a failover route's
-// RetryPolicy — see gateway-controller's vhostNeedsAttemptCount) from the
-// upstream RequestHeaders message. A missing or unparseable header defaults
-// to 1 — attempt 1 is always the declared primary, chain index 0 — rather
-// than failing closed; a non-failover route never has this header at all, so
-// this default is also what every unrelated route already effectively gets.
-func extractAttemptCount(headers *extprocv3.HttpHeaders) int {
-	for _, h := range headers.GetHeaders().GetHeaders() {
-		if h.GetKey() != "x-envoy-attempt-count" {
-			continue
-		}
-		if n, err := strconv.Atoi(headerValue(h)); err == nil && n > 0 {
-			return n
-		}
-		break
-	}
-	return 1
-}
-
 // backendResolution is resolveBackend's result for a single upstream attempt.
-// ClusterName, Model, and Provider are populated only when the attempt was
-// resolved from a route's declared failover chain — empty for every other
-// resolution path (a route's plain DefaultUpstream, the global cluster
-// index, or the caller's own :authority fallback), which leaves attempt
-// identity exactly as unset as it was before this mechanism existed.
 type backendResolution struct {
-	URL         string
-	BasePath    string
-	ClusterName string
-	Model       string
-	Provider    string
-
-	// IsFailoverEscalation is true when the matched chain entry is anything
-	// other than the chain's own first (primary) member — i.e. this attempt
-	// actually escalated to a fallback, whether via Envoy's own retry
-	// (attemptCount > 1 against the aggregate) or the downstream suspension
-	// bypass dialing a fallback's real cluster directly on attempt 1. False
-	// for the primary entry itself, so a request the primary served normally
-	// is never mistaken for a failover just because the route happens to
-	// declare a resilience.failover block.
-	IsFailoverEscalation bool
+	URL      string
+	BasePath string
 }
 
-// resolveBackend looks up this attempt's backend. It first checks whether
-// clusterName matches one of this route's declared failover targets by its
-// aggregate cluster name — Envoy reports that same aggregate name via
-// xds.cluster_name on every attempt against it, regardless of which real
-// priority member it actually dialed (confirmed live this session), so this
-// is the correct, attempt-stable lookup key for a failover route. attemptCount
-// (1-indexed, see extractAttemptCount) then selects which chain member this
-// specific attempt represents.
-//
-// Absent a failover match, behavior is unchanged from before this mechanism
-// existed: the route's own compiled-in default upstream (the common case:
-// one real backend cluster per route), then the deployment-wide cluster
-// index (see Kernel.clusterUpstreams) for a retry that landed on some other
-// route's real cluster. An empty result, never a guess, means the cluster is
-// unknown to this deployment entirely (or a failover chain matched but
-// attemptCount ran past the end of its configured members — more attempts
-// than configured fallbacks shouldn't happen, since the route's RetryPolicy
-// never allows more, but this fails closed defensively rather than reading
-// past the slice).
-func (s *UpstreamExternalProcessorServer) resolveBackend(routeKey, clusterName string, attemptCount int) backendResolution {
-	rc := s.kernel.GetRouteConfig(routeKey)
-	if rc != nil {
-		for _, target := range rc.Metadata.FailoverTargets {
-			if target.AggregateCluster == clusterName {
-				idx := attemptCount - 1
-				if idx < 0 {
-					idx = 0
-				}
-				if idx >= len(target.Chain) {
-					return backendResolution{}
-				}
-				entry := target.Chain[idx]
-				return backendResolution{
-					URL:                  entry.Upstream.URL,
-					BasePath:             entry.Upstream.BasePath,
-					ClusterName:          entry.Upstream.ClusterName,
-					Model:                entry.Model,
-					Provider:             entry.Provider,
-					IsFailoverEscalation: idx > 0,
-				}
-			}
-			// A suspended primary's downstream request never enters the
-			// aggregate at all — applyFailoverRouting (translator.go)
-			// dispatches straight onto a chain member's own real cluster
-			// instead, so xds.cluster_name here is that member's name, not
-			// the aggregate's. Match on the entry itself so this direct
-			// dispatch still resolves Provider/Model/BasePath the same way
-			// an aggregate-routed attempt would — without it, the
-			// transformer/auth upstream policies silently no-op (their
-			// ResolvedProvider gate never matches an empty string) and the
-			// stale downstream-computed :path is never corrected.
-			for idx, entry := range target.Chain {
-				if entry.Upstream.ClusterName != clusterName {
-					continue
-				}
-				return backendResolution{
-					URL:                  entry.Upstream.URL,
-					BasePath:             entry.Upstream.BasePath,
-					ClusterName:          entry.Upstream.ClusterName,
-					Model:                entry.Model,
-					Provider:             entry.Provider,
-					IsFailoverEscalation: idx > 0,
-				}
-			}
-		}
+// resolveBackend looks up this attempt's backend: the route's own compiled-in
+// default upstream (the common case: one real backend cluster per route),
+// then the deployment-wide cluster index (see Kernel.clusterUpstreams) for a
+// retry that landed on some other route's real cluster. An empty result,
+// never a guess, means the cluster is unknown to this deployment entirely —
+// including an envoy.clusters.aggregate attempt, where Envoy reports the
+// aggregate's own name via xds.cluster_name rather than the real member it
+// dialed; the caller's :authority fallback covers that case.
+func (s *UpstreamExternalProcessorServer) resolveBackend(routeKey, clusterName string) backendResolution {
+	if rc := s.kernel.GetRouteConfig(routeKey); rc != nil {
 		if def := rc.Metadata.DefaultUpstream; def != nil && def.ClusterName == clusterName {
 			return backendResolution{URL: def.URL, BasePath: def.BasePath}
 		}
@@ -770,8 +611,9 @@ func joinBasePathAndOperation(basePath, operationPath string) string {
 
 // extractStatusCode reads the upstream response's ":status" pseudo-header
 // from the upstream ResponseHeaders message. Returns 0 if absent or
-// unparseable, which suspendIfFailoverAttemptFailed's ">= 500" check
-// correctly treats as "not a failure" rather than crashing on a missing value.
+// unparseable, which a response-phase policy's own status check (e.g.
+// model-failover's ">= 500" suspension trigger) correctly treats as "not a
+// failure" rather than crashing on a missing value.
 func extractStatusCode(headers *extprocv3.HttpHeaders) int {
 	for _, h := range headers.GetHeaders().GetHeaders() {
 		if h.GetKey() != ":status" {
@@ -783,29 +625,6 @@ func extractStatusCode(headers *extprocv3.HttpHeaders) int {
 		break
 	}
 	return 0
-}
-
-// suspendIfFailoverAttemptFailed marks this attempt's failover target
-// suspended when it was resolved from a declared failover chain (state.model
-// and state.provider are only ever non-empty in that case — see
-// resolveBackend) and the upstream responded with a server error. This is
-// generic across every provider/transformer: it needs no cooperation from
-// whichever upstream-phase policy ran, since it reads the same status Envoy's
-// own RetryPolicy.RetryOn: "5xx" already keys its retry decision on.
-func (s *UpstreamExternalProcessorServer) suspendIfFailoverAttemptFailed(ctx context.Context, state *upstreamAttemptState) {
-	if state.model == "" || state.provider == "" || state.statusCode < 500 {
-		return
-	}
-	rc := s.kernel.GetRouteConfig(state.routeKey)
-	if rc == nil || rc.Metadata.FailoverSuspendDurationSeconds <= 0 {
-		return
-	}
-	key := suspensionKey(state.routeKey, state.model, state.provider)
-	duration := time.Duration(rc.Metadata.FailoverSuspendDurationSeconds) * time.Second
-	s.kernel.suspension.Suspend(key, duration)
-	slog.DebugContext(ctx, "[upstream-extproc] suspended failover target after error response",
-		"route", state.routeKey, "model", state.model, "provider", state.provider,
-		"status", state.statusCode, "duration", duration)
 }
 
 // extractAttribute reads a single string CEL attribute Envoy attached under

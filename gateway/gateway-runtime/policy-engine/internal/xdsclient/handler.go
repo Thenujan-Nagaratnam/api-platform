@@ -403,11 +403,6 @@ func (h *ResourceHandler) HandleRouteConfigUpdate(ctx context.Context, resources
 			rc.Metadata.UpstreamDefinitionPaths = paths
 		}
 
-		rc.Metadata.FailoverTargets = parseFailoverTargets(data)
-		if v, ok := data["failover_suspend_duration"].(float64); ok {
-			rc.Metadata.FailoverSuspendDurationSeconds = int(v)
-		}
-
 		routeConfigs[routeKey] = rc
 	}
 
@@ -491,47 +486,6 @@ func getStringFromMap(m map[string]interface{}, key string) string {
 		}
 	}
 	return ""
-}
-
-// parseFailoverTargets decodes the "failover_targets" wire array gateway-controller's
-// policyxds/snapshot.go writes (one entry per resilience.failover.targets[] item) into
-// kernel.FailoverTarget. Absent or malformed input yields nil, never a partial slice —
-// a route with no failover block must produce byte-identical resolveBackend behavior
-// to before this field existed.
-func parseFailoverTargets(data map[string]interface{}) []kernel.FailoverTarget {
-	raw, ok := data["failover_targets"].([]interface{})
-	if !ok {
-		return nil
-	}
-	targets := make([]kernel.FailoverTarget, 0, len(raw))
-	for _, item := range raw {
-		entryMap, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		chainRaw, ok := entryMap["chain"].([]interface{})
-		if !ok {
-			continue
-		}
-		chain := make([]kernel.FailoverChainEntry, 0, len(chainRaw))
-		for _, c := range chainRaw {
-			chainEntryMap, ok := c.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			chain = append(chain, kernel.FailoverChainEntry{
-				Model:    getStringFromMap(chainEntryMap, "model"),
-				Provider: getStringFromMap(chainEntryMap, "provider"),
-				Upstream: policyenginev1.UpstreamInfoFromMap(chainEntryMap),
-			})
-		}
-		targets = append(targets, kernel.FailoverTarget{
-			AggregateCluster: getStringFromMap(entryMap, "aggregate_cluster"),
-			Model:            getStringFromMap(entryMap, "model"),
-			Chain:            chain,
-		})
-	}
-	return targets
 }
 
 // getInt64FromMap safely extracts an integer value from a map. protojson renders

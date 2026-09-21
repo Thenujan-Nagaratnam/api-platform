@@ -767,8 +767,6 @@ func (s *ExternalProcessorServer) newBoundExecutionContext(
 	ec.apiContext = routeMetadata.Context
 	ec.upstreamDefinitionPaths = routeMetadata.UpstreamDefinitionPaths
 	ec.defaultUpstream = routeMetadata.DefaultUpstream
-	ec.failoverTargets = routeMetadata.FailoverTargets
-	ec.failoverSuspendDurationSeconds = routeMetadata.FailoverSuspendDurationSeconds
 	ec.buildRequestContexts(req.GetRequestHeaders(), routeMetadata)
 	return ec
 }
@@ -843,18 +841,6 @@ type RouteMetadata struct {
 	// path) — whichever slot it belongs to (main or sandbox). Always present; surfaced
 	// to the policy engine as the route's single default upstream.
 	DefaultUpstream *policyenginev1.UpstreamInfo
-
-	// FailoverTargets is this route's declared resilience.failover.targets[],
-	// nil for a route with no failover block (the overwhelming common case) —
-	// UpstreamExternalProcessorServer.resolveBackend checks this before
-	// falling through to DefaultUpstream.
-	FailoverTargets []FailoverTarget
-
-	// FailoverSuspendDurationSeconds is the shared suspend window for every
-	// target in FailoverTargets (0 disables suspension tracking). Read by a
-	// later downstream-phase pre-emption mechanism, not by resolveBackend
-	// itself.
-	FailoverSuspendDurationSeconds int
 }
 
 // generateRequestID generates a unique request identifier

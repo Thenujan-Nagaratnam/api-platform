@@ -168,15 +168,6 @@ type RouteFailover struct {
 	// time this reaches the xDS translator — buildRouteFailoverFromPolicy
 	// (pkg/transform) always sets it to ["5xx"], which is not configurable.
 	RetryOn []string
-
-	// RetriableStatusCodes is meaningful only when RetryOn contains
-	// "retriable-status-codes"; nil/empty otherwise.
-	RetriableStatusCodes []uint32
-
-	// RetriableHeaders is meaningful only when RetryOn contains
-	// "retriable-headers"; nil/empty otherwise. Header names only — each
-	// becomes a presence-match (any value) HeaderMatcher.
-	RetriableHeaders []string
 }
 
 // RouteFailoverTarget is one client-requested model's own failover chain.

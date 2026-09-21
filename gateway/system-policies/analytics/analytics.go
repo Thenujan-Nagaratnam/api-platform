@@ -926,7 +926,7 @@ func populateTokenAnalyticsMetadata(analyticsMetadata map[string]any, tokenInfo 
 }
 
 // applyResolvedFailoverProviderOverride corrects ai:providername for a
-// request a resilience.failover fallback actually served. template_handle
+// request a model-failover fallback actually served. template_handle
 // (and therefore tokenInfo.ProviderName above) is fixed at request time from
 // the route's PRIMARY provider's template — a wire-shape/parsing-rules
 // selector, not a vendor identity, and deliberately identical across a
@@ -935,11 +935,12 @@ func populateTokenAnalyticsMetadata(analyticsMetadata map[string]any, tokenInfo 
 // vendor produced it). So neither field can ever reflect a failover outcome
 // on its own.
 //
-// "resolved_failover_provider" is the one signal that does: the kernel's
-// upstream ext_proc sets it (via kernel.ResolvedFailoverProviderHeader,
-// consumed into SharedContext.Metadata by execution_context.go) only when
-// this attempt actually escalated past the primary — never for the primary
-// succeeding normally, even on a route that declares a failover block. That
+// "resolved_failover_provider" is the one signal that does: the
+// model-failover policy's upstream-attempt response phase sets it (via
+// kernel.ResolvedFailoverProviderHeader, consumed into
+// SharedContext.Metadata by execution_context.go) only when this attempt
+// actually escalated past the chain's primary member — never for the primary
+// succeeding normally, even on a route that declares a failover chain. That
 // asymmetry is what keeps this override scoped to genuine failover traffic.
 func applyResolvedFailoverProviderOverride(analyticsMetadata map[string]any, shared *policy.SharedContext) {
 	if shared == nil {

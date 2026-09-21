@@ -111,17 +111,6 @@ type PolicyExecutionContext struct {
 	// "current_upstream" dynamic metadata object when no dynamic override is in effect.
 	defaultUpstream *policyenginev1.UpstreamInfo
 
-	// failoverTargets is this route's declared resilience.failover.targets[],
-	// nil for a route with no failover block (the common case). Checked in
-	// translateRequestActionsCore, after the normal UpstreamName/default-upstream
-	// resolution, to override dispatch onto a failover-aware cluster when the
-	// client's requested model matches an entry.
-	failoverTargets []FailoverTarget
-
-	// failoverSuspendDurationSeconds is the shared suspend window for every
-	// target in failoverTargets (0 disables suspension tracking).
-	failoverSuspendDurationSeconds int
-
 	// requestContentEncoding stores the Content-Encoding of the incoming request (e.g. "gzip", "br").
 	// The body is decompressed before being passed to policies, and re-compressed using this value
 	// before being forwarded to the upstream.
@@ -133,9 +122,9 @@ type PolicyExecutionContext struct {
 	responseContentEncoding string
 
 	// hasResolvedFailoverProviderHeader is true when this response carried
-	// kernel.ResolvedFailoverProviderHeader — set by the upstream ext_proc's
-	// response phase only when this request actually escalated to a fallback
-	// (see backendResolution.IsFailoverEscalation). buildResponseContexts
+	// kernel.ResolvedFailoverProviderHeader — set by the model-failover
+	// policy's upstream-attempt response phase only when this request
+	// actually escalated past the chain's primary member. buildResponseContexts
 	// consumes the header into sharedCtx.Metadata for the analytics
 	// attribution fix and records its presence here so
 	// processResponseHeaders can strip it before the response reaches the

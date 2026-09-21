@@ -22,30 +22,18 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-// selectedProviderMetadataKey/selectedModelMetadataKey are the
-// SharedContext.Metadata keys llm-header-router writes downstream and
-// provider-scoped policies read to self-gate (e.g. the OpenAI->Anthropic
-// transformer's shouldRunForSelected). Seeding them here from the attempt's
-// resolved model/provider lets a policy using that same convention run
-// unmodified per attempt: it no-ops for a backend it doesn't own and runs for
-// the one it does.
-const (
-	selectedProviderMetadataKey = "selected_provider"
-	selectedModelMetadataKey    = "selected_model"
-)
-
 // NewUpstreamAttemptSharedContext builds the SharedContext for one upstream
-// attempt, seeded with the attempt's resolved provider/model (both empty for
-// an attempt resolved outside a declared resilience.failover chain).
-func NewUpstreamAttemptSharedContext(model, provider string) *policy.SharedContext {
-	shared := &policy.SharedContext{Metadata: make(map[string]interface{})}
-	if provider != "" {
-		shared.Metadata[selectedProviderMetadataKey] = provider
-	}
-	if model != "" {
-		shared.Metadata[selectedModelMetadataKey] = model
-	}
-	return shared
+// attempt: empty Metadata, threaded through every phase of that attempt.
+//
+// The kernel deliberately seeds nothing into it. Attempt identity
+// (selected_provider/selected_model — the SharedContext.Metadata convention
+// llm-header-router writes downstream and provider-scoped policies read to
+// self-gate) is resolved by whichever upstream-attempt policy owns the chain,
+// today model-failover's own OnRequestHeaders, which identifies the chain
+// from UpstreamRequestContext.RouteCluster. That keeps chain knowledge in the
+// policy that declares the chain rather than in the kernel.
+func NewUpstreamAttemptSharedContext() *policy.SharedContext {
+	return &policy.SharedContext{Metadata: make(map[string]interface{})}
 }
 
 // BuildUpstreamAttemptRequestHeaderContext constructs a *policy.RequestHeaderContext

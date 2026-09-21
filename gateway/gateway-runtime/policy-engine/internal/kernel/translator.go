@@ -19,7 +19,6 @@
 package kernel
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -195,91 +194,6 @@ func applyDefaultUpstream(
 	}
 	execCtx.dynamicMetadata[extProcNS][constants.CurrentUpstreamKey] = info.ToMap()
 	localDynamicMetadata[extProcNS][constants.CurrentUpstreamKey] = info.ToMap()
-}
-
-// requestModelBody is the minimal shape extractModelFromBody decodes — every
-// other field in the client's request body is irrelevant to routing and
-// left untouched.
-type requestModelBody struct {
-	Model string `json:"model"`
-}
-
-// extractModelFromBody reads the top-level "model" field out of a JSON
-// request body. Returns "" for a nil/empty body or one that isn't a JSON
-// object with a string "model" field — never an error, since a route with a
-// failover block but a client request this shape can't match is simply
-// inert for that request (see applyFailoverRouting), not a failure.
-func extractModelFromBody(body *policy.Body) string {
-	if body == nil || len(body.Content) == 0 {
-		return ""
-	}
-	var parsed requestModelBody
-	if err := json.Unmarshal(body.Content, &parsed); err != nil {
-		return ""
-	}
-	return parsed.Model
-}
-
-// applyFailoverRouting checks the client's requested model against
-// execCtx.failoverTargets and, on a match, overrides dispatch onto either
-// the matched target's aggregate cluster (the common case — full
-// Envoy-driven retry chain available) or, when the primary attempt is
-// currently suspended, directly onto the first non-suspended fallback's own
-// real cluster, bypassing the aggregate entirely. That bypass trades away
-// in-request retry protection on the fallback itself (if it also fails,
-// there's no further retry within this request, since the aggregate was
-// never entered) — a deliberate, simpler tradeoff over a per-request
-// priority-set override into the aggregate (design doc §10).
-//
-// A route with no failover block (failoverTargets is nil, by far the common
-// case) or a request whose model matches no declared target is a no-op:
-// whatever applyUpstreamRedirect/applyDefaultUpstream already wrote above
-// stands unchanged.
-func applyFailoverRouting(
-	execCtx *PolicyExecutionContext,
-	headerOps map[string][]*headerOp,
-	localDynamicMetadata map[string]map[string]interface{},
-	pathMutation **string,
-) {
-	if len(execCtx.failoverTargets) == 0 {
-		return
-	}
-	requestedModel := extractModelFromBody(execCtx.requestBodyCtx.Body)
-	if requestedModel == "" {
-		return
-	}
-
-	for _, target := range execCtx.failoverTargets {
-		if target.Model != requestedModel || len(target.Chain) == 0 {
-			continue
-		}
-
-		tracker := execCtx.server.kernel.suspension
-		primary := target.Chain[0]
-		if !tracker.IsSuspended(suspensionKey(execCtx.routeKey, primary.Model, primary.Provider)) {
-			applyUpstreamRedirect(execCtx, headerOps, localDynamicMetadata, pathMutation,
-				policyenginev1.UpstreamInfo{ClusterName: target.AggregateCluster, BasePath: primary.Upstream.BasePath},
-				primary.Provider, true)
-			return
-		}
-
-		for _, fallback := range target.Chain[1:] {
-			if tracker.IsSuspended(suspensionKey(execCtx.routeKey, fallback.Model, fallback.Provider)) {
-				continue
-			}
-			applyUpstreamRedirect(execCtx, headerOps, localDynamicMetadata, pathMutation,
-				fallback.Upstream, fallback.Provider, true)
-			return
-		}
-
-		// Every entry in the chain is currently suspended — no better option
-		// exists than trying the whole chain from the top, so fall back to
-		// the aggregate rather than refusing to dispatch the request at all.
-		applyUpstreamRedirect(execCtx, headerOps, localDynamicMetadata, pathMutation,
-			policyenginev1.UpstreamInfo{ClusterName: target.AggregateCluster, BasePath: primary.Upstream.BasePath},
-			primary.Provider, true)
-		return
-	}
 }
 
 // RequestTranslationResult holds the output of translateRequestActionsCore.
@@ -480,13 +394,6 @@ func translateRequestActionsCore(result *executor.RequestExecutionResult, execCt
 	if !applied && execCtx.defaultUpstreamCluster != "" {
 		applyDefaultUpstream(execCtx, headerOps, out.DynamicMetadata)
 	}
-
-	// Failover overrides whatever the block above just wrote: a route's
-	// resilience.failover targets and model-round-robin/UpstreamName-driven
-	// dynamic routing are mutually exclusive per model (genuine mid-request
-	// retry vs. pick-once load distribution are different mechanisms — see
-	// the design's own problem statement), so a match here is authoritative.
-	applyFailoverRouting(execCtx, headerOps, out.DynamicMetadata, &out.Mutations.Path)
 
 	// Always pass api_context and upstream_base_path in dynamic metadata when path rewrite is requested
 	// This allows the Lua filter to properly compute the final upstream path

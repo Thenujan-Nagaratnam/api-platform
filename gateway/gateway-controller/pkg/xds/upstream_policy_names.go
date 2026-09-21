@@ -20,8 +20,8 @@ package xds
 
 import "github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 
-// upstreamPhasePolicyNames is a legacy allowlist from when these four
-// policies self-declared upstream-attempt participation natively, without an
+// upstreamPhasePolicyNames is a legacy allowlist from when these policies
+// self-declared upstream-attempt participation natively, without an
 // explicit upstreamPolicies: attachment (see the LlmProvider/LlmProxy
 // schema). That native-participation mechanism has been removed from
 // gateway-runtime — a policy now runs per upstream attempt only when
@@ -33,7 +33,6 @@ import "github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 var upstreamPhasePolicyNames = map[string]bool{
 	"aws-authentication":              true,
 	"openai-to-anthropic-transformer": true,
-	"llm-upstream-provider-auth":      true,
 	"oauth2-generator":                true,
 }
 
@@ -63,9 +62,9 @@ func resolveChainForRoute(routeKey string, r *models.Route, rdc *models.RuntimeD
 // A route's failover chain member clusters (RouteFailover.Targets[].Target/
 // Fallbacks[].ClusterKey) are checked here too, not just the route's own
 // default Upstream.ClusterKey — confirmed live: when the primary attempt is
-// currently suspended, applyFailoverRouting dispatches straight to a
-// fallback's own real cluster, bypassing the aggregate entirely (see its doc
-// comment in translator.go). buildFailoverAggregateClusters unconditionally
+// currently suspended, the model-failover policy's downstream OnRequestBody
+// dispatches straight to a fallback's own real cluster, bypassing the
+// aggregate entirely. buildFailoverAggregateClusters unconditionally
 // attaches the filter to the AGGREGATE cluster for the normal retry-via-
 // aggregate path, but that attachment covers only requests that actually go
 // through the aggregate — the direct-bypass dispatch needs the SAME member

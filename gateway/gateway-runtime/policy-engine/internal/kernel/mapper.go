@@ -168,12 +168,6 @@ type Kernel struct {
 	// knows about via some other route. Rebuilt wholesale alongside
 	// RouteConfigs so it never drifts from what's currently applied.
 	clusterUpstreams map[string]policyenginev1.UpstreamInfo
-
-	// suspension tracks recently-failed failover targets so the downstream
-	// phase can pre-emptively route around them. Independent of mu: it
-	// churns per-request (unrelated to xDS snapshot updates) and has its
-	// own internal lock — see failover_suspension.go.
-	suspension *suspensionTracker
 }
 
 // NewKernel creates a new Kernel instance
@@ -182,7 +176,6 @@ func NewKernel() *Kernel {
 		RouteConfigs:     make(map[string]*RouteConfig),
 		PolicyChains:     make(map[string]*registry.PolicyChain),
 		clusterUpstreams: make(map[string]policyenginev1.UpstreamInfo),
-		suspension:       newSuspensionTracker(),
 	}
 }
 
