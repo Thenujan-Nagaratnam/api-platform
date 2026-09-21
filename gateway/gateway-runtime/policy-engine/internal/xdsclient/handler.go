@@ -663,6 +663,10 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 			return nil, fmt.Errorf("failed to create policy instance %s:%s: %w", policyConfig.Name, policyConfig.Version, err)
 		}
 
+		if policyConfig.Upstream {
+			impl = registry.WrapUpstreamAttached(impl, policyConfig.Name, routeKey)
+		}
+
 		spec := policy.PolicySpec{
 			Name:               policyConfig.Name,
 			Version:            policyConfig.Version,

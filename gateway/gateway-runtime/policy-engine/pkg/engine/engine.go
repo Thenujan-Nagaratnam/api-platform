@@ -296,6 +296,10 @@ func (e *Engine) buildPolicyChain(routeKey string, config *policyengine.PolicyCh
 			return nil, fmt.Errorf("failed to create policy instance %s:%s: %w", pc.Name, pc.Version, err)
 		}
 
+		if pc.Upstream {
+			impl = registry.WrapUpstreamAttached(impl, pc.Name, routeKey)
+		}
+
 		spec := policy.PolicySpec{
 			Name:               pc.Name,
 			Version:            pc.Version,

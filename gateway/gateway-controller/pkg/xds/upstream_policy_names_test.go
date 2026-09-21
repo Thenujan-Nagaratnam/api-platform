@@ -98,3 +98,16 @@ func TestClusterNeedsUpstreamPolicyFilter_ORsAcrossSharedCluster(t *testing.T) {
 
 	assert.True(t, clusterNeedsUpstreamPolicyFilter("shared-cluster", rdc))
 }
+
+func TestClusterNeedsUpstreamPolicyFilter_UpstreamFlaggedPolicyAnyName(t *testing.T) {
+	rdc := &models.RuntimeDeployConfig{
+		Routes: map[string]*models.Route{
+			"route-1": {Upstream: models.RouteUpstream{ClusterKey: "main"}},
+		},
+		PolicyChains: map[string]*models.PolicyChain{
+			"route-1": {Policies: []models.Policy{{Name: "prompt-decorator", Upstream: true}}},
+		},
+	}
+
+	assert.True(t, clusterNeedsUpstreamPolicyFilter("main", rdc))
+}

@@ -3370,6 +3370,12 @@ components:
           type: string
           description: Expression controlling conditional execution of the policy
           example: "request.metadata[authenticated] != true"
+        upstream:
+          type: boolean
+          description: >
+            Internal: set by the Gateway Controller for policies attached via
+            upstreamPolicies so the policy engine runs them in the upstream-attempt
+            phase only. Has no effect when set on any other attachment.
         params:
           type: object
           description: Arbitrary parameters for the policy (free-form key/value structure)
@@ -4533,6 +4539,16 @@ components:
           description: Operation-level policies scoped to specific paths/methods, evaluated after global policies.
           items:
             $ref: "#/components/schemas/OperationPolicy"
+        upstreamPolicies:
+          type: array
+          description: >
+            Operation-level policies (same shape as operationPolicies) that run in the
+            upstream-attempt phase instead of the downstream phase — once per Envoy attempt,
+            including retries to a different backend. The policy implementation is the same
+            one used under operationPolicies; only the attachment point selects the phase.
+            executionCondition is not evaluated in this phase.
+          items:
+            $ref: "#/components/schemas/OperationPolicy"
         policies:
           deprecated: true
           type: array
@@ -5007,6 +5023,16 @@ components:
         operationPolicies:
           type: array
           description: Operation-level policies scoped to specific paths/methods, evaluated after global policies.
+          items:
+            $ref: "#/components/schemas/OperationPolicy"
+        upstreamPolicies:
+          type: array
+          description: >
+            Operation-level policies (same shape as operationPolicies) that run in the
+            upstream-attempt phase instead of the downstream phase — once per Envoy attempt,
+            including retries to a different backend. The policy implementation is the same
+            one used under operationPolicies; only the attachment point selects the phase.
+            executionCondition is not evaluated in this phase.
           items:
             $ref: "#/components/schemas/OperationPolicy"
         additionalProviders:

@@ -151,6 +151,10 @@ func (cl *ConfigLoader) buildPolicyChain(routeKey string, config *policyenginev1
 				policyConfig.Name, policyConfig.Version, routeKey, err)
 		}
 
+		if policyConfig.Upstream {
+			impl = registry.WrapUpstreamAttached(impl, policyConfig.Name, routeKey)
+		}
+
 		spec := policy.PolicySpec{
 			Name:               policyConfig.Name,
 			Version:            policyConfig.Version,

@@ -654,6 +654,7 @@ func convertAPIPolicyToSDK(p api.Policy, attachedTo policyv1alpha.Level, resolve
 		Version:            resolvedVersion,
 		Enabled:            true,
 		ExecutionCondition: p.ExecutionCondition,
+		Upstream:           p.Upstream != nil && *p.Upstream,
 		Parameters:         paramsMap,
 	}
 }
@@ -669,6 +670,7 @@ func sdkChainToModel(instances []policyenginev1.PolicyInstance) *models.PolicyCh
 			Version:            inst.Version,
 			Params:             inst.Parameters,
 			ExecutionCondition: inst.ExecutionCondition,
+			Upstream:           inst.Upstream,
 		})
 	}
 	return chain

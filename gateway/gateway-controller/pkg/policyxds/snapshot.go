@@ -332,6 +332,9 @@ func (t *Translator) createPolicyChainResource(routeKey string, chain *models.Po
 		if p.ExecutionCondition != nil {
 			pol["executionCondition"] = *p.ExecutionCondition
 		}
+		if p.Upstream {
+			pol["upstream"] = true
+		}
 		policies = append(policies, pol)
 	}
 

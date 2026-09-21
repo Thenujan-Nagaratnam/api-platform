@@ -215,6 +215,8 @@ type Policy struct {
 	Version            string
 	Params             map[string]interface{}
 	ExecutionCondition *string
+	// Upstream runs this policy in the upstream-attempt phase (upstreamPolicies).
+	Upstream bool
 }
 
 // UpstreamCluster represents an Envoy cluster with its endpoints.

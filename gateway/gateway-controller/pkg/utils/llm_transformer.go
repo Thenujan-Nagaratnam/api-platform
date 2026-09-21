@@ -29,6 +29,9 @@ type pathMethodKey struct {
 type llmPolicyAttachment struct {
 	policy    api.OperationPolicy
 	pathEntry api.OperationPolicyPath
+	// upstream marks an attachment that came from upstreamPolicies: the policy
+	// engine runs it in the upstream-attempt phase instead of the downstream one.
+	upstream bool
 }
 
 func NewLLMProviderTransformer(store *storage.ConfigStore, db storage.Storage, routerConfig *config.RouterConfig, policyVersionResolver PolicyVersionResolver) *LLMProviderTransformer {
@@ -367,10 +370,11 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 
 	// Phase 2: Process User-Defined Policies (operationPolicies + deprecated policies)
 	opLevelPolicies := collectOperationLevelLLMPolicies(proxy.Spec.OperationPolicies, proxy.Spec.Policies)
-	if len(opLevelPolicies) > 0 {
-		registerExplicitLLMPolicyOperations(operationRegistry, opLevelPolicies, nil)
+	upstreamPolicies := derefOperationPolicies(proxy.Spec.UpstreamPolicies)
+	if len(opLevelPolicies) > 0 || len(upstreamPolicies) > 0 {
+		registerExplicitLLMPolicyOperations(operationRegistry, append(append([]api.OperationPolicy{}, opLevelPolicies...), upstreamPolicies...), nil)
 
-		for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies) {
+		for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies, upstreamPolicies) {
 			policyMethods := expandLLMPolicyMethods(attachment.pathEntry.Methods)
 
 			for _, policyMethod := range policyMethods {
@@ -405,6 +409,7 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 								Name:               attachment.policy.Name,
 								Version:            attachment.policy.Version,
 								ExecutionCondition: attachment.policy.ExecutionCondition,
+								Upstream:           upstreamFlag(attachment.upstream),
 								Params:             mergeParams(attachment.pathEntry.Params, templateParams),
 							}
 							appendOperationPolicy(targetOp, pol)
@@ -659,12 +664,13 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 
 		// Phase 3: Process User-Defined Policies (operationPolicies + deprecated policies)
 		opLevelPolicies := collectOperationLevelLLMPolicies(provider.Spec.OperationPolicies, provider.Spec.Policies)
-		if len(opLevelPolicies) > 0 {
-			registerExplicitLLMPolicyOperations(operationRegistry, opLevelPolicies, func(path, method string) bool {
+		upstreamPolicies := derefOperationPolicies(provider.Spec.UpstreamPolicies)
+		if len(opLevelPolicies) > 0 || len(upstreamPolicies) > 0 {
+			registerExplicitLLMPolicyOperations(operationRegistry, append(append([]api.OperationPolicy{}, opLevelPolicies...), upstreamPolicies...), func(path, method string) bool {
 				return !isDeniedByException(path, method, deniedPathMethods)
 			})
 
-			for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies) {
+			for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies, upstreamPolicies) {
 				policyMethods := expandLLMPolicyMethods(attachment.pathEntry.Methods)
 
 				for _, policyMethod := range policyMethods {
@@ -712,6 +718,7 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 									Name:               attachment.policy.Name,
 									Version:            attachment.policy.Version,
 									ExecutionCondition: attachment.policy.ExecutionCondition,
+									Upstream:           upstreamFlag(attachment.upstream),
 									Params:             mergeParams(attachment.pathEntry.Params, templateParams),
 								}
 								appendOperationPolicy(targetOp, pol)
@@ -761,12 +768,13 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 
 		// Phase 3: Process Policies with Dynamic Operation Creation (operationPolicies + deprecated policies)
 		opLevelPolicies := collectOperationLevelLLMPolicies(provider.Spec.OperationPolicies, provider.Spec.Policies)
-		if len(opLevelPolicies) > 0 {
-			registerExplicitLLMPolicyOperations(operationRegistry, opLevelPolicies, func(path, method string) bool {
+		upstreamPolicies := derefOperationPolicies(provider.Spec.UpstreamPolicies)
+		if len(opLevelPolicies) > 0 || len(upstreamPolicies) > 0 {
+			registerExplicitLLMPolicyOperations(operationRegistry, append(append([]api.OperationPolicy{}, opLevelPolicies...), upstreamPolicies...), func(path, method string) bool {
 				return isAllowedByAccessControl(path, method, normalizedExceptions)
 			})
 
-			for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies) {
+			for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies, upstreamPolicies) {
 				policyMethods := expandLLMPolicyMethods(attachment.pathEntry.Methods)
 
 				for _, policyMethod := range policyMethods {
@@ -800,6 +808,7 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 									Name:               attachment.policy.Name,
 									Version:            attachment.policy.Version,
 									ExecutionCondition: attachment.policy.ExecutionCondition,
+									Upstream:           upstreamFlag(attachment.upstream),
 									Params:             mergeParams(attachment.pathEntry.Params, templateParams),
 								}
 								appendOperationPolicy(targetOp, pol)
@@ -1266,14 +1275,16 @@ func collectOperationLevelLLMPolicies(operationPolicies *[]api.OperationPolicy, 
 	return out
 }
 
-func orderedLLMPolicyAttachments(policies []api.OperationPolicy) []llmPolicyAttachment {
+func orderedLLMPolicyAttachments(policies, upstreamPolicies []api.OperationPolicy) []llmPolicyAttachment {
 	attachments := make([]llmPolicyAttachment, 0)
 	for _, llmPol := range policies {
 		for _, pathEntry := range llmPol.Paths {
-			attachments = append(attachments, llmPolicyAttachment{
-				policy:    llmPol,
-				pathEntry: pathEntry,
-			})
+			attachments = append(attachments, llmPolicyAttachment{policy: llmPol, pathEntry: pathEntry})
+		}
+	}
+	for _, llmPol := range upstreamPolicies {
+		for _, pathEntry := range llmPol.Paths {
+			attachments = append(attachments, llmPolicyAttachment{policy: llmPol, pathEntry: pathEntry, upstream: true})
 		}
 	}
 
@@ -1282,6 +1293,20 @@ func orderedLLMPolicyAttachments(policies []api.OperationPolicy) []llmPolicyAtta
 	})
 
 	return attachments
+}
+
+func derefOperationPolicies(p *[]api.OperationPolicy) []api.OperationPolicy {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func upstreamFlag(upstream bool) *bool {
+	if !upstream {
+		return nil
+	}
+	return &upstream
 }
 
 func shouldAttachPathBefore(leftPath, rightPath string) bool {

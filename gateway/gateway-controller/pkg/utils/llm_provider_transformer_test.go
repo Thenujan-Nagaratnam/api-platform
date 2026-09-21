@@ -8497,3 +8497,64 @@ func TestTransform_Provider_UpstreamUrl_Unchanged(t *testing.T) {
 	assert.Nil(t, res.Spec.Upstream.Main.Ref)
 	assert.Nil(t, res.Spec.UpstreamDefinitions)
 }
+
+func TestTransform_UpstreamPolicies_FlaggedUpstreamOnly(t *testing.T) {
+	transformer, _ := setupTestTransformer(t)
+
+	mkPolicy := func(size int) []api.OperationPolicy {
+		return []api.OperationPolicy{{
+			Name:    "content-length-guardrail",
+			Version: "v0.1.0",
+			Paths: []api.OperationPolicyPath{{
+				Path:    "/chat/completions",
+				Methods: []api.OperationPolicyPathMethods{api.OperationPolicyPathMethodsPOST},
+				Params:  map[string]interface{}{"maxRequestBodySize": size},
+			}},
+		}}
+	}
+	downstream := mkPolicy(1024)
+	upstream := mkPolicy(2048)
+
+	provider := &api.LLMProviderConfiguration{
+		ApiVersion: "gateway.api-platform.wso2.com/v1",
+		Kind:       "LlmProvider",
+		Metadata:   api.Metadata{Name: "openai-provider"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName:       "test",
+			Version:           "v1.0",
+			Template:          "openai",
+			Upstream:          api.LLMProviderConfigData_Upstream{Url: stringPtr("https://api.example.com")},
+			AccessControl:     api.LLMAccessControl{Mode: api.AllowAll},
+			OperationPolicies: &downstream,
+			UpstreamPolicies:  &upstream,
+		},
+	}
+
+	result, err := transformer.Transform(provider, &api.RestAPI{})
+	require.NoError(t, err)
+
+	var adminOp *api.Operation
+	for i := range result.Spec.Operations {
+		if result.Spec.Operations[i].EffectivePath() == "/chat/completions" {
+			adminOp = &result.Spec.Operations[i]
+		}
+	}
+	require.NotNil(t, adminOp)
+	require.NotNil(t, adminOp.Policies)
+
+	var flagged, unflagged int
+	for _, p := range *adminOp.Policies {
+		if p.Name != "content-length-guardrail" {
+			continue
+		}
+		if p.Upstream != nil && *p.Upstream {
+			flagged++
+			assert.EqualValues(t, 2048, (*p.Params)["maxRequestBodySize"])
+		} else {
+			unflagged++
+			assert.EqualValues(t, 1024, (*p.Params)["maxRequestBodySize"])
+		}
+	}
+	assert.Equal(t, 1, flagged, "upstreamPolicies entry must be flagged upstream")
+	assert.Equal(t, 1, unflagged, "operationPolicies entry must stay downstream")
+}

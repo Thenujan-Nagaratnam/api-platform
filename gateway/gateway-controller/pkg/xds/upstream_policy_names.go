@@ -104,7 +104,9 @@ func clusterNeedsUpstreamPolicyFilter(clusterName string, rdc *models.RuntimeDep
 			continue
 		}
 		for _, p := range chain.Policies {
-			if isUpstreamPhasePolicy(p.Name) {
+			// p.Upstream: attached via upstreamPolicies, so it runs upstream regardless of
+			// whether its name is in the native-upstream allowlist.
+			if p.Upstream || isUpstreamPhasePolicy(p.Name) {
 				return true
 			}
 		}
