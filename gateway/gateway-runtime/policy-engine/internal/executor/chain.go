@@ -147,19 +147,7 @@ func (c *ChainExecutor) ExecuteRequestHeaderPolicies(
 
 		// Apply header mutations to reqCtx so subsequent policies and CEL conditions see the mutated state
 		if mod, ok := action.(policy.UpstreamRequestHeaderModifications); ok {
-			internalHeaders := reqCtx.Headers.UnsafeInternalValues()
-			for k, v := range mod.HeadersToSet {
-				internalHeaders[strings.ToLower(k)] = []string{v}
-			}
-			for _, k := range mod.HeadersToRemove {
-				delete(internalHeaders, strings.ToLower(k))
-			}
-			if mod.Path != nil {
-				reqCtx.Path = *mod.Path
-			}
-			if mod.Method != nil {
-				reqCtx.Method = *mod.Method
-			}
+			applyRequestHeaderModifications(reqCtx, mod)
 		}
 
 		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
@@ -467,13 +455,7 @@ func (c *ChainExecutor) ExecuteResponseHeaderPolicies(
 
 		// Apply header mutations to respCtx so subsequent policies and CEL conditions see the mutated state
 		if mod, ok := action.(policy.DownstreamResponseHeaderModifications); ok {
-			internalHeaders := respCtx.ResponseHeaders.UnsafeInternalValues()
-			for k, v := range mod.HeadersToSet {
-				internalHeaders[strings.ToLower(k)] = []string{v}
-			}
-			for _, k := range mod.HeadersToRemove {
-				delete(internalHeaders, strings.ToLower(k))
-			}
+			applyResponseHeaderModifications(respCtx, mod)
 		}
 
 		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
@@ -671,317 +653,207 @@ func (c *ChainExecutor) ExecuteResponsePolicies(ctx context.Context, policyList 
 
 // ─── Upstream-attempt phase ──────────────────────────────────────────────────
 //
-// These phases run once per upstream attempt — including retries to a
-// different backend — scoped to whichever backend Envoy is dialing for that
-// specific attempt. See policy.UpstreamRequestPolicy / UpstreamResponsePolicy.
-// Unlike the downstream phases above, CEL execution conditions are not
-// evaluated here — every enabled upstream-phase policy attached to the route
-// runs on every attempt.
+// These run once per upstream attempt — including retries to a different
+// backend — scoped to whichever backend Envoy is dialing for that specific
+// attempt. There is no separate interface or context type for this phase: the
+// exact same RequestHeaderPolicy/RequestPolicy/ResponseHeaderPolicy/ResponsePolicy
+// methods and RequestHeaderContext/RequestContext/ResponseHeaderContext/ResponseContext
+// types used downstream are reused, built with Downstream == nil — the signal
+// a policy uses to tell the two invocations apart (see those types' own doc
+// comments in the SDK). A policy opts in purely by attachment point
+// (upstreamPolicies: — see registry.PolicyChain.UpstreamPolicies, populated
+// at chain-build time), so these loops dispatch by interface type assertion
+// alone — every entry
+// here has already declared it wants to participate, via whichever
+// interface(s) it implements. Unlike the downstream phases above, CEL
+// execution conditions are not evaluated here — every enabled upstream-phase
+// policy attached to the route runs on every attempt. Per-policy result
+// tracking/spans are intentionally not kept here (unlike the downstream
+// phases): no caller has ever consumed them for this phase.
 
-// UpstreamRequestPolicyResult is the result of executing a single UpstreamRequestPolicy.
-type UpstreamRequestPolicyResult struct {
-	PolicyName    string
-	PolicyVersion string
-	Action        policy.RequestAction
-	ExecutionTime time.Duration
-	Skipped       bool // true if the policy was disabled
-}
-
-// UpstreamRequestExecutionResult aggregates per-policy results for the upstream-attempt request phase.
-type UpstreamRequestExecutionResult struct {
-	Results            []UpstreamRequestPolicyResult
-	ShortCircuited     bool                 // true if the chain stopped early due to ImmediateResponse
-	FinalAction        policy.RequestAction // Final action to apply
-	TotalExecutionTime time.Duration
-}
-
-// ExecuteUpstreamRequestPolicies invokes each UpstreamRequestPolicy in the
-// chain, in order, against upCtx — freshly, for whichever backend this
-// specific attempt is targeting. Policies that do not implement
-// UpstreamRequestPolicy, or that declare UpstreamRequestMode != BodyModeBuffer,
-// are skipped silently, exactly like the downstream phases above.
-func (c *ChainExecutor) ExecuteUpstreamRequestPolicies(
+// ExecuteUpstreamAttemptRequestHeaderPolicies invokes each RequestHeaderPolicy
+// in policyList, in order, against reqCtx — freshly, for one specific
+// upstream attempt.
+func (c *ChainExecutor) ExecuteUpstreamAttemptRequestHeaderPolicies(
 	ctx context.Context,
 	policyList []policy.Policy,
-	upCtx *policy.UpstreamAttemptContext,
+	reqCtx *policy.RequestHeaderContext,
 	specs []policy.PolicySpec,
 	api, route string,
-) (*UpstreamRequestExecutionResult, error) {
-	startTime := time.Now()
-	result := &UpstreamRequestExecutionResult{
-		Results: make([]UpstreamRequestPolicyResult, 0, len(policyList)),
-	}
+) (policy.RequestHeaderAction, error) {
+	var finalAction policy.RequestHeaderAction
 
 	for i, pol := range policyList {
-		spec := specs[i]
-		policyStartTime := time.Now()
-
-		_, span := c.tracer.Start(ctx, fmt.Sprintf(constants.SpanPolicyRequestFormat, spec.Name),
-			trace.WithSpanKind(trace.SpanKindInternal))
-		if span.IsRecording() {
-			span.SetAttributes(
-				attribute.String(constants.AttrPolicyName, spec.Name),
-				attribute.String(constants.AttrPolicyVersion, spec.Version),
-				attribute.Bool(constants.AttrPolicyEnabled, spec.Enabled),
-			)
-		}
-
-		up, ok := pol.(policy.UpstreamRequestPolicy)
+		hp, ok := pol.(policy.RequestHeaderPolicy)
 		if !ok {
-			span.End()
 			continue
 		}
-		if pol.Mode().UpstreamRequestMode != policy.BodyModeBuffer {
-			span.End()
-			continue
-		}
-
+		spec := specs[i]
 		if !spec.Enabled {
-			if span.IsRecording() {
-				span.SetAttributes(attribute.Bool(constants.AttrPolicySkipped, true))
-			}
 			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
-			span.End()
-			result.Results = append(result.Results, UpstreamRequestPolicyResult{
-				PolicyName:    spec.Name,
-				PolicyVersion: spec.Version,
-				Skipped:       true,
-				ExecutionTime: time.Since(policyStartTime),
-			})
 			continue
 		}
 
+		policyStartTime := time.Now()
 		// spec.Parameters.Raw is an immutable snapshot published at chain-build time and
 		// shared read-only across concurrent requests; policies must not mutate it.
-		slog.Debug("[upstream] calling OnUpstreamRequestBody", "policy", spec.Name, "version", spec.Version, "route", route, "backend", upCtx.Name)
-		action := up.OnUpstreamRequestBody(ctx, upCtx, spec.Parameters.Raw)
+		slog.Debug("[upstream-attempt] calling OnRequestHeaders", "policy", spec.Name, "version", spec.Version, "route", route)
+		action := hp.OnRequestHeaders(ctx, reqCtx, spec.Parameters.Raw)
 		executionTime := time.Since(policyStartTime)
-
 		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
 		metrics.PolicyDurationSeconds.WithLabelValues(spec.Name, spec.Version, api, route).Observe(executionTime.Seconds())
 
-		if span.IsRecording() {
-			span.SetAttributes(attribute.Int64(constants.AttrPolicyExecutionTimeNS, executionTime.Nanoseconds()))
+		if mod, ok := action.(policy.UpstreamRequestHeaderModifications); ok {
+			applyRequestHeaderModifications(reqCtx, mod)
 		}
+		finalAction = action
 
-		result.Results = append(result.Results, UpstreamRequestPolicyResult{
-			PolicyName:    spec.Name,
-			PolicyVersion: spec.Version,
-			Action:        action,
-			ExecutionTime: executionTime,
-		})
-
-		if action != nil {
-			if action.StopExecution() {
-				if span.IsRecording() {
-					span.SetAttributes(attribute.Bool(constants.AttrPolicyShortCircuit, true))
-				}
-				metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
-				result.ShortCircuited = true
-				result.FinalAction = action
-				span.End()
-				break
-			}
-
-			if mods, ok := action.(policy.UpstreamRequestModifications); ok {
-				applyUpstreamRequestModifications(upCtx, &mods)
-			}
+		if _, ok := action.(policy.ImmediateResponse); ok {
+			metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
+			return action, nil
 		}
-
-		result.FinalAction = action
-		span.End()
 	}
 
-	result.TotalExecutionTime = time.Since(startTime)
-	return result, nil
+	return finalAction, nil
 }
 
-// UpstreamResponsePolicyResult is the result of executing a single UpstreamResponsePolicy.
-type UpstreamResponsePolicyResult struct {
-	PolicyName    string
-	PolicyVersion string
-	Action        policy.ResponseAction
-	ExecutionTime time.Duration
-	Skipped       bool
-}
-
-// UpstreamResponseExecutionResult aggregates per-policy results for the upstream-attempt response phase.
-type UpstreamResponseExecutionResult struct {
-	Results            []UpstreamResponsePolicyResult
-	ShortCircuited     bool
-	FinalAction        policy.ResponseAction
-	TotalExecutionTime time.Duration
-}
-
-// ExecuteUpstreamResponsePolicies invokes each UpstreamResponsePolicy in the
-// chain, in order, against upCtx — scoped to whichever backend actually
-// produced this attempt's response. In practice this only ever runs for the
-// attempt whose response is forwarded downstream.
-func (c *ChainExecutor) ExecuteUpstreamResponsePolicies(
+// ExecuteUpstreamAttemptRequestPolicies invokes each RequestPolicy in
+// policyList, in order, against reqCtx — freshly, for one specific upstream
+// attempt.
+func (c *ChainExecutor) ExecuteUpstreamAttemptRequestPolicies(
 	ctx context.Context,
 	policyList []policy.Policy,
-	upCtx *policy.UpstreamAttemptContext,
+	reqCtx *policy.RequestContext,
 	specs []policy.PolicySpec,
 	api, route string,
-) (*UpstreamResponseExecutionResult, error) {
-	startTime := time.Now()
-	result := &UpstreamResponseExecutionResult{
-		Results: make([]UpstreamResponsePolicyResult, 0, len(policyList)),
-	}
+) (policy.RequestAction, error) {
+	var finalAction policy.RequestAction
 
 	for i, pol := range policyList {
-		spec := specs[i]
-		policyStartTime := time.Now()
-
-		_, span := c.tracer.Start(ctx, fmt.Sprintf(constants.SpanPolicyResponseFormat, spec.Name),
-			trace.WithSpanKind(trace.SpanKindInternal))
-		if span.IsRecording() {
-			span.SetAttributes(
-				attribute.String(constants.AttrPolicyName, spec.Name),
-				attribute.String(constants.AttrPolicyVersion, spec.Version),
-				attribute.Bool(constants.AttrPolicyEnabled, spec.Enabled),
-			)
-		}
-
-		up, ok := pol.(policy.UpstreamResponsePolicy)
+		rp, ok := pol.(policy.RequestPolicy)
 		if !ok {
-			span.End()
 			continue
 		}
-		if pol.Mode().UpstreamResponseMode != policy.BodyModeBuffer {
-			span.End()
-			continue
-		}
-
+		spec := specs[i]
 		if !spec.Enabled {
-			if span.IsRecording() {
-				span.SetAttributes(attribute.Bool(constants.AttrPolicySkipped, true))
-			}
 			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
-			span.End()
-			result.Results = append(result.Results, UpstreamResponsePolicyResult{
-				PolicyName:    spec.Name,
-				PolicyVersion: spec.Version,
-				Skipped:       true,
-				ExecutionTime: time.Since(policyStartTime),
-			})
 			continue
 		}
 
-		slog.Debug("[upstream] calling OnUpstreamResponseBody", "policy", spec.Name, "version", spec.Version, "route", route, "backend", upCtx.Name)
-		action := up.OnUpstreamResponseBody(ctx, upCtx, spec.Parameters.Raw)
+		policyStartTime := time.Now()
+		slog.Debug("[upstream-attempt] calling OnRequestBody", "policy", spec.Name, "version", spec.Version, "route", route)
+		action := rp.OnRequestBody(ctx, reqCtx, spec.Parameters.Raw)
 		executionTime := time.Since(policyStartTime)
-
 		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
 		metrics.PolicyDurationSeconds.WithLabelValues(spec.Name, spec.Version, api, route).Observe(executionTime.Seconds())
 
-		if span.IsRecording() {
-			span.SetAttributes(attribute.Int64(constants.AttrPolicyExecutionTimeNS, executionTime.Nanoseconds()))
+		finalAction = action
+		if action == nil {
+			continue
 		}
-
-		result.Results = append(result.Results, UpstreamResponsePolicyResult{
-			PolicyName:    spec.Name,
-			PolicyVersion: spec.Version,
-			Action:        action,
-			ExecutionTime: executionTime,
-		})
-
-		if action != nil {
-			if action.StopExecution() {
-				if span.IsRecording() {
-					span.SetAttributes(attribute.Bool(constants.AttrPolicyShortCircuit, true))
-				}
-				metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
-				result.ShortCircuited = true
-				result.FinalAction = action
-				span.End()
-				break
-			}
-			if mods, ok := action.(policy.DownstreamResponseModifications); ok {
-				applyUpstreamResponseModifications(upCtx, &mods)
-			}
+		if action.StopExecution() {
+			metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
+			return action, nil
 		}
-
-		result.FinalAction = action
-		span.End()
+		if mods, ok := action.(policy.UpstreamRequestModifications); ok {
+			applyRequestModifications(reqCtx, &mods)
+		}
 	}
 
-	result.TotalExecutionTime = time.Since(startTime)
-	return result, nil
+	return finalAction, nil
 }
 
-// applyUpstreamResponseModifications threads a policy's header/body/status
-// mutations into upCtx so both the next policy in the same attempt's chain
-// and, ultimately, the kernel building the actual ext_proc response observe
-// the FULL chain's combined effect — mirroring applyUpstreamRequestModifications,
-// which the request-phase counterpart needed for the identical reason: reading
-// only the last-executed policy's own returned action silently drops an
-// earlier policy's mutations (e.g. a transformer's translated body) once a
-// later policy in the same chain runs and returns its own, narrower action.
-func applyUpstreamResponseModifications(ctx *policy.UpstreamAttemptContext, mods *policy.DownstreamResponseModifications) {
-	if ctx.Headers != nil {
-		headers := ctx.Headers.UnsafeInternalValues()
-		if mods.HeadersToSet != nil {
-			for key, value := range mods.HeadersToSet {
-				headers[key] = []string{value}
-			}
+// ExecuteUpstreamAttemptResponseHeaderPolicies invokes each ResponseHeaderPolicy
+// in policyList (reverse order, mirroring the downstream response phase)
+// against respCtx, for one specific upstream attempt's response.
+func (c *ChainExecutor) ExecuteUpstreamAttemptResponseHeaderPolicies(
+	ctx context.Context,
+	policyList []policy.Policy,
+	respCtx *policy.ResponseHeaderContext,
+	specs []policy.PolicySpec,
+	api, route string,
+) (policy.ResponseHeaderAction, error) {
+	var finalAction policy.ResponseHeaderAction
+
+	for i := len(policyList) - 1; i >= 0; i-- {
+		pol := policyList[i]
+		hp, ok := pol.(policy.ResponseHeaderPolicy)
+		if !ok {
+			continue
 		}
-		if mods.HeadersToRemove != nil {
-			for _, key := range mods.HeadersToRemove {
-				delete(headers, key)
-			}
+		spec := specs[i]
+		if !spec.Enabled {
+			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
+			continue
+		}
+
+		policyStartTime := time.Now()
+		slog.Debug("[upstream-attempt] calling OnResponseHeaders", "policy", spec.Name, "version", spec.Version, "route", route)
+		action := hp.OnResponseHeaders(ctx, respCtx, spec.Parameters.Raw)
+		executionTime := time.Since(policyStartTime)
+		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
+		metrics.PolicyDurationSeconds.WithLabelValues(spec.Name, spec.Version, api, route).Observe(executionTime.Seconds())
+
+		if mod, ok := action.(policy.DownstreamResponseHeaderModifications); ok {
+			applyResponseHeaderModifications(respCtx, mod)
+		}
+		finalAction = action
+
+		if _, ok := action.(policy.ImmediateResponse); ok {
+			metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
+			return action, nil
 		}
 	}
 
-	if mods.Body != nil {
-		ctx.Body = &policy.Body{
-			Content:     mods.Body,
-			EndOfStream: true,
-			Present:     true,
-		}
-	}
-
-	if mods.StatusCode != nil {
-		ctx.ResponseStatusOverride = mods.StatusCode
-	}
+	return finalAction, nil
 }
 
-// applyUpstreamRequestModifications threads a policy's body/header mutations
-// into upCtx so the next policy in the same attempt's chain observes them —
-// mirroring applyRequestModifications, but never touching OriginalRequestRaw.
-func applyUpstreamRequestModifications(ctx *policy.UpstreamAttemptContext, mods *policy.UpstreamRequestModifications) {
-	if ctx.Headers != nil {
-		headers := ctx.Headers.UnsafeInternalValues()
-		if mods.HeadersToSet != nil {
-			for key, value := range mods.HeadersToSet {
-				headers[key] = []string{value}
-			}
+// ExecuteUpstreamAttemptResponsePolicies invokes each ResponsePolicy in
+// policyList (reverse order, mirroring the downstream response phase)
+// against respCtx — scoped to whichever backend actually produced this
+// attempt's response.
+func (c *ChainExecutor) ExecuteUpstreamAttemptResponsePolicies(
+	ctx context.Context,
+	policyList []policy.Policy,
+	respCtx *policy.ResponseContext,
+	specs []policy.PolicySpec,
+	api, route string,
+) (policy.ResponseAction, error) {
+	var finalAction policy.ResponseAction
+
+	for i := len(policyList) - 1; i >= 0; i-- {
+		pol := policyList[i]
+		rp, ok := pol.(policy.ResponsePolicy)
+		if !ok {
+			continue
 		}
-		if mods.HeadersToRemove != nil {
-			for _, key := range mods.HeadersToRemove {
-				delete(headers, key)
-			}
+		spec := specs[i]
+		if !spec.Enabled {
+			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
+			continue
+		}
+
+		policyStartTime := time.Now()
+		slog.Debug("[upstream-attempt] calling OnResponseBody", "policy", spec.Name, "version", spec.Version, "route", route)
+		action := rp.OnResponseBody(ctx, respCtx, spec.Parameters.Raw)
+		executionTime := time.Since(policyStartTime)
+		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
+		metrics.PolicyDurationSeconds.WithLabelValues(spec.Name, spec.Version, api, route).Observe(executionTime.Seconds())
+
+		finalAction = action
+		if action == nil {
+			continue
+		}
+		if action.StopExecution() {
+			metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
+			return action, nil
+		}
+		if mods, ok := action.(policy.DownstreamResponseModifications); ok {
+			applyResponseModifications(respCtx, &mods)
 		}
 	}
 
-	if mods.Body != nil {
-		ctx.Body = &policy.Body{
-			Content:     mods.Body,
-			EndOfStream: true,
-			Present:     true,
-		}
-	}
-
-	// Accumulate onto ctx.Path the same way Body is accumulated onto ctx.Body
-	// above: a policy earlier in the chain (e.g. a transformer) may set Path,
-	// then a later policy (e.g. an auth signer) runs without touching it —
-	// without this, only the last policy that happened to also set Path would
-	// survive into the chain's final state, silently dropping an earlier
-	// policy's path rewrite whenever a later policy's own action doesn't
-	// repeat it.
-	if mods.Path != nil {
-		ctx.Path = *mods.Path
-	}
+	return finalAction, nil
 }
 
 // ─── Streaming request body phase ────────────────────────────────────────────
@@ -1354,6 +1226,37 @@ func applyResponseModifications(ctx *policy.ResponseContext, mods *policy.Downst
 
 	if mods.StatusCode != nil {
 		ctx.ResponseStatus = *mods.StatusCode
+	}
+}
+
+// applyRequestHeaderModifications applies a header-phase policy's mutations to
+// reqCtx, shared by the downstream and upstream-attempt request header phases.
+func applyRequestHeaderModifications(reqCtx *policy.RequestHeaderContext, mod policy.UpstreamRequestHeaderModifications) {
+	internalHeaders := reqCtx.Headers.UnsafeInternalValues()
+	for k, v := range mod.HeadersToSet {
+		internalHeaders[strings.ToLower(k)] = []string{v}
+	}
+	for _, k := range mod.HeadersToRemove {
+		delete(internalHeaders, strings.ToLower(k))
+	}
+	if mod.Path != nil {
+		reqCtx.Path = *mod.Path
+	}
+	if mod.Method != nil {
+		reqCtx.Method = *mod.Method
+	}
+}
+
+// applyResponseHeaderModifications applies a header-phase policy's mutations
+// to respCtx, shared by the downstream and upstream-attempt response header
+// phases.
+func applyResponseHeaderModifications(respCtx *policy.ResponseHeaderContext, mod policy.DownstreamResponseHeaderModifications) {
+	internalHeaders := respCtx.ResponseHeaders.UnsafeInternalValues()
+	for k, v := range mod.HeadersToSet {
+		internalHeaders[strings.ToLower(k)] = []string{v}
+	}
+	for _, k := range mod.HeadersToRemove {
+		delete(internalHeaders, strings.ToLower(k))
 	}
 }
 

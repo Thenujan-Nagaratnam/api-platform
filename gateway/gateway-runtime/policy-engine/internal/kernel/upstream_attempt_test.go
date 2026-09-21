@@ -27,89 +27,122 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-func TestBuildUpstreamAttemptContext_SeedsBodyFromOriginal(t *testing.T) {
-	original := []byte(`{"model":"gpt-4o"}`)
+func TestNewUpstreamAttemptSharedContext_SeedsSelectedProviderAndModel(t *testing.T) {
+	shared := NewUpstreamAttemptSharedContext("claude-3-5-sonnet-20241022", "anthropic-upstream")
 
-	attemptCtx := BuildUpstreamAttemptContext(original, map[string][]string{"content-type": {"application/json"}}, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions", false, "", "", 0)
-
-	require.NotNil(t, attemptCtx)
-	assert.Equal(t, "openai-primary", attemptCtx.Name)
-	assert.Equal(t, "https://api.openai.com", attemptCtx.URL)
-	assert.Equal(t, "/v1", attemptCtx.BasePath)
-	assert.Equal(t, original, attemptCtx.OriginalRequestRaw)
-	require.NotNil(t, attemptCtx.Body)
-	assert.Equal(t, original, attemptCtx.Body.Content)
-	assert.False(t, attemptCtx.IsRetry)
-	assert.Empty(t, attemptCtx.ResolvedModel)
-	assert.Empty(t, attemptCtx.ResolvedProvider)
+	require.NotNil(t, shared)
+	require.NotNil(t, shared.Metadata)
+	assert.Equal(t, "anthropic-upstream", shared.Metadata[selectedProviderMetadataKey])
+	assert.Equal(t, "claude-3-5-sonnet-20241022", shared.Metadata[selectedModelMetadataKey])
 }
 
-func TestBuildUpstreamAttemptContext_SetsResolvedModelAndProviderForFailoverAttempt(t *testing.T) {
-	original := []byte(`{"model":"gpt-4o"}`)
+func TestNewUpstreamAttemptSharedContext_EmptyForNonFailoverAttempt(t *testing.T) {
+	shared := NewUpstreamAttemptSharedContext("", "")
 
-	attemptCtx := BuildUpstreamAttemptContext(original, nil, "anthropic-upstream-cluster", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", true, "claude-3-5-sonnet-20241022", "anthropic-upstream", 0)
-
-	require.NotNil(t, attemptCtx)
-	assert.Equal(t, "claude-3-5-sonnet-20241022", attemptCtx.ResolvedModel)
-	assert.Equal(t, "anthropic-upstream", attemptCtx.ResolvedProvider)
+	require.NotNil(t, shared)
+	require.NotNil(t, shared.Metadata)
+	assert.NotContains(t, shared.Metadata, selectedProviderMetadataKey)
+	assert.NotContains(t, shared.Metadata, selectedModelMetadataKey)
 }
 
-func TestBuildUpstreamAttemptContext_RetryUsesOriginalNotPreviousOutput(t *testing.T) {
+func TestBuildUpstreamAttemptRequestContext_SeedsBodyFromOriginal(t *testing.T) {
+	original := []byte(`{"model":"gpt-4o"}`)
+	shared := NewUpstreamAttemptSharedContext("", "")
+	headers := policy.NewHeaders(map[string][]string{"content-type": {"application/json"}})
+
+	reqCtx := BuildUpstreamAttemptRequestContext(shared, headers, original, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions")
+
+	require.NotNil(t, reqCtx)
+	require.NotNil(t, reqCtx.Upstream)
+	assert.Equal(t, "openai-primary", reqCtx.Upstream.Name)
+	assert.Equal(t, "https://api.openai.com", reqCtx.Upstream.URL)
+	assert.Equal(t, "/v1", reqCtx.Upstream.BasePath)
+	require.NotNil(t, reqCtx.Body)
+	assert.Equal(t, original, reqCtx.Body.Content)
+	assert.Nil(t, reqCtx.Downstream, "Downstream must be nil — the signal that this is an upstream-attempt invocation")
+}
+
+func TestBuildUpstreamAttemptRequestContext_RetryUsesOriginalNotPreviousOutput(t *testing.T) {
 	original := []byte(`{"model":"gpt-4o"}`)
 
 	// Attempt 1 goes to the primary and its transformer mutates the working
 	// body (simulated here — the point under test is that this mutation
 	// never leaks into how a later attempt is built).
-	attempt1 := BuildUpstreamAttemptContext(original, nil, "openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions", false, "", "", 0)
+	attempt1 := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), policy.NewHeaders(nil), original,
+		"openai-primary", "https://api.openai.com", "/v1", "POST", "/v1/chat/completions")
 	attempt1.Body.Content = []byte(`{"totally":"different, mutated by attempt 1's transformer"}`)
 
 	// Attempt 2 (the fallback, a different provider) must be built fresh from
 	// the SAME cached original bytes — never from attempt1's mutated Body.
-	attempt2 := BuildUpstreamAttemptContext(original, nil, "anthropic-fallback", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", true, "", "", 0)
+	attempt2 := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), policy.NewHeaders(nil), original,
+		"anthropic-fallback", "https://api.anthropic.com", "/v1", "POST", "/v1/messages")
 
-	assert.Equal(t, "anthropic-fallback", attempt2.Name)
-	assert.True(t, attempt2.IsRetry)
-	assert.Equal(t, original, attempt2.OriginalRequestRaw)
+	assert.Equal(t, "anthropic-fallback", attempt2.Upstream.Name)
 	assert.Equal(t, original, attempt2.Body.Content, "attempt 2 must start from the original bytes, not attempt 1's mutated output")
 }
 
-func TestBuildUpstreamAttemptContext_SharedContextIsNeverNil(t *testing.T) {
-	// A policy's OnUpstreamRequestBody routinely writes through
-	// upCtx.SharedContext (e.g. aws-authentication's authSuccess/authFailure
-	// record an AuthContext there) — confirmed live: a nil SharedContext
-	// panics the whole policy-engine connection on the very first real
-	// upstream-phase signing attempt. UpstreamAttemptContext embeds
-	// *SharedContext, so it must always be a real, usable pointer, mirroring
-	// every other per-request context the kernel builds.
-	attemptCtx := BuildUpstreamAttemptContext([]byte(`{}`), nil, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions", false, "", "", 0)
+func TestBuildUpstreamAttemptRequestContext_SharedContextIsNeverNil(t *testing.T) {
+	// A policy's OnRequestBody routinely writes through reqCtx.SharedContext
+	// (e.g. aws-authentication's authSuccess/authFailure record an
+	// AuthContext there) — a nil SharedContext panics the whole
+	// policy-engine connection on the very first real upstream-phase signing
+	// attempt, so it must always be a real, usable pointer, mirroring every
+	// other per-request context the kernel builds.
+	reqCtx := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), policy.NewHeaders(nil), []byte(`{}`),
+		"backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
 
-	require.NotNil(t, attemptCtx.SharedContext)
+	require.NotNil(t, reqCtx.SharedContext)
 	assert.NotPanics(t, func() {
-		attemptCtx.SharedContext.AuthContext = &policy.AuthContext{Authenticated: true}
+		reqCtx.SharedContext.AuthContext = &policy.AuthContext{Authenticated: true}
 	})
-	require.NotNil(t, attemptCtx.SharedContext.Metadata)
+	require.NotNil(t, reqCtx.SharedContext.Metadata)
 	assert.NotPanics(t, func() {
-		attemptCtx.SharedContext.Metadata["k"] = "v"
+		reqCtx.SharedContext.Metadata["k"] = "v"
 	})
 }
 
-func TestBuildUpstreamAttemptContext_SetsResponseStatusCode(t *testing.T) {
-	attemptCtx := BuildUpstreamAttemptContext([]byte(`{}`), nil, "anthropic-upstream-cluster", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", true, "claude-3-5-sonnet-20241022", "anthropic-upstream", 500)
-
-	assert.Equal(t, 500, attemptCtx.ResponseStatusCode)
-}
-
-func TestBuildUpstreamAttemptContext_OriginalSliceNotAliasedByBody(t *testing.T) {
+func TestBuildUpstreamAttemptRequestContext_OriginalSliceNotAliasedByBody(t *testing.T) {
 	original := []byte(`{"model":"gpt-4o"}`)
 
-	attemptCtx := BuildUpstreamAttemptContext(original, nil, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions", false, "", "", 0)
+	reqCtx := BuildUpstreamAttemptRequestContext(NewUpstreamAttemptSharedContext("", ""), policy.NewHeaders(nil), original,
+		"backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
 
 	// Mutating Body.Content (as a transformer policy would, via
 	// UpstreamRequestModifications.Body) must never mutate the byte slice a
-	// LATER attempt's OriginalRequestRaw reads from — otherwise attempt 2
+	// LATER attempt's original bytes are built from — otherwise attempt 2
 	// would silently observe attempt 1's transformation even though it's
 	// re-reading "the original".
-	attemptCtx.Body.Content[0] = 'X'
+	reqCtx.Body.Content[0] = 'X'
 
 	assert.Equal(t, byte('{'), original[0], "the caller's original slice must not be corrupted by mutating the attempt's Body")
+}
+
+func TestBuildUpstreamAttemptResponseContext_SetsResponseStatusAndBackend(t *testing.T) {
+	shared := NewUpstreamAttemptSharedContext("claude-3-5-sonnet-20241022", "anthropic-upstream")
+	headers := policy.NewHeaders(map[string][]string{"content-type": {"application/json"}})
+
+	respCtx := BuildUpstreamAttemptResponseContext(shared, headers, []byte(`{"model":"gpt-4o"}`), []byte(`{"result":"ok"}`),
+		"anthropic-upstream-cluster", "https://api.anthropic.com", "/v1", "POST", "/v1/messages", 500)
+
+	require.NotNil(t, respCtx)
+	assert.Equal(t, 500, respCtx.ResponseStatus)
+	require.NotNil(t, respCtx.Upstream)
+	assert.Equal(t, "anthropic-upstream-cluster", respCtx.Upstream.Name)
+	assert.Equal(t, []byte(`{"model":"gpt-4o"}`), respCtx.RequestBody.Content)
+	assert.Equal(t, []byte(`{"result":"ok"}`), respCtx.ResponseBody.Content)
+	assert.Nil(t, respCtx.Downstream, "Downstream must be nil — the signal that this is an upstream-attempt invocation")
+}
+
+func TestBuildUpstreamAttemptRequestHeaderContext_SharesHeadersWithBodyPhase(t *testing.T) {
+	shared := NewUpstreamAttemptSharedContext("", "")
+	headers := policy.NewHeaders(map[string][]string{"content-type": {"application/json"}})
+
+	hdrCtx := BuildUpstreamAttemptRequestHeaderContext(shared, headers, "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
+	// A header-phase policy mutates via UnsafeInternalValues() — the same
+	// object must be visible from the later body-phase context.
+	hdrCtx.Headers.UnsafeInternalValues()["x-set-headers"] = []string{"1"}
+
+	reqCtx := BuildUpstreamAttemptRequestContext(shared, headers, []byte(`{}`), "backend", "https://example.com", "/v1", "POST", "/v1/chat/completions")
+
+	assert.Equal(t, []string{"1"}, reqCtx.Headers.UnsafeInternalValues()["x-set-headers"])
 }

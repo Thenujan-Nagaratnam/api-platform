@@ -35,17 +35,19 @@ import (
 	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
-// upstreamAuthStub is a minimal UpstreamRequestPolicy for exercising the
-// upstream ext_proc server end-to-end without a real backend policy.
+// upstreamAuthStub is a minimal RequestPolicy for exercising the upstream
+// ext_proc server end-to-end without a real backend policy — attached via
+// upstreamPolicies: (chain.UpstreamPolicies), it runs via the same
+// OnRequestBody a downstream-attached instance would use.
 type upstreamAuthStub struct{}
 
 func (upstreamAuthStub) Mode() policy.ProcessingMode {
-	return policy.ProcessingMode{UpstreamRequestMode: policy.BodyModeBuffer}
+	return policy.ProcessingMode{RequestBodyMode: policy.BodyModeBuffer}
 }
 
-func (upstreamAuthStub) OnUpstreamRequestBody(_ context.Context, upCtx *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
+func (upstreamAuthStub) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	return policy.UpstreamRequestModifications{
-		HeadersToSet: map[string]string{"authorization": "Bearer signed-for-" + upCtx.Name},
+		HeadersToSet: map[string]string{"authorization": "Bearer signed-for-" + reqCtx.Upstream.Name},
 	}
 }
 
@@ -104,22 +106,34 @@ func requestBodyReq(body []byte) *extprocv3.ProcessingRequest {
 }
 
 // upstreamEchoStub reports back whatever URL/Method/Path the kernel resolved
-// for this attempt, so tests can assert on them without a real backend policy.
+// for this attempt, so tests can assert on them without a real backend
+// policy — attached via upstreamPolicies: (chain.UpstreamPolicies).
 type upstreamEchoStub struct{}
 
 func (upstreamEchoStub) Mode() policy.ProcessingMode {
-	return policy.ProcessingMode{UpstreamRequestMode: policy.BodyModeBuffer}
+	return policy.ProcessingMode{RequestBodyMode: policy.BodyModeBuffer}
 }
 
-func (upstreamEchoStub) OnUpstreamRequestBody(_ context.Context, upCtx *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
+// stringMetadata reads a string value from SharedContext.Metadata, returning
+// "" if absent or not a string — mirrors selectedProvider/selectedModel-style
+// helpers dev-policies use to read the kernel-seeded resolved provider/model.
+func stringMetadata(shared *policy.SharedContext, key string) string {
+	if shared == nil || shared.Metadata == nil {
+		return ""
+	}
+	s, _ := shared.Metadata[key].(string)
+	return s
+}
+
+func (upstreamEchoStub) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	return policy.UpstreamRequestModifications{
 		HeadersToSet: map[string]string{
-			"x-resolved-url":      upCtx.URL,
-			"x-resolved-method":   upCtx.Method,
-			"x-resolved-path":     upCtx.Path,
-			"x-resolved-cluster":  upCtx.Name,
-			"x-resolved-model":    upCtx.ResolvedModel,
-			"x-resolved-provider": upCtx.ResolvedProvider,
+			"x-resolved-url":      reqCtx.Upstream.URL,
+			"x-resolved-method":   reqCtx.Method,
+			"x-resolved-path":     reqCtx.Path,
+			"x-resolved-cluster":  reqCtx.Upstream.Name,
+			"x-resolved-model":    stringMetadata(reqCtx.SharedContext, selectedModelMetadataKey),
+			"x-resolved-provider": stringMetadata(reqCtx.SharedContext, selectedProviderMetadataKey),
 		},
 	}
 }
@@ -138,8 +152,8 @@ func headerMutationMap(t *testing.T, resp *extprocv3.ProcessingResponse) map[str
 func TestUpstreamProcess_ResolvesBackendURLAndPathFromRouteConfig(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -179,8 +193,8 @@ func TestUpstreamProcess_ClusterMismatch_LeavesURLEmpty(t *testing.T) {
 	// downstream policy fails closed instead of guessing.
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -221,8 +235,8 @@ func TestUpstreamProcess_RetryLandsOnAnotherRoutesCluster_ResolvesViaGlobalIndex
 	// closed the way an unknown cluster correctly does above.
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("provider-a-route", chain)
@@ -276,8 +290,8 @@ func TestUpstreamProcess_AggregateClusterAttempt_ResolvesFromAuthorityHeader(t *
 	// about to dial, which this test proves resolveBackend falls back to.
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("provider-a-route", chain)
@@ -354,8 +368,8 @@ func failoverRouteConfig() *RouteConfig {
 func TestUpstreamProcess_FailoverAttempt1_ResolvesTargetFromChain(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -382,8 +396,8 @@ func TestUpstreamProcess_FailoverAttempt1_ResolvesTargetFromChain(t *testing.T) 
 func TestUpstreamProcess_FailoverAttempt2_ResolvesFirstFallbackFromChain(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -420,8 +434,8 @@ func TestUpstreamProcess_FailoverAttempt2_ResolvesFirstFallbackFromChain(t *test
 func TestUpstreamProcess_FailoverAttempt2_RewritesStalePathToResolvedProvidersBasePath(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -468,8 +482,8 @@ func TestUpstreamProcess_FailoverAttempt2_RewritesStalePathToResolvedProvidersBa
 func TestUpstreamProcess_FailoverAttempt2_EmitsResolvedProviderHeaderForAnalytics(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -506,8 +520,8 @@ func TestUpstreamProcess_FailoverAttempt2_EmitsResolvedProviderHeaderForAnalytic
 func TestUpstreamProcess_FailoverAttempt1_NoResolvedProviderHeaderWhenPrimaryServes(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -542,8 +556,8 @@ func TestUpstreamProcess_FailoverAttempt1_NoResolvedProviderHeaderWhenPrimarySer
 func TestUpstreamProcess_FailoverAttempt1_NoPathMutationWhenAlreadyCorrect(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -566,8 +580,8 @@ func TestUpstreamProcess_FailoverAttempt1_NoPathMutationWhenAlreadyCorrect(t *te
 func TestUpstreamProcess_FailoverMissingAttemptCountHeader_DefaultsToChainIndexZero(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -596,8 +610,8 @@ func TestUpstreamProcess_FailoverAttemptPastChainEnd_LeavesURLEmpty(t *testing.T
 	// fail closed rather than read past the slice or silently wrap around.
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -626,8 +640,8 @@ func TestUpstreamProcess_FailoverRoute_UnrelatedClusterFallsThroughToDefaultUpst
 	// scan must not shadow that existing resolution path.
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -670,8 +684,8 @@ func responseHeadersReqWithStatus(status string) *extprocv3.ProcessingRequest {
 func TestUpstreamProcess_FailoverAttemptFails5xx_SuspendsTarget(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -694,8 +708,8 @@ func TestUpstreamProcess_FailoverAttemptFails5xx_SuspendsTarget(t *testing.T) {
 func TestUpstreamProcess_FailoverAttemptSucceeds_DoesNotSuspend(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -718,8 +732,8 @@ func TestUpstreamProcess_FailoverAttemptSucceeds_DoesNotSuspend(t *testing.T) {
 func TestUpstreamProcess_FailoverAttempt4xx_DoesNotSuspend(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -742,8 +756,8 @@ func TestUpstreamProcess_FailoverAttempt4xx_DoesNotSuspend(t *testing.T) {
 func TestUpstreamProcess_FailoverSuspendDurationZero_DoesNotSuspend(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -768,8 +782,8 @@ func TestUpstreamProcess_FailoverSuspendDurationZero_DoesNotSuspend(t *testing.T
 func TestUpstreamProcess_NonFailoverAttempt5xx_DoesNotSuspend(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamEchoStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamEchoStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-echo-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)
@@ -802,15 +816,17 @@ func TestUpstreamProcess_NonFailoverAttempt5xx_DoesNotSuspend(t *testing.T) {
 }
 
 // upstreamResponseTranslatorStub mimics a shape-translating response policy
-// (e.g. openai-to-anthropic-transformer's OnUpstreamResponseBody): it rewrites
-// the body and sets its own header, and runs FIRST in the chain.
+// (e.g. openai-to-anthropic-transformer's OnResponseBody): it rewrites the
+// body and sets its own header, and runs FIRST in the chain. Attached via
+// upstreamPolicies: (chain.UpstreamPolicies), it runs via the same
+// OnResponseBody a downstream-attached instance would use.
 type upstreamResponseTranslatorStub struct{}
 
 func (upstreamResponseTranslatorStub) Mode() policy.ProcessingMode {
-	return policy.ProcessingMode{UpstreamResponseMode: policy.BodyModeBuffer}
+	return policy.ProcessingMode{ResponseBodyMode: policy.BodyModeBuffer}
 }
 
-func (upstreamResponseTranslatorStub) OnUpstreamResponseBody(_ context.Context, _ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.ResponseAction {
+func (upstreamResponseTranslatorStub) OnResponseBody(_ context.Context, _ *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
 	return policy.DownstreamResponseModifications{
 		Body:         []byte(`{"translated":true}`),
 		HeadersToSet: map[string]string{"content-type": "application/json"},
@@ -825,10 +841,10 @@ func (upstreamResponseTranslatorStub) OnUpstreamResponseBody(_ context.Context, 
 type upstreamResponseHeaderOnlyStub struct{}
 
 func (upstreamResponseHeaderOnlyStub) Mode() policy.ProcessingMode {
-	return policy.ProcessingMode{UpstreamResponseMode: policy.BodyModeBuffer}
+	return policy.ProcessingMode{ResponseBodyMode: policy.BodyModeBuffer}
 }
 
-func (upstreamResponseHeaderOnlyStub) OnUpstreamResponseBody(_ context.Context, _ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.ResponseAction {
+func (upstreamResponseHeaderOnlyStub) OnResponseBody(_ context.Context, _ *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
 	status := 201
 	return policy.DownstreamResponseModifications{
 		HeadersToSet: map[string]string{"x-second-policy": "ran"},
@@ -859,8 +875,8 @@ func responseHeaderMutationMap(t *testing.T, resp *extprocv3.ProcessingResponse)
 func TestUpstreamProcess_ResponseChain_AccumulatesAcrossPolicies(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies: []policy.Policy{upstreamResponseTranslatorStub{}, upstreamResponseHeaderOnlyStub{}},
-		PolicySpecs: []policy.PolicySpec{
+		UpstreamPolicies: []policy.Policy{upstreamResponseTranslatorStub{}, upstreamResponseHeaderOnlyStub{}},
+		UpstreamPolicySpecs: []policy.PolicySpec{
 			{Name: "response-translator-stub", Version: "v1", Enabled: true},
 			{Name: "response-header-only-stub", Version: "v1", Enabled: true},
 		},
@@ -922,8 +938,8 @@ func TestUpstreamProcess_NoPolicyChain_PassesThroughUnmodified(t *testing.T) {
 func TestUpstreamProcess_RunsUpstreamPhasePolicyForThisBackend(t *testing.T) {
 	k := NewKernel()
 	chain := &registry.PolicyChain{
-		Policies:                []policy.Policy{upstreamAuthStub{}},
-		PolicySpecs:             []policy.PolicySpec{{Name: "upstream-auth-stub", Version: "v1", Enabled: true}},
+		UpstreamPolicies:        []policy.Policy{upstreamAuthStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-auth-stub", Version: "v1", Enabled: true}},
 		RequiresUpstreamRequest: true,
 	}
 	k.RegisterRoute("chat-route", chain)

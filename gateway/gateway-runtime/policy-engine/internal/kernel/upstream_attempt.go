@@ -22,59 +22,139 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-// BuildUpstreamAttemptContext constructs a fresh *policy.UpstreamAttemptContext
-// for a single upstream attempt, seeded from the client's original request
-// bytes — captured once, downstream, before any policy mutated them.
-//
-// This is the contract that makes cross-backend failover correct: the caller
-// (the upstream ext_proc server, invoked fresh by Envoy on every attempt
-// including retries to a different backend) must always pass the SAME cached
-// original bytes here, never a previous attempt's already-translated output.
-// This function enforces its half of that contract by defensively copying
-// original into Body, so a policy's in-place mutation of this attempt's
-// working body (or of the returned context generally) can never corrupt the
-// caller's cached original slice for a subsequent attempt.
-// model and provider identify which model/provider this attempt represents
-// for a route resolved from a declared resilience.failover chain — both
-// empty for every other resolution path, which leaves
-// UpstreamAttemptContext.ResolvedModel/ResolvedProvider empty exactly as
-// before this parameter pair existed.
-//
-// statusCode is meaningful only for a response-phase build (the caller
-// passes 0 at the request phase, before any response exists) — it becomes
-// UpstreamAttemptContext.ResponseStatusCode.
-func BuildUpstreamAttemptContext(
-	original []byte,
-	headers map[string][]string,
+// selectedProviderMetadataKey/selectedModelMetadataKey are the
+// SharedContext.Metadata keys llm-header-router writes downstream and
+// provider-scoped policies read to self-gate (e.g. the OpenAI->Anthropic
+// transformer's shouldRunForSelected). Seeding them here from the attempt's
+// resolved model/provider lets a policy using that same convention run
+// unmodified per attempt: it no-ops for a backend it doesn't own and runs for
+// the one it does.
+const (
+	selectedProviderMetadataKey = "selected_provider"
+	selectedModelMetadataKey    = "selected_model"
+)
+
+// NewUpstreamAttemptSharedContext builds the SharedContext for one upstream
+// attempt, seeded with the attempt's resolved provider/model (both empty for
+// an attempt resolved outside a declared resilience.failover chain).
+func NewUpstreamAttemptSharedContext(model, provider string) *policy.SharedContext {
+	shared := &policy.SharedContext{Metadata: make(map[string]interface{})}
+	if provider != "" {
+		shared.Metadata[selectedProviderMetadataKey] = provider
+	}
+	if model != "" {
+		shared.Metadata[selectedModelMetadataKey] = model
+	}
+	return shared
+}
+
+// BuildUpstreamAttemptRequestHeaderContext constructs a *policy.RequestHeaderContext
+// for one upstream attempt's request-header phase — the same context type and
+// RequestHeaderPolicy.OnRequestHeaders interface a policy already implements
+// for the downstream phase. Downstream is left nil: the signal a policy uses
+// to tell this invocation apart from a genuine downstream one (see
+// RequestHeaderContext's own doc comment in the SDK). headers is reused
+// (same *policy.Headers) for the later request-body-phase context so header
+// mutations from this phase are visible there.
+func BuildUpstreamAttemptRequestHeaderContext(
+	shared *policy.SharedContext,
+	headers *policy.Headers,
 	backendName, backendURL, basePath, method, outboundPath string,
-	isRetry bool,
-	model, provider string,
-	statusCode int,
-) *policy.UpstreamAttemptContext {
+) *policy.RequestHeaderContext {
+	return &policy.RequestHeaderContext{
+		SharedContext: shared,
+		Headers:       headers,
+		Path:          outboundPath,
+		Method:        method,
+		Upstream:      &policy.UpstreamRequestContext{Name: backendName, URL: backendURL, BasePath: basePath},
+	}
+}
+
+// BuildUpstreamAttemptRequestContext is
+// BuildUpstreamAttemptRequestHeaderContext's body-phase counterpart. original
+// is the client's original request body, captured once downstream and
+// replayed unchanged into every attempt — the caller must always pass that
+// same cached slice, never a previous attempt's already-mutated output. It is
+// defensively copied into Body so a policy's in-place mutation can never
+// corrupt the caller's cached slice for a later attempt.
+func BuildUpstreamAttemptRequestContext(
+	shared *policy.SharedContext,
+	headers *policy.Headers,
+	original []byte,
+	backendName, backendURL, basePath, method, outboundPath string,
+) *policy.RequestContext {
 	bodyCopy := make([]byte, len(original))
 	copy(bodyCopy, original)
 
-	return &policy.UpstreamAttemptContext{
-		SharedContext: &policy.SharedContext{
-			Metadata: make(map[string]interface{}),
-		},
-		UpstreamRequestContext: &policy.UpstreamRequestContext{
-			Name:     backendName,
-			URL:      backendURL,
-			BasePath: basePath,
-		},
-		ResolvedModel:      model,
-		ResolvedProvider:   provider,
-		Method:             method,
-		Path:               outboundPath,
-		Headers:            policy.NewHeaders(headers),
-		ResponseStatusCode: statusCode,
+	return &policy.RequestContext{
+		SharedContext: shared,
+		Headers:       headers,
 		Body: &policy.Body{
 			Content:     bodyCopy,
 			EndOfStream: true,
 			Present:     len(original) > 0,
 		},
-		OriginalRequestRaw: original,
-		IsRetry:            isRetry,
+		Path:     outboundPath,
+		Method:   method,
+		Upstream: &policy.UpstreamRequestContext{Name: backendName, URL: backendURL, BasePath: basePath},
+	}
+}
+
+// BuildUpstreamAttemptResponseHeaderContext constructs a
+// *policy.ResponseHeaderContext for one upstream attempt's response-header
+// phase. responseHeaders is reused (same *policy.Headers) for the later
+// response-body-phase context so header mutations from this phase are
+// visible there.
+func BuildUpstreamAttemptResponseHeaderContext(
+	shared *policy.SharedContext,
+	responseHeaders *policy.Headers,
+	backendName, backendURL, basePath, requestMethod, requestPath string,
+	statusCode int,
+) *policy.ResponseHeaderContext {
+	return &policy.ResponseHeaderContext{
+		SharedContext:   shared,
+		RequestPath:     requestPath,
+		RequestMethod:   requestMethod,
+		ResponseHeaders: responseHeaders,
+		ResponseStatus:  statusCode,
+		Upstream: &policy.UpstreamResponseContext{
+			Name: backendName, URL: backendURL, BasePath: basePath,
+			Response: &policy.UpstreamResponse{Headers: responseHeaders, StatusCode: statusCode},
+		},
+	}
+}
+
+// BuildUpstreamAttemptResponseContext is
+// BuildUpstreamAttemptResponseHeaderContext's body-phase counterpart.
+// originalRequestRaw is the client's original request body (see
+// BuildUpstreamAttemptRequestContext's own doc); body is this attempt's
+// upstream response body.
+func BuildUpstreamAttemptResponseContext(
+	shared *policy.SharedContext,
+	responseHeaders *policy.Headers,
+	originalRequestRaw, body []byte,
+	backendName, backendURL, basePath, requestMethod, requestPath string,
+	statusCode int,
+) *policy.ResponseContext {
+	return &policy.ResponseContext{
+		SharedContext: shared,
+		RequestBody: &policy.Body{
+			Content:     originalRequestRaw,
+			Present:     len(originalRequestRaw) > 0,
+			EndOfStream: true,
+		},
+		RequestPath:     requestPath,
+		RequestMethod:   requestMethod,
+		ResponseHeaders: responseHeaders,
+		ResponseBody: &policy.Body{
+			Content:     body,
+			EndOfStream: true,
+			Present:     len(body) > 0,
+		},
+		ResponseStatus: statusCode,
+		Upstream: &policy.UpstreamResponseContext{
+			Name: backendName, URL: backendURL, BasePath: basePath,
+			Response: &policy.UpstreamResponse{Headers: responseHeaders, StatusCode: statusCode},
+		},
 	}
 }

@@ -148,22 +148,11 @@ func (k *Kernel) BuildPolicyChain(routeKey string, policySpecs []policy.PolicySp
 			}
 		}
 
-		if mode.UpstreamRequestMode == policy.BodyModeBuffer {
-			if _, ok := impl.(policy.UpstreamRequestPolicy); ok {
-				chain.RequiresUpstreamRequest = true
-			} else {
-				slog.Warn("[chain-build] policy declares UpstreamRequestMode=BUFFER but does not implement UpstreamRequestPolicy",
-					"policy", spec.Name, "route", routeKey)
-			}
-		}
-		if mode.UpstreamResponseMode == policy.BodyModeBuffer {
-			if _, ok := impl.(policy.UpstreamResponsePolicy); ok {
-				chain.RequiresUpstreamResponse = true
-			} else {
-				slog.Warn("[chain-build] policy declares UpstreamResponseMode=BUFFER but does not implement UpstreamResponsePolicy",
-					"policy", spec.Name, "route", routeKey)
-			}
-		}
+		// Note: this entry point has no upstreamPolicies:/Upstream-flag input
+		// (it takes plain PolicySpecs, not wire PolicyInstances) and is not
+		// used by any production chain builder (see the three in xds.go,
+		// xdsclient/handler.go and pkg/engine/engine.go), so it never
+		// populates UpstreamPolicies.
 	}
 
 	// Clear streaming flags when no body policies exist — there is nothing to stream

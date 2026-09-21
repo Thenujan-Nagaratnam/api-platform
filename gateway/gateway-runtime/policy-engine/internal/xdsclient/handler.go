@@ -624,13 +624,13 @@ func (h *ResourceHandler) getAllRouteKeys() []string {
 func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyenginev1.PolicyChain, apiMetadata policyenginev1.Metadata) (*registry.PolicyChain, error) {
 	var policyList []policy.Policy
 	var policySpecs []policy.PolicySpec
+	var upstreamPolicyList []policy.Policy
+	var upstreamPolicySpecs []policy.PolicySpec
 
 	requiresRequestBody := false
 	requiresResponseBody := false
 	requiresRequestHeader := false
 	requiresResponseHeader := false
-	requiresUpstreamRequest := false
-	requiresUpstreamResponse := false
 	hasExecutionConditions := false
 	supportsRequestStreaming := true
 	supportsResponseStreaming := true
@@ -663,10 +663,6 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 			return nil, fmt.Errorf("failed to create policy instance %s:%s: %w", policyConfig.Name, policyConfig.Version, err)
 		}
 
-		if policyConfig.Upstream {
-			impl = registry.WrapUpstreamAttached(impl, policyConfig.Name, routeKey)
-		}
-
 		spec := policy.PolicySpec{
 			Name:               policyConfig.Name,
 			Version:            policyConfig.Version,
@@ -679,6 +675,14 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 
 		if policyConfig.ExecutionCondition != nil && *policyConfig.ExecutionCondition != "" {
 			hasExecutionConditions = true
+		}
+
+		if policyConfig.Upstream {
+			// Attached via upstreamPolicies: — runs only in the upstream-attempt
+			// phase, never downstream.
+			upstreamPolicyList = append(upstreamPolicyList, impl)
+			upstreamPolicySpecs = append(upstreamPolicySpecs, spec)
+			continue
 		}
 
 		policyList = append(policyList, impl)
@@ -696,22 +700,6 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 				}
 			} else {
 				supportsRequestStreaming = false
-			}
-		}
-		if mode.UpstreamRequestMode == policy.BodyModeBuffer {
-			if _, ok := impl.(policy.UpstreamRequestPolicy); ok {
-				requiresUpstreamRequest = true
-			} else {
-				slog.Warn("[chain-build] policy declares UpstreamRequestMode=BUFFER but does not implement UpstreamRequestPolicy",
-					"policy", policyConfig.Name, "route", routeKey)
-			}
-		}
-		if mode.UpstreamResponseMode == policy.BodyModeBuffer {
-			if _, ok := impl.(policy.UpstreamResponsePolicy); ok {
-				requiresUpstreamResponse = true
-			} else {
-				slog.Warn("[chain-build] policy declares UpstreamResponseMode=BUFFER but does not implement UpstreamResponsePolicy",
-					"policy", policyConfig.Name, "route", routeKey)
 			}
 		}
 
@@ -767,6 +755,8 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 		supportsResponseStreaming = false
 	}
 
+	requiresUpstreamRequest, requiresUpstreamResponse := registry.ComputeUpstreamRequirements(upstreamPolicyList)
+
 	chain := &registry.PolicyChain{
 		Policies:                  policyList,
 		PolicySpecs:               policySpecs,
@@ -779,6 +769,8 @@ func (h *ResourceHandler) buildPolicyChain(routeKey string, config *policyengine
 		HasExecutionConditions:    hasExecutionConditions,
 		SupportsRequestStreaming:  supportsRequestStreaming,
 		SupportsResponseStreaming: supportsResponseStreaming,
+		UpstreamPolicies:          upstreamPolicyList,
+		UpstreamPolicySpecs:       upstreamPolicySpecs,
 	}
 
 	return chain, nil

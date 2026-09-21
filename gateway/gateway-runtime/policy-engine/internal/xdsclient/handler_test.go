@@ -508,21 +508,22 @@ func TestBuildPolicyChain_UnknownPolicy(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to create policy instance")
 }
 
-// upstreamAuthStubPolicy implements policy.UpstreamRequestPolicy — a minimal
-// stand-in for aws-authentication, used to prove the real xDS chain-builder
-// (not just Kernel.BuildPolicyChain, which nothing in production calls)
-// detects an upstream-phase policy and sets RequiresUpstreamRequest.
+// upstreamAuthStubPolicy is a plain RequestPolicy — a minimal stand-in for a
+// policy attached via upstreamPolicies:, used to prove the real xDS
+// chain-builder (not just Kernel.BuildPolicyChain, which nothing in
+// production calls) detects the Upstream-flagged PolicyInstance and sets
+// RequiresUpstreamRequest.
 type upstreamAuthStubPolicy struct{}
 
 func (upstreamAuthStubPolicy) Mode() policy.ProcessingMode {
-	return policy.ProcessingMode{UpstreamRequestMode: policy.BodyModeBuffer}
+	return policy.ProcessingMode{RequestBodyMode: policy.BodyModeBuffer}
 }
 
-func (upstreamAuthStubPolicy) OnUpstreamRequestBody(_ context.Context, _ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
+func (upstreamAuthStubPolicy) OnRequestBody(_ context.Context, _ *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	return policy.UpstreamRequestModifications{}
 }
 
-func TestBuildPolicyChain_UpstreamRequestPolicy_SetsRequiresUpstreamRequest(t *testing.T) {
+func TestBuildPolicyChain_UpstreamFlaggedPolicy_SetsRequiresUpstreamRequest(t *testing.T) {
 	k := kernel.NewKernel()
 	reg := &registry.PolicyRegistry{
 		Policies: make(map[string]*registry.PolicyEntry),
@@ -539,7 +540,7 @@ func TestBuildPolicyChain_UpstreamRequestPolicy_SetsRequiresUpstreamRequest(t *t
 	config := &policyenginev1.PolicyChain{
 		RouteKey: "test-route",
 		Policies: []policyenginev1.PolicyInstance{
-			{Name: "upstream-auth-stub", Version: "v1", Enabled: true},
+			{Name: "upstream-auth-stub", Version: "v1", Enabled: true, Upstream: true},
 		},
 	}
 	metadata := policyenginev1.Metadata{APIId: "api-123", APIName: "test-api", Version: "v1"}
@@ -549,7 +550,8 @@ func TestBuildPolicyChain_UpstreamRequestPolicy_SetsRequiresUpstreamRequest(t *t
 	require.NoError(t, err)
 	require.NotNil(t, chain)
 	assert.True(t, chain.RequiresUpstreamRequest,
-		"a real xDS-delivered chain containing an UpstreamRequestPolicy must be marked so the upstream ext_proc server actually dispatches to it")
+		"a real xDS-delivered chain containing an upstreamPolicies:-attached RequestPolicy must be marked so the upstream ext_proc server actually dispatches to it")
+	assert.Empty(t, chain.Policies, "an upstreamPolicies:-attached policy must never also run downstream")
 }
 
 func TestBuildPolicyChain_MetadataPropagation(t *testing.T) {

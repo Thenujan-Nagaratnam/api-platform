@@ -29,57 +29,82 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-func TestExecuteUpstreamRequestPolicies_EmptyPolicyList(t *testing.T) {
-	tracer := noop.NewTracerProvider().Tracer("test")
-	executor := NewChainExecutor(nil, nil, tracer)
-
-	ctx := context.Background()
-	upCtx := testutils.NewTestUpstreamAttemptContext([]byte(`{"model":"gpt-4o"}`))
-
-	result, err := executor.ExecuteUpstreamRequestPolicies(ctx, []policy.Policy{}, upCtx, []policy.PolicySpec{}, "api", "route")
-
-	require.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.Empty(t, result.Results)
-	assert.False(t, result.ShortCircuited)
+// upstreamHeaderMockPolicy is a header-only policy (like set-headers) — no
+// body-phase interface at all — exercising the upstream-attempt phase's
+// header dispatch, which reuses RequestHeaderPolicy/ResponseHeaderPolicy
+// unmodified.
+type upstreamHeaderMockPolicy struct {
+	mode    policy.ProcessingMode
+	onReq   func(*policy.RequestHeaderContext) policy.RequestHeaderAction
+	onResp  func(*policy.ResponseHeaderContext) policy.ResponseHeaderAction
+	sawPath string
 }
 
-func TestExecuteUpstreamRequestPolicies_SkipsPolicyNotImplementingInterface(t *testing.T) {
-	tracer := noop.NewTracerProvider().Tracer("test")
-	executor := NewChainExecutor(nil, nil, tracer)
+func (p *upstreamHeaderMockPolicy) Mode() policy.ProcessingMode { return p.mode }
 
-	ctx := context.Background()
-	upCtx := testutils.NewTestUpstreamAttemptContext([]byte(`{}`))
-	// NoopPolicy implements RequestPolicy, not UpstreamRequestPolicy — must be
-	// skipped silently, exactly like non-implementing policies are skipped in
-	// the existing downstream phases.
-	policies := []policy.Policy{&testutils.NoopPolicy{}}
-	specs := []policy.PolicySpec{newPolicySpec("noop", "v1.0.0", true, nil)}
-
-	result, err := executor.ExecuteUpstreamRequestPolicies(ctx, policies, upCtx, specs, "api", "route")
-
-	require.NoError(t, err)
-	assert.Empty(t, result.Results)
+func (p *upstreamHeaderMockPolicy) OnRequestHeaders(_ context.Context, ctx *policy.RequestHeaderContext, _ map[string]interface{}) policy.RequestHeaderAction {
+	p.sawPath = ctx.Path
+	if p.onReq != nil {
+		return p.onReq(ctx)
+	}
+	return nil
 }
 
-func TestExecuteUpstreamRequestPolicies_ExecutesForBackend(t *testing.T) {
+func (p *upstreamHeaderMockPolicy) OnResponseHeaders(_ context.Context, ctx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
+	if p.onResp != nil {
+		return p.onResp(ctx)
+	}
+	return nil
+}
+
+func TestExecuteUpstreamAttemptRequestPolicies_EmptyPolicyList(t *testing.T) {
 	tracer := noop.NewTracerProvider().Tracer("test")
-	executor := NewChainExecutor(nil, nil, tracer)
+	exec := NewChainExecutor(nil, nil, tracer)
+
+	ctx := context.Background()
+	reqCtx := testutils.NewTestUpstreamAttemptRequestContext([]byte(`{"model":"gpt-4o"}`))
+
+	action, err := exec.ExecuteUpstreamAttemptRequestPolicies(ctx, []policy.Policy{}, reqCtx, []policy.PolicySpec{}, "api", "route")
+
+	require.NoError(t, err)
+	assert.Nil(t, action)
+}
+
+func TestExecuteUpstreamAttemptRequestPolicies_SkipsPolicyNotImplementingInterface(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	exec := NewChainExecutor(nil, nil, tracer)
+
+	ctx := context.Background()
+	reqCtx := testutils.NewTestUpstreamAttemptRequestContext([]byte(`{}`))
+	// A header-only policy has no RequestPolicy implementation — must be
+	// skipped silently by the request-body dispatch, the same as any
+	// non-implementing policy is skipped in the downstream phases.
+	policies := []policy.Policy{&upstreamHeaderMockPolicy{mode: policy.ProcessingMode{RequestHeaderMode: policy.HeaderModeProcess}}}
+	specs := []policy.PolicySpec{newPolicySpec("hdr-only", "v1.0.0", true, nil)}
+
+	action, err := exec.ExecuteUpstreamAttemptRequestPolicies(ctx, policies, reqCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	assert.Nil(t, action)
+}
+
+func TestExecuteUpstreamAttemptRequestPolicies_ExecutesForBackend(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	exec := NewChainExecutor(nil, nil, tracer)
 
 	ctx := context.Background()
 	original := []byte(`{"model":"gpt-4o"}`)
-	upCtx := testutils.NewTestUpstreamAttemptContext(original)
+	reqCtx := testutils.NewTestUpstreamAttemptRequestContext(original)
 
 	var sawBackend string
-	var sawBytes []byte
+	var sawBody []byte
+	var sawDownstreamNil bool
 	pol := &testutils.ConfigurableUpstreamMockPolicy{
 		Name: "api-key-auth",
-		MockMode: policy.ProcessingMode{
-			UpstreamRequestMode: policy.BodyModeBuffer,
-		},
-		OnReqFn: func(c *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
-			sawBackend = c.Name
-			sawBytes = c.OriginalRequestRaw
+		OnReqFn: func(c *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+			sawBackend = c.Upstream.Name
+			sawBody = c.Body.Content
+			sawDownstreamNil = c.Downstream == nil
 			return policy.UpstreamRequestModifications{
 				HeadersToSet: map[string]string{"authorization": "Bearer backend-specific-key"},
 			}
@@ -87,87 +112,79 @@ func TestExecuteUpstreamRequestPolicies_ExecutesForBackend(t *testing.T) {
 	}
 	specs := []policy.PolicySpec{newPolicySpec("api-key-auth", "v1.0.0", true, nil)}
 
-	result, err := executor.ExecuteUpstreamRequestPolicies(ctx, []policy.Policy{pol}, upCtx, specs, "api", "route")
+	action, err := exec.ExecuteUpstreamAttemptRequestPolicies(ctx, []policy.Policy{pol}, reqCtx, specs, "api", "route")
 
 	require.NoError(t, err)
-	require.Len(t, result.Results, 1)
+	require.NotNil(t, action)
 	assert.Equal(t, "test-backend", sawBackend)
-	assert.Equal(t, original, sawBytes)
-	assert.False(t, result.ShortCircuited)
+	assert.Equal(t, original, sawBody)
+	assert.True(t, sawDownstreamNil, "Downstream must be nil for an upstream-attempt invocation")
+	assert.Equal(t, []string{"Bearer backend-specific-key"}, reqCtx.Headers.UnsafeInternalValues()["authorization"])
 }
 
-func TestExecuteUpstreamRequestPolicies_DisabledPolicySkipped(t *testing.T) {
+func TestExecuteUpstreamAttemptRequestPolicies_DisabledPolicySkipped(t *testing.T) {
 	tracer := noop.NewTracerProvider().Tracer("test")
-	executor := NewChainExecutor(nil, nil, tracer)
+	exec := NewChainExecutor(nil, nil, tracer)
 
 	ctx := context.Background()
-	upCtx := testutils.NewTestUpstreamAttemptContext([]byte(`{}`))
+	reqCtx := testutils.NewTestUpstreamAttemptRequestContext([]byte(`{}`))
 	called := false
 	pol := &testutils.ConfigurableUpstreamMockPolicy{
-		MockMode: policy.ProcessingMode{UpstreamRequestMode: policy.BodyModeBuffer},
-		OnReqFn: func(_ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
+		OnReqFn: func(_ *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 			called = true
 			return nil
 		},
 	}
 	specs := []policy.PolicySpec{newPolicySpec("disabled-auth", "v1.0.0", false, nil)}
 
-	result, err := executor.ExecuteUpstreamRequestPolicies(ctx, []policy.Policy{pol}, upCtx, specs, "api", "route")
+	_, err := exec.ExecuteUpstreamAttemptRequestPolicies(ctx, []policy.Policy{pol}, reqCtx, specs, "api", "route")
 
 	require.NoError(t, err)
-	require.Len(t, result.Results, 1)
-	assert.True(t, result.Results[0].Skipped)
 	assert.False(t, called)
 }
 
-func TestExecuteUpstreamRequestPolicies_ShortCircuit(t *testing.T) {
+func TestExecuteUpstreamAttemptRequestPolicies_ShortCircuit(t *testing.T) {
 	tracer := noop.NewTracerProvider().Tracer("test")
-	executor := NewChainExecutor(nil, nil, tracer)
+	exec := NewChainExecutor(nil, nil, tracer)
 
 	ctx := context.Background()
-	upCtx := testutils.NewTestUpstreamAttemptContext([]byte(`{}`))
+	reqCtx := testutils.NewTestUpstreamAttemptRequestContext([]byte(`{}`))
 	pol := &testutils.ConfigurableUpstreamMockPolicy{
-		MockMode: policy.ProcessingMode{UpstreamRequestMode: policy.BodyModeBuffer},
-		OnReqFn: func(_ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
+		OnReqFn: func(_ *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 			return policy.ImmediateResponse{StatusCode: 401}
 		},
 	}
 	specs := []policy.PolicySpec{newPolicySpec("auth-fail", "v1.0.0", true, nil)}
 
-	result, err := executor.ExecuteUpstreamRequestPolicies(ctx, []policy.Policy{pol}, upCtx, specs, "api", "route")
+	action, err := exec.ExecuteUpstreamAttemptRequestPolicies(ctx, []policy.Policy{pol}, reqCtx, specs, "api", "route")
 
 	require.NoError(t, err)
-	assert.True(t, result.ShortCircuited)
-	ir, ok := result.FinalAction.(policy.ImmediateResponse)
+	ir, ok := action.(policy.ImmediateResponse)
 	require.True(t, ok)
 	assert.Equal(t, 401, ir.StatusCode)
 }
 
-func TestExecuteUpstreamRequestPolicies_TransformedBodyReachesNextPolicy(t *testing.T) {
+func TestExecuteUpstreamAttemptRequestPolicies_TransformedBodyReachesNextPolicy(t *testing.T) {
 	tracer := noop.NewTracerProvider().Tracer("test")
-	executor := NewChainExecutor(nil, nil, tracer)
+	exec := NewChainExecutor(nil, nil, tracer)
 
 	ctx := context.Background()
 	original := []byte(`{"model":"gpt-4o"}`)
-	upCtx := testutils.NewTestUpstreamAttemptContext(original)
+	reqCtx := testutils.NewTestUpstreamAttemptRequestContext(original)
 
 	translated := []byte(`{"anthropic_version":"bedrock-2023-05-31"}`)
 	transformer := &testutils.ConfigurableUpstreamMockPolicy{
-		MockMode: policy.ProcessingMode{UpstreamRequestMode: policy.BodyModeBuffer},
-		OnReqFn: func(_ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
+		OnReqFn: func(_ *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 			return policy.UpstreamRequestModifications{Body: translated}
 		},
 	}
 	// A later policy (e.g. an auth policy signing the request) must see the
-	// transformer's output in Body — but OriginalRequestRaw must stay the
-	// client's untouched bytes, since a future retry attempt is built fresh
-	// from OriginalRequestRaw, never from a previous attempt's Body mutation.
-	var sawBody, sawOriginal []byte
+	// transformer's output threaded into Body — the same accumulation the
+	// downstream request phase already relies on (executor.applyRequestModifications).
+	var sawBody []byte
 	authPolicy := &testutils.ConfigurableUpstreamMockPolicy{
-		MockMode: policy.ProcessingMode{UpstreamRequestMode: policy.BodyModeBuffer},
-		OnReqFn: func(c *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
+		OnReqFn: func(c *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 			sawBody = c.Body.Content
-			sawOriginal = c.OriginalRequestRaw
 			return nil
 		},
 	}
@@ -176,33 +193,88 @@ func TestExecuteUpstreamRequestPolicies_TransformedBodyReachesNextPolicy(t *test
 		newPolicySpec("auth", "v1.0.0", true, nil),
 	}
 
-	_, err := executor.ExecuteUpstreamRequestPolicies(ctx, []policy.Policy{transformer, authPolicy}, upCtx, specs, "api", "route")
+	_, err := exec.ExecuteUpstreamAttemptRequestPolicies(ctx, []policy.Policy{transformer, authPolicy}, reqCtx, specs, "api", "route")
 
 	require.NoError(t, err)
 	assert.Equal(t, translated, sawBody, "the auth policy must see the transformer's output")
-	assert.Equal(t, original, sawOriginal, "OriginalRequestRaw must never be mutated by a policy in the chain")
 }
 
-func TestExecuteUpstreamResponsePolicies_ExecutesForWinningBackend(t *testing.T) {
+func TestExecuteUpstreamAttemptResponsePolicies_ExecutesForWinningBackend(t *testing.T) {
 	tracer := noop.NewTracerProvider().Tracer("test")
-	executor := NewChainExecutor(nil, nil, tracer)
+	exec := NewChainExecutor(nil, nil, tracer)
 
 	ctx := context.Background()
-	upCtx := testutils.NewTestUpstreamAttemptContext([]byte(`{}`))
+	respCtx := testutils.NewTestUpstreamAttemptResponseContext([]byte(`{}`), []byte(`{}`))
 	var sawBackend string
 	pol := &testutils.ConfigurableUpstreamMockPolicy{
-		MockMode: policy.ProcessingMode{UpstreamResponseMode: policy.BodyModeBuffer},
-		OnRespFn: func(c *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.ResponseAction {
-			sawBackend = c.Name
+		OnRespFn: func(c *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
+			sawBackend = c.Upstream.Name
 			return policy.DownstreamResponseModifications{}
 		},
 	}
 	specs := []policy.PolicySpec{newPolicySpec("bedrock-transformer", "v1.0.0", true, nil)}
 
-	result, err := executor.ExecuteUpstreamResponsePolicies(ctx, []policy.Policy{pol}, upCtx, specs, "api", "route")
+	action, err := exec.ExecuteUpstreamAttemptResponsePolicies(ctx, []policy.Policy{pol}, respCtx, specs, "api", "route")
 
 	require.NoError(t, err)
-	require.Len(t, result.Results, 1)
+	require.NotNil(t, action)
 	assert.Equal(t, "test-backend", sawBackend)
-	assert.False(t, result.ShortCircuited)
+}
+
+// TestExecuteUpstreamAttemptRequestHeaderPolicies_HeaderOnlyPolicyRunsUnmodified
+// covers the target scenario: a policy like set-headers, implementing only
+// RequestHeaderPolicy, runs on the upstream-attempt request-header phase via
+// the exact same interface it already implements downstream — no wrapper, no
+// separate upstream interface.
+func TestExecuteUpstreamAttemptRequestHeaderPolicies_HeaderOnlyPolicyRunsUnmodified(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	exec := NewChainExecutor(nil, nil, tracer)
+
+	ctx := context.Background()
+	reqCtx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Headers:       policy.NewHeaders(nil),
+		Path:          "/v1/test",
+		Method:        "POST",
+		Upstream:      &policy.UpstreamRequestContext{Name: "test-backend", URL: "https://backend.example.com", BasePath: "/v1"},
+	}
+	pol := &upstreamHeaderMockPolicy{
+		mode: policy.ProcessingMode{RequestHeaderMode: policy.HeaderModeProcess},
+		onReq: func(_ *policy.RequestHeaderContext) policy.RequestHeaderAction {
+			return policy.UpstreamRequestHeaderModifications{HeadersToSet: map[string]string{"x-set-headers": "1"}}
+		},
+	}
+	specs := []policy.PolicySpec{newPolicySpec("set-headers", "v1.0.0", true, nil)}
+
+	action, err := exec.ExecuteUpstreamAttemptRequestHeaderPolicies(ctx, []policy.Policy{pol}, reqCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	require.NotNil(t, action)
+	assert.Equal(t, reqCtx.Path, pol.sawPath)
+	assert.Equal(t, []string{"1"}, reqCtx.Headers.UnsafeInternalValues()["x-set-headers"])
+}
+
+func TestExecuteUpstreamAttemptResponseHeaderPolicies_HeaderOnlyPolicyRunsUnmodified(t *testing.T) {
+	tracer := noop.NewTracerProvider().Tracer("test")
+	exec := NewChainExecutor(nil, nil, tracer)
+
+	ctx := context.Background()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:   &policy.SharedContext{Metadata: map[string]interface{}{}},
+		ResponseHeaders: policy.NewHeaders(nil),
+		Upstream:        &policy.UpstreamResponseContext{Name: "test-backend", URL: "https://backend.example.com", BasePath: "/v1"},
+	}
+	pol := &upstreamHeaderMockPolicy{
+		mode: policy.ProcessingMode{ResponseHeaderMode: policy.HeaderModeProcess},
+		onResp: func(_ *policy.ResponseHeaderContext) policy.ResponseHeaderAction {
+			return policy.DownstreamResponseHeaderModifications{HeadersToSet: map[string]string{"x-set-headers-resp": "1"}}
+		},
+	}
+	specs := []policy.PolicySpec{newPolicySpec("set-headers", "v1.0.0", true, nil)}
+
+	action, err := exec.ExecuteUpstreamAttemptResponseHeaderPolicies(ctx, []policy.Policy{pol}, respCtx, specs, "api", "route")
+
+	require.NoError(t, err)
+	require.NotNil(t, action)
+	assert.Equal(t, []string{"1"}, respCtx.ResponseHeaders.UnsafeInternalValues()["x-set-headers-resp"])
 }

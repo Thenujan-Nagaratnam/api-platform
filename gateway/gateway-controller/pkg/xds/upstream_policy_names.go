@@ -20,21 +20,16 @@ package xds
 
 import "github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 
-// upstreamPhasePolicyNames lists policies that implement the upstream-attempt
-// SDK interfaces (policy.UpstreamRequestPolicy / UpstreamResponsePolicy) and
-// therefore need the per-cluster upstream ext_proc filter attached to any
-// backend cluster they can run against.
-//
-// gateway-controller does not load policy Go implementations (that's
-// gateway-runtime's job), so it cannot ask a policy's Mode() directly — this
-// static list is the only signal available here, and it is a deliberate,
-// narrow allowlist rather than every policy that plausibly could opt in.
-//
-// Keep this in lockstep with which policies actually implement the upstream
-// interfaces: add a name here in the same change that migrates that policy
-// (see aws-authentication.OnUpstreamRequestBody for the first one), not ahead
-// of it — an entry here for a policy that hasn't migrated yet would attach an
-// upstream filter that finds nothing to run, which is harmless but pointless.
+// upstreamPhasePolicyNames is a legacy allowlist from when these four
+// policies self-declared upstream-attempt participation natively, without an
+// explicit upstreamPolicies: attachment (see the LlmProvider/LlmProxy
+// schema). That native-participation mechanism has been removed from
+// gateway-runtime — a policy now runs per upstream attempt only when
+// attached via upstreamPolicies: (which sets Policy.Upstream, already
+// checked by clusterNeedsUpstreamPolicyFilter's caller independent of this
+// list). Matching a name here now only ever attaches an upstream filter that
+// finds nothing to run — harmless, but this list has no live purpose and is
+// kept only until it's removed along with its call site.
 var upstreamPhasePolicyNames = map[string]bool{
 	"aws-authentication":              true,
 	"openai-to-anthropic-transformer": true,

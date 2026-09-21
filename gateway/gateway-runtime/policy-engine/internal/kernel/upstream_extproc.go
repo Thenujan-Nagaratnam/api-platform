@@ -34,6 +34,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/constants"
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/executor"
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/registry"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 // ResolvedFailoverProviderHeader carries the winning attempt's resolved
@@ -104,10 +105,30 @@ type upstreamAttemptState struct {
 	isFailoverEscalation bool
 
 	// statusCode is this attempt's upstream response status, captured at the
-	// ResponseHeaders phase for the suspension check below — no policy
-	// dispatch happens in that phase, so this is read directly off headers,
-	// not through a policy-visible response context.
+	// ResponseHeaders phase for the suspension check below.
 	statusCode int
+
+	// sharedContext is built once at the RequestHeaders phase (seeded with
+	// model/provider — see kernel.NewUpstreamAttemptSharedContext) and reused
+	// for every upstream-attempt policy phase in this attempt, so Metadata a
+	// header-phase policy writes (e.g. an AuthContext) is visible to the
+	// body-phase policies that run after it — mirroring how the downstream
+	// executor threads one SharedContext across its own phases.
+	sharedContext *policy.SharedContext
+
+	// requestHeaders/responseHeaders are built once (RequestHeaders/ResponseHeaders
+	// phase respectively) and reused for the later body-phase context, so
+	// mutations an upstream-attempt header-phase policy makes are visible to
+	// the body-phase policies that run after it in the same attempt.
+	requestHeaders  *policy.Headers
+	responseHeaders *policy.Headers
+
+	// originalRequestBody is the client's request body exactly as Envoy
+	// delivered it at this attempt's RequestBody phase, captured unconditionally
+	// (independent of RequiresUpstreamRequest) so the later response phase can
+	// populate ResponseContext.RequestBody correctly even when no request-phase
+	// upstream policy ran.
+	originalRequestBody []byte
 }
 
 // Process implements extprocv3.ExternalProcessorServer for the upstream
@@ -197,14 +218,41 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 				"chain_found", state.chain != nil,
 				"requires_upstream_request", state.chain != nil && state.chain.RequiresUpstreamRequest,
 				"resolved_url", state.backendURL, "method", state.method, "path", state.path)
-			headersResp := &extprocv3.HeadersResponse{}
-			if pathMutation != nil {
-				headersResp.Response = &extprocv3.CommonResponse{HeaderMutation: pathMutation}
+
+			state.sharedContext = NewUpstreamAttemptSharedContext(state.model, state.provider)
+			originalRequestHeaders := extractHeaderMap(r.RequestHeaders)
+			state.requestHeaders = policy.NewHeaders(originalRequestHeaders)
+
+			var immediate *extprocv3.ImmediateResponse
+			if state.chain != nil && state.chain.RequiresUpstreamRequest {
+				reqHdrCtx := BuildUpstreamAttemptRequestHeaderContext(state.sharedContext, state.requestHeaders,
+					state.clusterName, state.backendURL, state.basePath, state.method, state.path)
+				action, err := s.chainExecutor.ExecuteUpstreamAttemptRequestHeaderPolicies(ctx, state.chain.UpstreamPolicies, reqHdrCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
+				if err != nil {
+					slog.ErrorContext(ctx, "[upstream-extproc] upstream request header policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
+				} else if imm, ok := action.(policy.ImmediateResponse); ok {
+					immediate = buildImmediateResponse(imm)
+				} else if reqHdrCtx.Path != state.path {
+					state.path = reqHdrCtx.Path
+					pathMutation = buildHeaderValueOptions(map[string]string{":path": reqHdrCtx.Path})
+				}
 			}
-			resp = &extprocv3.ProcessingResponse{
-				Response: &extprocv3.ProcessingResponse_RequestHeaders{
-					RequestHeaders: headersResp,
-				},
+
+			if immediate != nil {
+				resp = &extprocv3.ProcessingResponse{
+					Response: &extprocv3.ProcessingResponse_ImmediateResponse{ImmediateResponse: immediate},
+				}
+			} else {
+				headersResp := &extprocv3.HeadersResponse{}
+				headerMutation := mergeAttemptHeaderMutations(pathMutation, diffHeaderMutation(originalRequestHeaders, state.requestHeaders))
+				if headerMutation != nil {
+					headersResp.Response = &extprocv3.CommonResponse{HeaderMutation: headerMutation}
+				}
+				resp = &extprocv3.ProcessingResponse{
+					Response: &extprocv3.ProcessingResponse_RequestHeaders{
+						RequestHeaders: headersResp,
+					},
+				}
 			}
 
 		case *extprocv3.ProcessingRequest_RequestBody:
@@ -213,10 +261,36 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 		case *extprocv3.ProcessingRequest_ResponseHeaders:
 			state.statusCode = extractStatusCode(r.ResponseHeaders)
 			s.suspendIfFailoverAttemptFailed(ctx, &state)
-			resp = &extprocv3.ProcessingResponse{
-				Response: &extprocv3.ProcessingResponse_ResponseHeaders{
-					ResponseHeaders: &extprocv3.HeadersResponse{},
-				},
+
+			originalResponseHeaders := extractHeaderMap(r.ResponseHeaders)
+			state.responseHeaders = policy.NewHeaders(originalResponseHeaders)
+
+			var immediate *extprocv3.ImmediateResponse
+			if state.chain != nil && state.chain.RequiresUpstreamResponse {
+				respHdrCtx := BuildUpstreamAttemptResponseHeaderContext(state.sharedContext, state.responseHeaders,
+					state.clusterName, state.backendURL, state.basePath, state.method, state.path, state.statusCode)
+				action, err := s.chainExecutor.ExecuteUpstreamAttemptResponseHeaderPolicies(ctx, state.chain.UpstreamPolicies, respHdrCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
+				if err != nil {
+					slog.ErrorContext(ctx, "[upstream-extproc] upstream response header policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
+				} else if imm, ok := action.(policy.ImmediateResponse); ok {
+					immediate = buildImmediateResponse(imm)
+				}
+			}
+
+			if immediate != nil {
+				resp = &extprocv3.ProcessingResponse{
+					Response: &extprocv3.ProcessingResponse_ImmediateResponse{ImmediateResponse: immediate},
+				}
+			} else {
+				headersResp := &extprocv3.HeadersResponse{}
+				if headerMutation := diffHeaderMutation(originalResponseHeaders, state.responseHeaders); headerMutation != nil {
+					headersResp.Response = &extprocv3.CommonResponse{HeaderMutation: headerMutation}
+				}
+				resp = &extprocv3.ProcessingResponse{
+					Response: &extprocv3.ProcessingResponse_ResponseHeaders{
+						ResponseHeaders: headersResp,
+					},
+				}
 			}
 
 		case *extprocv3.ProcessingRequest_ResponseBody:
@@ -234,71 +308,94 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 }
 
 func (s *UpstreamExternalProcessorServer) processRequestBody(ctx context.Context, body *extprocv3.HttpBody, state *upstreamAttemptState) *extprocv3.ProcessingResponse {
+	state.originalRequestBody = body.Body
+
+	if state.chain == nil || !state.chain.RequiresUpstreamRequest {
+		return &extprocv3.ProcessingResponse{
+			Response: &extprocv3.ProcessingResponse_RequestBody{
+				RequestBody: &extprocv3.BodyResponse{Response: &extprocv3.CommonResponse{}},
+			},
+		}
+	}
+
+	if state.sharedContext == nil {
+		state.sharedContext = NewUpstreamAttemptSharedContext(state.model, state.provider)
+	}
+	if state.requestHeaders == nil {
+		state.requestHeaders = policy.NewHeaders(nil)
+	}
+
+	originalRequestHeadersForBody := cloneHeaderMap(state.requestHeaders.UnsafeInternalValues())
+	reqCtx := BuildUpstreamAttemptRequestContext(state.sharedContext, state.requestHeaders, body.Body,
+		state.clusterName, state.backendURL, state.basePath, state.method, state.path)
+	action, err := s.chainExecutor.ExecuteUpstreamAttemptRequestPolicies(ctx, state.chain.UpstreamPolicies, reqCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "[upstream-extproc] upstream request policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
+		return &extprocv3.ProcessingResponse{
+			Response: &extprocv3.ProcessingResponse_RequestBody{
+				RequestBody: &extprocv3.BodyResponse{Response: &extprocv3.CommonResponse{}},
+			},
+		}
+	}
+	if imm, ok := action.(policy.ImmediateResponse); ok {
+		return &extprocv3.ProcessingResponse{
+			Response: &extprocv3.ProcessingResponse_ImmediateResponse{ImmediateResponse: buildImmediateResponse(imm)},
+		}
+	}
+
 	commonResp := &extprocv3.CommonResponse{}
 
-	if state.chain != nil && state.chain.RequiresUpstreamRequest {
-		upCtx := BuildUpstreamAttemptContext(body.Body, nil, state.clusterName, state.backendURL, state.basePath, state.method, state.path, false, state.model, state.provider, 0)
-		_, err := s.chainExecutor.ExecuteUpstreamRequestPolicies(ctx, state.chain.Policies, upCtx, state.chain.PolicySpecs, "", state.routeKey)
-		if err != nil {
-			slog.ErrorContext(ctx, "[upstream-extproc] upstream request policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
-		} else {
-			// Built from the chain's ACCUMULATED upCtx state, not from
-			// ExecuteUpstreamRequestPolicies' result.FinalAction — FinalAction
-			// is whichever policy happened to run last (e.g. an auth policy
-			// setting only an API-key header), which silently discards an
-			// earlier policy's own returned mutations (e.g. a transformer's
-			// Path/Body translation) once a later policy's action replaces
-			// it. upCtx.Headers/Body/Path are threaded through and updated by
-			// every policy in turn (chain.go's applyUpstreamRequestModifications),
-			// so they reflect the full chain's combined effect regardless of
-			// execution order.
-			headersToSet := make(map[string]string, len(upCtx.Headers.UnsafeInternalValues())+1)
-			for k, v := range upCtx.Headers.UnsafeInternalValues() {
-				if len(v) > 0 {
-					headersToSet[k] = v[0]
-				}
-			}
+	// Built from the chain's ACCUMULATED reqCtx state, not from the returned
+	// action alone — action is whichever policy happened to run last (e.g. an
+	// auth policy setting only an API-key header), which silently discards an
+	// earlier policy's own returned mutations (e.g. a transformer's
+	// Path/Body translation) once a later policy's action replaces it.
+	// reqCtx.Headers/Body/Path are threaded through and updated by every
+	// policy in turn (executor.applyRequestModifications), so they reflect
+	// the full chain's combined effect regardless of execution order. Diffed
+	// against the snapshot taken before the chain ran (rather than dumping
+	// every current header) since, unlike the pre-header-phase-dispatch
+	// design, reqCtx.Headers now starts seeded from Envoy's real request
+	// headers, not empty.
+	var pathMutation *extprocv3.HeaderMutation
 
-			// Path rewrite (e.g. a transformer changing "/chat/completions" to
-			// the target provider's own "/v1/messages") must reach Envoy as a
-			// ":path" header mutation the same way any other header does —
-			// there is no separate BodyResponse.Path field, and without this
-			// the policy's returned Path is silently dropped, so the mutated
-			// Body is sent to the WRONG upstream path.
-			//
-			// For a failover/additionalProviders attempt this hop is itself a
-			// loopback into gateway-runtime's own listener: state.basePath is
-			// the resolved provider's own route context (e.g.
-			// "/anthropic-provider"), which that provider's downstream route
-			// strips via its own RegexRewrite before prepending ITS OWN
-			// registered upstream base path (gateway-controller/pkg/xds/
-			// translator.go's context-strip + upstream-prepend rewrite — the
-			// same combination gateway-controller/lua/request_transformation.lua's
-			// compute_upstream_path already performs for the non-retry case).
-			// Sending the transformer's path alone, with no context prefix,
-			// would fail that route match entirely.
-			if upCtx.Path != state.path {
-				headersToSet[":path"] = joinBasePathAndOperation(state.basePath, upCtx.Path)
-			}
+	// Path rewrite (e.g. a transformer changing "/chat/completions" to
+	// the target provider's own "/v1/messages") must reach Envoy as a
+	// ":path" header mutation the same way any other header does —
+	// there is no separate BodyResponse.Path field, and without this
+	// the policy's returned Path is silently dropped, so the mutated
+	// Body is sent to the WRONG upstream path.
+	//
+	// For a failover/additionalProviders attempt this hop is itself a
+	// loopback into gateway-runtime's own listener: state.basePath is
+	// the resolved provider's own route context (e.g.
+	// "/anthropic-provider"), which that provider's downstream route
+	// strips via its own RegexRewrite before prepending ITS OWN
+	// registered upstream base path (gateway-controller/pkg/xds/
+	// translator.go's context-strip + upstream-prepend rewrite — the
+	// same combination gateway-controller/lua/request_transformation.lua's
+	// compute_upstream_path already performs for the non-retry case).
+	// Sending the policy's path alone, with no context prefix,
+	// would fail that route match entirely.
+	if reqCtx.Path != state.path {
+		pathMutation = buildHeaderValueOptions(map[string]string{":path": joinBasePathAndOperation(state.basePath, reqCtx.Path)})
+		state.path = reqCtx.Path
+	}
 
-			if len(headersToSet) > 0 {
-				commonResp.HeaderMutation = buildHeaderValueOptions(headersToSet)
-			}
-			if !bytes.Equal(upCtx.Body.Content, body.Body) {
-				commonResp.BodyMutation = &extprocv3.BodyMutation{
-					Mutation: &extprocv3.BodyMutation_Body{Body: upCtx.Body.Content},
-				}
-				// A mutated body whose length no longer matches an
-				// already-set Content-Length is a hard Envoy error
-				// ("mismatch_between_content_length_and_the_length_of_the_mutated_body"),
-				// not a silent pass-through — confirmed live for a
-				// transformer's translated (differently-sized) body.
-				if commonResp.HeaderMutation == nil {
-					commonResp.HeaderMutation = &extprocv3.HeaderMutation{}
-				}
-				setContentLengthHeader(commonResp.HeaderMutation, len(upCtx.Body.Content))
-			}
+	commonResp.HeaderMutation = mergeAttemptHeaderMutations(pathMutation, diffHeaderMutation(originalRequestHeadersForBody, reqCtx.Headers))
+	if !bytes.Equal(reqCtx.Body.Content, body.Body) {
+		commonResp.BodyMutation = &extprocv3.BodyMutation{
+			Mutation: &extprocv3.BodyMutation_Body{Body: reqCtx.Body.Content},
 		}
+		// A mutated body whose length no longer matches an
+		// already-set Content-Length is a hard Envoy error
+		// ("mismatch_between_content_length_and_the_length_of_the_mutated_body"),
+		// not a silent pass-through — confirmed live for a
+		// transformer's translated (differently-sized) body.
+		if commonResp.HeaderMutation == nil {
+			commonResp.HeaderMutation = &extprocv3.HeaderMutation{}
+		}
+		setContentLengthHeader(commonResp.HeaderMutation, len(reqCtx.Body.Content))
 	}
 
 	return &extprocv3.ProcessingResponse{
@@ -312,38 +409,47 @@ func (s *UpstreamExternalProcessorServer) processResponseBody(ctx context.Contex
 	commonResp := &extprocv3.CommonResponse{}
 
 	if state.chain != nil && state.chain.RequiresUpstreamResponse {
-		upCtx := BuildUpstreamAttemptContext(body.Body, nil, state.clusterName, state.backendURL, state.basePath, state.method, state.path, false, state.model, state.provider, state.statusCode)
-		_, err := s.chainExecutor.ExecuteUpstreamResponsePolicies(ctx, state.chain.Policies, upCtx, state.chain.PolicySpecs, "", state.routeKey)
+		if state.sharedContext == nil {
+			state.sharedContext = NewUpstreamAttemptSharedContext(state.model, state.provider)
+		}
+		if state.responseHeaders == nil {
+			state.responseHeaders = policy.NewHeaders(nil)
+		}
+
+		originalResponseHeadersForBody := cloneHeaderMap(state.responseHeaders.UnsafeInternalValues())
+		respCtx := BuildUpstreamAttemptResponseContext(state.sharedContext, state.responseHeaders,
+			state.originalRequestBody, body.Body,
+			state.clusterName, state.backendURL, state.basePath, state.method, state.path, state.statusCode)
+		action, err := s.chainExecutor.ExecuteUpstreamAttemptResponsePolicies(ctx, state.chain.UpstreamPolicies, respCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
 		if err != nil {
 			slog.ErrorContext(ctx, "[upstream-extproc] upstream response policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
-		} else {
-			// Built from the chain's ACCUMULATED upCtx state, not from
-			// ExecuteUpstreamResponsePolicies' result.FinalAction — the same
-			// fix applied to processRequestBody, and needed for the same
-			// reason: FinalAction is whichever policy ran last, which
-			// silently discards an earlier policy's own returned mutations
-			// once a later policy's action replaces it.
-			headersToSet := make(map[string]string, len(upCtx.Headers.UnsafeInternalValues())+1)
-			for k, v := range upCtx.Headers.UnsafeInternalValues() {
-				if len(v) > 0 {
-					headersToSet[k] = v[0]
-				}
+		} else if imm, ok := action.(policy.ImmediateResponse); ok {
+			return &extprocv3.ProcessingResponse{
+				Response: &extprocv3.ProcessingResponse_ImmediateResponse{ImmediateResponse: buildImmediateResponse(imm)},
 			}
-			if upCtx.ResponseStatusOverride != nil {
-				headersToSet[":status"] = strconv.Itoa(*upCtx.ResponseStatusOverride)
+		} else {
+			// Built from the chain's ACCUMULATED respCtx state, not from the
+			// returned action alone — the same fix applied to processRequestBody,
+			// and needed for the same reason: the returned action is whichever
+			// policy ran last, which silently discards an earlier policy's own
+			// returned mutations once a later policy's action replaces it. Diffed
+			// against the pre-chain snapshot for the same reason processRequestBody
+			// diffs — respCtx.ResponseHeaders now starts seeded from Envoy's real
+			// response headers, not empty.
+			var statusMutation *extprocv3.HeaderMutation
+			if respCtx.ResponseStatus != 0 && respCtx.ResponseStatus != state.statusCode {
+				statusMutation = buildHeaderValueOptions(map[string]string{":status": strconv.Itoa(respCtx.ResponseStatus)})
 			}
 
-			if len(headersToSet) > 0 {
-				commonResp.HeaderMutation = buildHeaderValueOptions(headersToSet)
-			}
-			if !bytes.Equal(upCtx.Body.Content, body.Body) {
+			commonResp.HeaderMutation = mergeAttemptHeaderMutations(statusMutation, diffHeaderMutation(originalResponseHeadersForBody, respCtx.ResponseHeaders))
+			if !bytes.Equal(respCtx.ResponseBody.Content, body.Body) {
 				commonResp.BodyMutation = &extprocv3.BodyMutation{
-					Mutation: &extprocv3.BodyMutation_Body{Body: upCtx.Body.Content},
+					Mutation: &extprocv3.BodyMutation_Body{Body: respCtx.ResponseBody.Content},
 				}
 				if commonResp.HeaderMutation == nil {
 					commonResp.HeaderMutation = &extprocv3.HeaderMutation{}
 				}
-				setContentLengthHeader(commonResp.HeaderMutation, len(upCtx.Body.Content))
+				setContentLengthHeader(commonResp.HeaderMutation, len(respCtx.ResponseBody.Content))
 			}
 		}
 	}
@@ -396,6 +502,101 @@ func extractMethodAndPath(headers *extprocv3.HttpHeaders) (method, path string) 
 		}
 	}
 	return method, path
+}
+
+// extractHeaderMap reads every header from an upstream RequestHeaders/ResponseHeaders
+// message into a lowercased map, pseudo-headers included — the raw material for
+// building a *policy.Headers for the upstream-attempt header phase (see
+// kernel.BuildUpstreamAttemptRequestHeaderContext/BuildUpstreamAttemptResponseHeaderContext).
+func extractHeaderMap(headers *extprocv3.HttpHeaders) map[string][]string {
+	result := make(map[string][]string)
+	for _, h := range headers.GetHeaders().GetHeaders() {
+		key := strings.ToLower(h.GetKey())
+		result[key] = append(result[key], headerValue(h))
+	}
+	return result
+}
+
+// cloneHeaderMap returns a shallow copy of a header map's keys (values are
+// small string slices reused as-is), so a snapshot taken before a policy
+// chain runs isn't affected by the chain mutating the live map in place —
+// UnsafeInternalValues() returns that live map directly, not a copy.
+func cloneHeaderMap(values map[string][]string) map[string][]string {
+	clone := make(map[string][]string, len(values))
+	for k, v := range values {
+		clone[k] = v
+	}
+	return clone
+}
+
+// diffHeaderMutation computes the Envoy HeaderMutation representing what an
+// upstream-attempt header-phase policy chain changed, diffing original (as
+// received from Envoy, before any policy ran) against final (the chain's
+// accumulated state after running). Pseudo-headers (":path", ":method", ...)
+// are excluded — :path/:method changes are surfaced separately by the caller,
+// since they need their own dedicated handling (a rewritten :path also needs
+// state.path updated for the later body phase).
+func diffHeaderMutation(original map[string][]string, final *policy.Headers) *extprocv3.HeaderMutation {
+	if final == nil {
+		return nil
+	}
+	finalValues := final.UnsafeInternalValues()
+	mutation := &extprocv3.HeaderMutation{}
+	for k, v := range finalValues {
+		if strings.HasPrefix(k, ":") || len(v) == 0 {
+			continue
+		}
+		if orig, ok := original[k]; !ok || !headerValuesEqual(orig, v) {
+			mutation.SetHeaders = append(mutation.SetHeaders, &corev3.HeaderValueOption{
+				Header:       &corev3.HeaderValue{Key: k, RawValue: []byte(v[0])},
+				AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+			})
+		}
+	}
+	for k := range original {
+		if strings.HasPrefix(k, ":") {
+			continue
+		}
+		if v, ok := finalValues[k]; !ok || len(v) == 0 {
+			mutation.RemoveHeaders = append(mutation.RemoveHeaders, k)
+		}
+	}
+	if len(mutation.SetHeaders) == 0 && len(mutation.RemoveHeaders) == 0 {
+		return nil
+	}
+	return mutation
+}
+
+func headerValuesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeAttemptHeaderMutations combines two possibly-nil HeaderMutations (e.g. a
+// :path rewrite computed separately from a policy-driven header diff) into
+// one, since Envoy's CommonResponse carries only a single HeaderMutation.
+func mergeAttemptHeaderMutations(muts ...*extprocv3.HeaderMutation) *extprocv3.HeaderMutation {
+	merged := &extprocv3.HeaderMutation{}
+	any := false
+	for _, m := range muts {
+		if m == nil {
+			continue
+		}
+		any = true
+		merged.SetHeaders = append(merged.SetHeaders, m.SetHeaders...)
+		merged.RemoveHeaders = append(merged.RemoveHeaders, m.RemoveHeaders...)
+	}
+	if !any {
+		return nil
+	}
+	return merged
 }
 
 // extractAuthority reads the :authority pseudo-header — the host Envoy is

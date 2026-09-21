@@ -302,30 +302,6 @@ func (p *streamingResponseModePolicy) OnResponseBodyChunk(_ context.Context, _ *
 	return policy.ForwardResponseChunk{}
 }
 
-type upstreamRequestModePolicy struct {
-	mode policy.ProcessingMode
-}
-
-func (p *upstreamRequestModePolicy) Mode() policy.ProcessingMode {
-	return p.mode
-}
-
-func (p *upstreamRequestModePolicy) OnUpstreamRequestBody(_ context.Context, _ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.RequestAction {
-	return policy.UpstreamRequestModifications{}
-}
-
-type upstreamResponseModePolicy struct {
-	mode policy.ProcessingMode
-}
-
-func (p *upstreamResponseModePolicy) Mode() policy.ProcessingMode {
-	return p.mode
-}
-
-func (p *upstreamResponseModePolicy) OnUpstreamResponseBody(_ context.Context, _ *policy.UpstreamAttemptContext, _ map[string]interface{}) policy.ResponseAction {
-	return policy.DownstreamResponseModifications{}
-}
-
 func buildSinglePolicyChainForTest(t *testing.T, name string, impl policy.Policy) *registry.PolicyChain {
 	t.Helper()
 
@@ -435,90 +411,6 @@ func TestBuildPolicyChain_ResponseHeaderParticipationFollowsMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			chain := buildSinglePolicyChainForTest(t, "response-header-test", tt.impl)
 			assert.Equal(t, tt.wantRequired, chain.RequiresResponseHeader)
-		})
-	}
-}
-
-func TestBuildPolicyChain_UpstreamRequestParticipationFollowsMode(t *testing.T) {
-	tests := []struct {
-		name         string
-		impl         policy.Policy
-		wantRequired bool
-	}{
-		{
-			name: "buffer with interface",
-			impl: &upstreamRequestModePolicy{mode: policy.ProcessingMode{
-				UpstreamRequestMode: policy.BodyModeBuffer,
-			}},
-			wantRequired: true,
-		},
-		{
-			name: "skip with interface",
-			impl: &upstreamRequestModePolicy{mode: policy.ProcessingMode{
-				UpstreamRequestMode: policy.BodyModeSkip,
-			}},
-			wantRequired: false,
-		},
-		{
-			name: "buffer without interface",
-			impl: &modeOnlyPolicy{mode: policy.ProcessingMode{
-				UpstreamRequestMode: policy.BodyModeBuffer,
-			}},
-			wantRequired: false,
-		},
-		{
-			name:         "zero value with interface",
-			impl:         &upstreamRequestModePolicy{mode: policy.ProcessingMode{}},
-			wantRequired: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			chain := buildSinglePolicyChainForTest(t, "upstream-request-test", tt.impl)
-			assert.Equal(t, tt.wantRequired, chain.RequiresUpstreamRequest)
-		})
-	}
-}
-
-func TestBuildPolicyChain_UpstreamResponseParticipationFollowsMode(t *testing.T) {
-	tests := []struct {
-		name         string
-		impl         policy.Policy
-		wantRequired bool
-	}{
-		{
-			name: "buffer with interface",
-			impl: &upstreamResponseModePolicy{mode: policy.ProcessingMode{
-				UpstreamResponseMode: policy.BodyModeBuffer,
-			}},
-			wantRequired: true,
-		},
-		{
-			name: "skip with interface",
-			impl: &upstreamResponseModePolicy{mode: policy.ProcessingMode{
-				UpstreamResponseMode: policy.BodyModeSkip,
-			}},
-			wantRequired: false,
-		},
-		{
-			name: "buffer without interface",
-			impl: &modeOnlyPolicy{mode: policy.ProcessingMode{
-				UpstreamResponseMode: policy.BodyModeBuffer,
-			}},
-			wantRequired: false,
-		},
-		{
-			name:         "zero value with interface",
-			impl:         &upstreamResponseModePolicy{mode: policy.ProcessingMode{}},
-			wantRequired: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			chain := buildSinglePolicyChainForTest(t, "upstream-response-test", tt.impl)
-			assert.Equal(t, tt.wantRequired, chain.RequiresUpstreamResponse)
 		})
 	}
 }
