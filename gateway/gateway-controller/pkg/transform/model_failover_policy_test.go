@@ -96,10 +96,10 @@ func TestBuildRouteFailoverFromPolicy_InjectsAggregateClusterName(t *testing.T) 
 	params := &modelFailoverParams{
 		Targets: []modelFailoverTargetEntry{
 			{
-				Target:    modelFailoverTarget{Model: "gpt-4o"},
-				Fallbacks: []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+				modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
+				Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 			},
-			{Target: modelFailoverTarget{Model: "gpt-4o-mini"}},
+			{modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o-mini"}},
 		},
 		SuspendDuration: 900,
 	}
@@ -120,7 +120,7 @@ func TestBuildRouteFailoverFromPolicy_InjectsAggregateClusterName(t *testing.T) 
 	assert.Equal(t, xds.AggregateClusterName(routeKey, 1), expanded.Targets[1].AggregateCluster)
 	assert.Empty(t, params.Targets[0].AggregateCluster, "input params must not be mutated")
 	assert.Equal(t, "openai-primary", expanded.PrimaryProvider)
-	assert.Equal(t, "", expanded.Targets[0].Target.Provider, "member providers stay verbatim")
+	assert.Equal(t, "", expanded.Targets[0].Provider, "member providers stay verbatim")
 	assert.Equal(t, "anthropic-upstream", expanded.Targets[0].Fallbacks[0].Provider)
 }
 
@@ -138,8 +138,8 @@ func TestBuildRouteFailoverFromPolicy_InjectsMemberBasePathsAndOperationPath(t *
 
 	params := &modelFailoverParams{
 		Targets: []modelFailoverTargetEntry{{
-			Target:    modelFailoverTarget{Model: "gpt-4o"},
-			Fallbacks: []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
+			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 		}},
 	}
 
@@ -147,9 +147,9 @@ func TestBuildRouteFailoverFromPolicy_InjectsMemberBasePathsAndOperationPath(t *
 
 	require.NoError(t, err)
 	assert.Equal(t, "/chat/completions", expanded.OperationPath)
-	assert.Equal(t, "/openai-provider", expanded.Targets[0].Target.BasePath)
+	assert.Equal(t, "/openai-provider", expanded.Targets[0].BasePath)
 	assert.Equal(t, "/anthropic-provider", expanded.Targets[0].Fallbacks[0].BasePath)
-	assert.Empty(t, params.Targets[0].Target.BasePath, "input params must not be mutated")
+	assert.Empty(t, params.Targets[0].BasePath, "input params must not be mutated")
 	assert.Empty(t, params.Targets[0].Fallbacks[0].BasePath, "input params must not be mutated")
 }
 
@@ -163,7 +163,7 @@ func TestBuildRouteFailoverFromPolicy_OverwritesAuthoredBasePathAndOperationPath
 	params := &modelFailoverParams{
 		OperationPath: "/attacker-supplied",
 		Targets: []modelFailoverTargetEntry{{
-			Target: modelFailoverTarget{Model: "gpt-4o", BasePath: "/attacker-supplied"},
+			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o", BasePath: "/attacker-supplied"},
 		}},
 	}
 
@@ -171,7 +171,7 @@ func TestBuildRouteFailoverFromPolicy_OverwritesAuthoredBasePathAndOperationPath
 
 	require.NoError(t, err)
 	assert.Equal(t, "/chat/completions", expanded.OperationPath)
-	assert.Equal(t, "/openai-provider", expanded.Targets[0].Target.BasePath)
+	assert.Equal(t, "/openai-provider", expanded.Targets[0].BasePath)
 }
 
 // TestBuildRouteFailoverFromPolicy_InjectsMemberClusterNames pins the field
@@ -184,15 +184,15 @@ func TestBuildRouteFailoverFromPolicy_InjectsMemberClusterNames(t *testing.T) {
 
 	params := &modelFailoverParams{
 		Targets: []modelFailoverTargetEntry{{
-			Target:    modelFailoverTarget{Model: "gpt-4o"},
-			Fallbacks: []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
+			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 		}},
 	}
 
 	_, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
 
 	require.NoError(t, err)
-	assert.Equal(t, "upstream_main_openai_com_443", expanded.Targets[0].Target.ClusterName)
+	assert.Equal(t, "upstream_main_openai_com_443", expanded.Targets[0].ClusterName)
 	assert.Equal(t, "upstream_anthropic-upstream_anthropic_com_443", expanded.Targets[0].Fallbacks[0].ClusterName)
 	assert.Empty(t, params.Targets[0].Fallbacks[0].ClusterName, "input params must not be mutated")
 }
@@ -204,25 +204,81 @@ func TestBuildRouteFailoverFromPolicy_OverwritesAuthoredClusterName(t *testing.T
 
 	params := &modelFailoverParams{
 		Targets: []modelFailoverTargetEntry{{
-			Target:    modelFailoverTarget{Model: "gpt-4o", ClusterName: "attacker-cluster"},
-			Fallbacks: []modelFailoverTarget{{Model: "c", Provider: "anthropic-upstream", ClusterName: "attacker-cluster"}},
+			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o", ClusterName: "attacker-cluster"},
+			Fallbacks:           []modelFailoverTarget{{Model: "c", Provider: "anthropic-upstream", ClusterName: "attacker-cluster"}},
 		}},
 	}
 
 	_, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
 
 	require.NoError(t, err)
-	assert.Equal(t, "upstream_main_openai_com_443", expanded.Targets[0].Target.ClusterName)
+	assert.Equal(t, "upstream_main_openai_com_443", expanded.Targets[0].ClusterName)
 	assert.Equal(t, "upstream_anthropic-upstream_anthropic_com_443", expanded.Targets[0].Fallbacks[0].ClusterName)
 }
 
 func TestBuildRouteFailoverFromPolicy_UnknownProviderIsAnError(t *testing.T) {
 	rdc, route := failoverTestRDC()
 	params := &modelFailoverParams{Targets: []modelFailoverTargetEntry{{
-		Target:    modelFailoverTarget{Model: "gpt-4o"},
-		Fallbacks: []modelFailoverTarget{{Model: "x", Provider: "nonexistent"}},
+		modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
+		Fallbacks:           []modelFailoverTarget{{Model: "x", Provider: "nonexistent"}},
 	}}}
 
 	_, _, err := buildRouteFailoverFromPolicy(rdc, route, params, "k", "openai-primary")
 	require.Error(t, err)
+}
+
+// ─── Configurable statusCodes ────────────────────────────────────────────────
+
+func TestBuildRouteFailoverFromPolicy_OmittedStatusCodesDefaultsToPlain5xx(t *testing.T) {
+	rdc, route := failoverTestRDC()
+	params := &modelFailoverParams{
+		Targets: []modelFailoverTargetEntry{{modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"}}},
+	}
+
+	rf, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"5xx"}, rf.RetryOn)
+	assert.Empty(t, rf.RetriableStatusCodes)
+	assert.Empty(t, expanded.StatusCodes)
+}
+
+// statusCodes REPLACES the "any 5xx" default rather than extending it — see
+// modelFailoverParams.StatusCodes's own doc comment.
+func TestBuildRouteFailoverFromPolicy_StatusCodesReplaceDefaultRetryOn(t *testing.T) {
+	rdc, route := failoverTestRDC()
+	params := &modelFailoverParams{
+		Targets:     []modelFailoverTargetEntry{{modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"}}},
+		StatusCodes: []int{500, 502, 429},
+	}
+
+	rf, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"retriable-status-codes"}, rf.RetryOn, "must not also carry plain 5xx")
+	assert.Equal(t, []int{500, 502, 429}, rf.RetriableStatusCodes)
+	assert.Equal(t, []int{500, 502, 429}, expanded.StatusCodes, "carried through to the policy's own runtime params")
+}
+
+// ─── parseModelFailoverParams: statusCodes validation ────────────────────────
+
+func TestParseModelFailoverParams_RejectsOutOfRangeStatusCode(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"statusCodes": []interface{}{float64(999)},
+	}
+
+	_, err := parseModelFailoverParams(raw, nil, "openai-primary")
+	require.Error(t, err)
+}
+
+func TestParseModelFailoverParams_AcceptsValidStatusCodes(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"statusCodes": []interface{}{float64(500), float64(429)},
+	}
+
+	params, err := parseModelFailoverParams(raw, nil, "openai-primary")
+	require.NoError(t, err)
+	assert.Equal(t, []int{500, 429}, params.StatusCodes)
 }

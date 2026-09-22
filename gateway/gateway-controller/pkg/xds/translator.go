@@ -431,7 +431,7 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		}
 		// RetryOn is expected non-empty by the time it reaches here —
 		// buildRouteFailoverFromPolicy (pkg/transform/model_failover_policy.go)
-		// always sets it to ["5xx"] — but default defensively here too, so a
+		// defaults it to ["5xx"] — but default defensively here too, so a
 		// RouteFailover built any other
 		// way never produces an empty retry_on (which Envoy treats as "never
 		// retry", silently defeating the whole feature). Envoy's retry_on
@@ -447,6 +447,17 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 				Name:       "envoy.retry_priorities.previous_priorities",
 				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: failoverRetryPriorityConfig},
 			},
+		}
+		// RetriableStatusCodes only takes effect when RetryOn includes
+		// "retriable-status-codes" (which buildRouteFailoverFromPolicy only
+		// ever sets together with a non-empty RetriableStatusCodes), so this
+		// is safe to set unconditionally from whatever the model carries.
+		if len(rdcRoute.Upstream.Failover.RetriableStatusCodes) > 0 {
+			codes := make([]uint32, len(rdcRoute.Upstream.Failover.RetriableStatusCodes))
+			for i, code := range rdcRoute.Upstream.Failover.RetriableStatusCodes {
+				codes[i] = uint32(code)
+			}
+			retryPolicy.RetriableStatusCodes = codes
 		}
 		routeAction.Route.RetryPolicy = retryPolicy
 	}

@@ -259,3 +259,56 @@ func TestLLMTransform_FailoverBlock_FullShapeEndToEnd(t *testing.T) {
 	assert.True(t, vh.IncludeRequestAttemptCount,
 		"a virtual host containing a failover route must request the attempt-count header")
 }
+
+// TestLLMTransform_FailoverBlock_ConfiguredStatusCodesWireIntoRetryPolicy
+// pins that a non-empty RouteFailover.RetriableStatusCodes switches RetryOn
+// to "retriable-status-codes" (not "5xx" alongside it — statusCodes REPLACES
+// the default) and carries the exact codes onto Envoy's own RetryPolicy.
+func TestLLMTransform_FailoverBlock_ConfiguredStatusCodesWireIntoRetryPolicy(t *testing.T) {
+	routeKey := "POST|/chat/completions|main"
+	openaiClusterKey := "openai-provider-cluster"
+	anthropicClusterKey := "anthropic-upstream-cluster"
+
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			openaiClusterKey:    {BasePath: "/", Endpoints: []models.Endpoint{{Host: "openai.example.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+			anthropicClusterKey: {BasePath: "/", Endpoints: []models.Endpoint{{Host: "anthropic.example.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+		},
+		Routes: map[string]*models.Route{
+			routeKey: {
+				Method: "POST",
+				Path:   "/chat/completions",
+				Vhost:  "main",
+				Upstream: models.RouteUpstream{
+					ClusterKey:       openaiClusterKey,
+					UseClusterHeader: true,
+					DefaultCluster:   openaiClusterKey,
+					Failover: &models.RouteFailover{
+						RetryOn:              []string{"retriable-status-codes"},
+						RetriableStatusCodes: []int{500, 502, 429},
+						Targets: []models.RouteFailoverTarget{{
+							Model: "gpt-4o",
+							Target: models.RouteFailoverEntry{
+								Model:      "gpt-4o",
+								ClusterKey: openaiClusterKey,
+							},
+							Fallbacks: []models.RouteFailoverEntry{{
+								Model:      "claude-sonnet-4-5-20250929",
+								ClusterKey: anthropicClusterKey,
+							}},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	vh, _ := translateFixture(t, rdc)
+
+	r := findFixtureRoute(t, vh, routeKey)
+	action := r.GetRoute()
+	require.NotNil(t, action)
+	require.NotNil(t, action.RetryPolicy)
+	assert.Equal(t, "retriable-status-codes", action.RetryPolicy.RetryOn, "must not also carry plain 5xx")
+	assert.Equal(t, []uint32{500, 502, 429}, action.RetryPolicy.RetriableStatusCodes)
+}

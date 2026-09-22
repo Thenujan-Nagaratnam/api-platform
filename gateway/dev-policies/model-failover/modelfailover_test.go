@@ -15,7 +15,7 @@ func TestParseParams_ValidTargets(t *testing.T) {
 	raw := map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
-				"target": map[string]interface{}{"model": "gpt-4o"},
+				"model": "gpt-4o",
 				"fallbacks": []interface{}{
 					map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"},
 				},
@@ -29,7 +29,7 @@ func TestParseParams_ValidTargets(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, params.Targets, 1)
-	assert.Equal(t, "gpt-4o", params.Targets[0].Target.Model)
+	assert.Equal(t, "gpt-4o", params.Targets[0].Model)
 	assert.Equal(t, "failover_agg_chat_0", params.Targets[0].AggregateCluster)
 	require.Len(t, params.Targets[0].Fallbacks, 1)
 	assert.Equal(t, "anthropic-upstream", params.Targets[0].Fallbacks[0].Provider)
@@ -46,7 +46,7 @@ func TestOnRequestBody_RoutesToMatchedTargetAggregate(t *testing.T) {
 		params: ModelFailoverParams{
 			Targets: []FailoverTargetEntry{
 				{
-					Target:           FailoverTarget{Model: "gpt-4o"},
+					FailoverTarget:   FailoverTarget{Model: "gpt-4o"},
 					Fallbacks:        []FailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 					AggregateCluster: "failover_agg_chat_0",
 				},
@@ -68,7 +68,7 @@ func TestOnRequestBody_RoutesToMatchedTargetAggregate(t *testing.T) {
 
 func TestOnRequestBody_NoMatchIsNoop(t *testing.T) {
 	p := &Policy{
-		params:           ModelFailoverParams{Targets: []FailoverTargetEntry{{Target: FailoverTarget{Model: "gpt-4o"}}}},
+		params:           ModelFailoverParams{Targets: []FailoverTargetEntry{{FailoverTarget: FailoverTarget{Model: "gpt-4o"}}}},
 		suspendedTargets: make(map[string]time.Time),
 	}
 	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"some-other-model"}`), Present: true}}
@@ -85,7 +85,7 @@ func TestOnRequestBody_SuspendedTargetSkipsToFallback(t *testing.T) {
 		params: ModelFailoverParams{
 			Targets: []FailoverTargetEntry{
 				{
-					Target:           FailoverTarget{Model: "gpt-4o"},
+					FailoverTarget:   FailoverTarget{Model: "gpt-4o"},
 					Fallbacks:        []FailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 					AggregateCluster: "failover_agg_chat_0",
 				},
@@ -109,7 +109,7 @@ func TestOnRequestBody_SkipsFallbackWithEmptyProvider(t *testing.T) {
 	p := &Policy{
 		params: ModelFailoverParams{
 			Targets: []FailoverTargetEntry{{
-				Target: FailoverTarget{Model: "gpt-4o"},
+				FailoverTarget: FailoverTarget{Model: "gpt-4o"},
 				Fallbacks: []FailoverTarget{
 					{Model: "same-provider-model"},
 					{Model: "claude", Provider: "anthropic-upstream"},
@@ -131,7 +131,7 @@ func TestOnRequestBody_OnlyEmptyProviderFallbacksRoutesToAggregate(t *testing.T)
 	p := &Policy{
 		params: ModelFailoverParams{
 			Targets: []FailoverTargetEntry{{
-				Target:           FailoverTarget{Model: "gpt-4o"},
+				FailoverTarget:   FailoverTarget{Model: "gpt-4o"},
 				Fallbacks:        []FailoverTarget{{Model: "same-provider-model"}},
 				AggregateCluster: "failover_agg_chat_0",
 			}},
@@ -148,7 +148,7 @@ func TestOnRequestBody_OnlyEmptyProviderFallbacksRoutesToAggregate(t *testing.T)
 
 func TestOnRequestBody_EmptyAggregateClusterIsNoop(t *testing.T) {
 	p := &Policy{
-		params:           ModelFailoverParams{Targets: []FailoverTargetEntry{{Target: FailoverTarget{Model: "gpt-4o"}}}},
+		params:           ModelFailoverParams{Targets: []FailoverTargetEntry{{FailoverTarget: FailoverTarget{Model: "gpt-4o"}}}},
 		suspendedTargets: make(map[string]time.Time),
 	}
 	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
@@ -177,7 +177,7 @@ func chainPolicy() *Policy {
 	return &Policy{
 		params: ModelFailoverParams{
 			Targets: []FailoverTargetEntry{{
-				Target:           FailoverTarget{Model: "gpt-4o"},
+				FailoverTarget:   FailoverTarget{Model: "gpt-4o"},
 				Fallbacks:        []FailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 				AggregateCluster: "failover_agg_chat_0",
 			}},
@@ -310,7 +310,7 @@ func primaryResolvingPolicy() *Policy {
 
 func TestParseParams_CarriesPrimaryProvider(t *testing.T) {
 	params, err := parseParams(map[string]interface{}{
-		"targets":         []interface{}{map[string]interface{}{"target": map[string]interface{}{"model": "gpt-4o"}, "fallbacks": []interface{}{}}},
+		"targets":         []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}}},
 		"primaryProvider": "openai-primary",
 	})
 	require.NoError(t, err)
@@ -379,7 +379,7 @@ func TestOnResponseHeaders_ZeroSuspendDurationDoesNotSuspend(t *testing.T) {
 func pathChainPolicy() *Policy {
 	p := chainPolicy()
 	p.params.OperationPath = "/chat/completions"
-	p.params.Targets[0].Target.BasePath = "/openai-provider"
+	p.params.Targets[0].BasePath = "/openai-provider"
 	p.params.Targets[0].Fallbacks[0].BasePath = "/anthropic-provider"
 	return p
 }
@@ -453,7 +453,8 @@ func TestParseParams_CarriesInjectedBasePathAndOperationPath(t *testing.T) {
 	params, err := parseParams(map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
-				"target": map[string]interface{}{"model": "gpt-4o", "basePath": "/openai-provider"},
+				"model":    "gpt-4o",
+				"basePath": "/openai-provider",
 				"fallbacks": []interface{}{
 					map[string]interface{}{"model": "claude", "provider": "anthropic-upstream", "basePath": "/anthropic-provider"},
 				},
@@ -465,7 +466,7 @@ func TestParseParams_CarriesInjectedBasePathAndOperationPath(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "/chat/completions", params.OperationPath)
-	assert.Equal(t, "/openai-provider", params.Targets[0].Target.BasePath)
+	assert.Equal(t, "/openai-provider", params.Targets[0].BasePath)
 	assert.Equal(t, "/anthropic-provider", params.Targets[0].Fallbacks[0].BasePath)
 }
 
@@ -486,7 +487,7 @@ func TestJoinBasePathAndOperation(t *testing.T) {
 func bypassChainPolicy() *Policy {
 	p := pathChainPolicy()
 	p.params.PrimaryProvider = "openai-upstream"
-	p.params.Targets[0].Target.ClusterName = "upstream_LlmProxy_abc_openai-upstream"
+	p.params.Targets[0].ClusterName = "upstream_LlmProxy_abc_openai-upstream"
 	p.params.Targets[0].Fallbacks[0].ClusterName = "upstream_LlmProxy_abc_anthropic-upstream"
 	return p
 }
@@ -603,7 +604,8 @@ func TestParseParams_CarriesInjectedClusterName(t *testing.T) {
 	params, err := parseParams(map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
-				"target": map[string]interface{}{"model": "gpt-4o", "clusterName": "upstream_x_primary"},
+				"model":       "gpt-4o",
+				"clusterName": "upstream_x_primary",
 				"fallbacks": []interface{}{
 					map[string]interface{}{"model": "claude", "provider": "anthropic-upstream", "clusterName": "upstream_x_anthropic"},
 				},
@@ -613,7 +615,7 @@ func TestParseParams_CarriesInjectedClusterName(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	assert.Equal(t, "upstream_x_primary", params.Targets[0].Target.ClusterName)
+	assert.Equal(t, "upstream_x_primary", params.Targets[0].ClusterName)
 	assert.Equal(t, "upstream_x_anthropic", params.Targets[0].Fallbacks[0].ClusterName)
 }
 
@@ -629,4 +631,107 @@ func TestResolveAttemptForCluster_AggregateMatchTakesPrecedence(t *testing.T) {
 	require.NotNil(t, match)
 	assert.Equal(t, "gpt-4o", match.member.Model)
 	assert.Equal(t, 1, match.index)
+}
+
+// ─── Configurable statusCodes ────────────────────────────────────────────────
+
+func TestParseParams_CarriesStatusCodes(t *testing.T) {
+	params, err := parseParams(map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}}},
+		"statusCodes": []interface{}{float64(500), float64(502), float64(429)},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{500, 502, 429}, params.StatusCodes)
+}
+
+func TestParseParams_StatusCodesOmittedIsNilNotEmptySlice(t *testing.T) {
+	params, err := parseParams(map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}}},
+	})
+
+	require.NoError(t, err)
+	assert.Nil(t, params.StatusCodes, "omitted statusCodes must default via isFailureStatus, not an explicit empty list")
+}
+
+func TestParseParams_StatusCodesRejectsNonNumberEntries(t *testing.T) {
+	_, err := parseParams(map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}}},
+		"statusCodes": []interface{}{"500"},
+	})
+
+	require.Error(t, err)
+}
+
+func TestIsFailureStatus_DefaultsToAny5xx(t *testing.T) {
+	p := chainPolicy()
+
+	assert.True(t, p.isFailureStatus(500))
+	assert.True(t, p.isFailureStatus(503))
+	assert.True(t, p.isFailureStatus(599))
+	assert.False(t, p.isFailureStatus(429), "no configured statusCodes: a 4xx is the client's problem, not a failing target")
+	assert.False(t, p.isFailureStatus(200))
+}
+
+func TestIsFailureStatus_ConfiguredCodesReplaceNotExtendTheDefault(t *testing.T) {
+	p := chainPolicy()
+	p.params.StatusCodes = []int{429, 502}
+
+	assert.True(t, p.isFailureStatus(429), "explicitly configured code")
+	assert.True(t, p.isFailureStatus(502), "explicitly configured code")
+	assert.False(t, p.isFailureStatus(500), "500 is not in the configured list, so it no longer counts as a failure")
+	assert.False(t, p.isFailureStatus(503))
+}
+
+func TestOnResponseHeaders_ConfiguredStatusCodeSuspendsANonDefault4xx(t *testing.T) {
+	p := chainPolicy()
+	p.params.StatusCodes = []int{429}
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{attemptIndexMetadataKey: 1}},
+		ResponseStatus: 429,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "failover_agg_chat_0"},
+	}
+
+	p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	assert.True(t, p.isSuspended("gpt-4o", ""), "429 is configured as a failure status for this chain")
+}
+
+func TestOnResponseHeaders_ConfiguredStatusCodesExcludeDefault5xx(t *testing.T) {
+	p := chainPolicy()
+	p.params.StatusCodes = []int{429}
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext:  &policy.SharedContext{Metadata: map[string]interface{}{attemptIndexMetadataKey: 1}},
+		ResponseStatus: 500,
+		Upstream:       &policy.UpstreamResponseContext{RouteCluster: "failover_agg_chat_0"},
+	}
+
+	p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	assert.False(t, p.isSuspended("gpt-4o", ""), "500 was replaced out of the trigger set by an explicit statusCodes list")
+}
+
+// ─── UpstreamDefinition (author-facing dial-target override) ────────────────
+
+func TestParseParams_CarriesUpstreamDefinition(t *testing.T) {
+	params, err := parseParams(map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{
+						"model":              "claude",
+						"provider":           "anthropic-upstream",
+						"upstreamDefinition": "anthropic-eu-west",
+					},
+				},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "anthropic-eu-west", params.Targets[0].Fallbacks[0].UpstreamDefinition)
+	// Provider stays the credential/transform identity, independent of which
+	// physical upstream was named — the whole point of the split.
+	assert.Equal(t, "anthropic-upstream", params.Targets[0].Fallbacks[0].Provider)
 }

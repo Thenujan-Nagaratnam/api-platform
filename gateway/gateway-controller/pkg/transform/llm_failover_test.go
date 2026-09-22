@@ -88,3 +88,75 @@ func TestResolveFailoverEntry_AllThreeWaysOfNamingThePrimaryProvider(t *testing.
 		assert.Equal(t, "cohere-provider", entry.Provider)
 	})
 }
+
+// TestResolveFailoverEntry_UpstreamDefinitionOverridesDialTargetButNotIdentity
+// covers the split between credential/transform identity (Provider) and the
+// physical backend actually dialed (UpstreamDefinition): a member can reuse
+// one provider's credentials against a differently-named upstream.
+func TestResolveFailoverEntry_UpstreamDefinitionOverridesDialTargetButNotIdentity(t *testing.T) {
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"upstream_main_openai_com_443": {
+				Name:      "",
+				BasePath:  "/",
+				Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}},
+				TLS:       &models.UpstreamTLS{Enabled: true},
+			},
+			"upstream_anthropic-upstream_anthropic_com_443": {
+				Name:      "anthropic-upstream",
+				BasePath:  "/anthropic-provider",
+				Endpoints: []models.Endpoint{{Host: "anthropic.com", Port: 443}},
+				TLS:       &models.UpstreamTLS{Enabled: true},
+			},
+			"upstream_anthropic-eu-west_anthropic_com_443": {
+				// A hand-declared upstreamDefinitions[] entry, unrelated to any
+				// additionalProviders entry — same credential identity
+				// (anthropic-upstream), a different physical backend.
+				Name:      "anthropic-eu-west",
+				BasePath:  "/anthropic-eu",
+				Endpoints: []models.Endpoint{{Host: "eu-west.anthropic.com", Port: 443}},
+				TLS:       &models.UpstreamTLS{Enabled: true},
+			},
+		},
+	}
+	r := &models.Route{
+		Upstream: models.RouteUpstream{
+			ClusterKey: "upstream_main_openai_com_443",
+			Default: &policyenginev1.UpstreamInfo{
+				ClusterName: "upstream_main_openai_com_443",
+				URL:         "https://openai.com",
+				BasePath:    "/",
+			},
+		},
+	}
+	const primaryProviderID = "openai-provider"
+
+	t.Run("no upstreamDefinition: dial target defaults to provider (today's behavior)", func(t *testing.T) {
+		entry, err := resolveFailoverEntry(rdc, r, modelFailoverTarget{
+			Model: "claude", Provider: "anthropic-upstream",
+		}, primaryProviderID)
+		require.NoError(t, err)
+		assert.Equal(t, "upstream_anthropic-upstream_anthropic_com_443", entry.ClusterKey)
+		assert.Equal(t, "/anthropic-provider", entry.Upstream.BasePath)
+		assert.Equal(t, "anthropic-upstream", entry.Provider)
+	})
+
+	t.Run("upstreamDefinition set: dials the named upstream, identity stays the provider", func(t *testing.T) {
+		entry, err := resolveFailoverEntry(rdc, r, modelFailoverTarget{
+			Model: "claude", Provider: "anthropic-upstream", UpstreamDefinition: "anthropic-eu-west",
+		}, primaryProviderID)
+		require.NoError(t, err)
+		assert.Equal(t, "upstream_anthropic-eu-west_anthropic_com_443", entry.ClusterKey,
+			"dial target came from UpstreamDefinition, not Provider")
+		assert.Equal(t, "/anthropic-eu", entry.Upstream.BasePath)
+		assert.Equal(t, "anthropic-upstream", entry.Provider,
+			"credential/transform identity stays Provider regardless of which upstream was dialed")
+	})
+
+	t.Run("upstreamDefinition set to an unknown name is a deploy-time error", func(t *testing.T) {
+		_, err := resolveFailoverEntry(rdc, r, modelFailoverTarget{
+			Model: "claude", Provider: "anthropic-upstream", UpstreamDefinition: "does-not-exist",
+		}, primaryProviderID)
+		require.Error(t, err)
+	})
+}

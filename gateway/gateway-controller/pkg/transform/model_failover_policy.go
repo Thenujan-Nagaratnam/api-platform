@@ -38,6 +38,14 @@ const modelFailoverPolicyName = "model-failover"
 type modelFailoverTarget struct {
 	Model    string `json:"model"`
 	Provider string `json:"provider,omitempty"`
+	// UpstreamDefinition is author-facing: the name of the upstream this
+	// member actually dials (a named additionalProviders[].as/.id, or any
+	// hand-declared upstreamDefinitions[].name — resolveFailoverEntry's lookup
+	// doesn't distinguish their origin). Optional; when empty, the dial target
+	// defaults to Provider (today's behavior). Kept separate from Provider so
+	// a member's credential/transform identity and its physical backend can
+	// differ.
+	UpstreamDefinition string `json:"upstreamDefinition,omitempty"`
 	// BasePath is injected by the controller (never authored): the resolved
 	// upstream base path of the cluster this member dials. Every member of a
 	// chain on an LlmProxy is a loopback upstream on the SAME host:port, so
@@ -56,8 +64,11 @@ type modelFailoverTarget struct {
 	ClusterName string `json:"clusterName,omitempty"`
 }
 
+// modelFailoverTargetEntry embeds modelFailoverTarget (not nested under a
+// "target" key) so the entry's own model/provider/upstreamDefinition sit at
+// the same JSON level as each entry in Fallbacks.
 type modelFailoverTargetEntry struct {
-	Target           modelFailoverTarget   `json:"target"`
+	modelFailoverTarget
 	Fallbacks        []modelFailoverTarget `json:"fallbacks"`
 	AggregateCluster string                `json:"aggregateCluster,omitempty"`
 }
@@ -65,6 +76,11 @@ type modelFailoverTargetEntry struct {
 type modelFailoverParams struct {
 	Targets         []modelFailoverTargetEntry `json:"targets"`
 	SuspendDuration int                        `json:"suspendDuration"`
+	// StatusCodes is the set of response status codes that trigger escalation
+	// to the next chain member (and Envoy's own retry_policy escalation).
+	// Empty/omitted defaults to "any 5xx"; when set, it REPLACES that default
+	// rather than extending it.
+	StatusCodes []int `json:"statusCodes,omitempty"`
 	// PrimaryProvider is injected by the controller so the policy can resolve
 	// members authored without `provider:` to the primary provider identity.
 	PrimaryProvider string `json:"primaryProvider,omitempty"`
@@ -113,7 +129,7 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 	}
 
 	for _, entry := range params.Targets {
-		if err := validateProvider(entry.Target); err != nil {
+		if err := validateProvider(entry.modelFailoverTarget); err != nil {
 			return nil, err
 		}
 		for _, fb := range entry.Fallbacks {
@@ -122,6 +138,13 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 			}
 		}
 	}
+
+	for _, code := range params.StatusCodes {
+		if code < 100 || code > 599 {
+			return nil, fmt.Errorf("model-failover: statusCodes entry %d is not a valid HTTP status code", code)
+		}
+	}
+
 	return &params, nil
 }
 
@@ -130,8 +153,11 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 // resolveFailoverEntry), and returns a copy of params with each entry's
 // AggregateCluster set via xds.AggregateClusterName(routeKey, index) — the
 // copy the policy instance carries at runtime. The input params are not
-// mutated. retryOn is always ["5xx"]: this feature's original behavior, and no
-// longer configurable (design §5).
+// mutated. retryOn defaults to ["5xx"] and RetriableStatusCodes is empty;
+// when the author configures statusCodes, retryOn becomes
+// ["retriable-status-codes"] and RetriableStatusCodes carries the exact list —
+// REPLACING the default, not extending it (design's post-implementation
+// correction to §5's original "hardcoded, not configurable" claim).
 func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Route, params *modelFailoverParams, routeKey, primaryProviderID string) (*models.RouteFailover, *modelFailoverParams, error) {
 	if params == nil || len(params.Targets) == 0 {
 		return nil, nil, fmt.Errorf("model-failover: no targets to build failover from")
@@ -139,15 +165,16 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 
 	expanded := &modelFailoverParams{
 		SuspendDuration: params.SuspendDuration,
+		StatusCodes:     params.StatusCodes,
 		PrimaryProvider: primaryProviderID,
 		OperationPath:   r.OperationPath,
 		Targets:         make([]modelFailoverTargetEntry, len(params.Targets)),
 	}
 	targets := make([]models.RouteFailoverTarget, 0, len(params.Targets))
 	for i, entry := range params.Targets {
-		targetEntry, err := resolveFailoverEntry(rdc, r, entry.Target, primaryProviderID)
+		targetEntry, err := resolveFailoverEntry(rdc, r, entry.modelFailoverTarget, primaryProviderID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("route %q: resolving failover target %q: %w", routeKey, entry.Target.Model, err)
+			return nil, nil, fmt.Errorf("route %q: resolving failover target %q: %w", routeKey, entry.Model, err)
 		}
 		fallbacks := make([]models.RouteFailoverEntry, 0, len(entry.Fallbacks))
 		expandedFallbacks := make([]modelFailoverTarget, 0, len(entry.Fallbacks))
@@ -162,25 +189,35 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 			expandedFallbacks = append(expandedFallbacks, fb)
 		}
 		targets = append(targets, models.RouteFailoverTarget{
-			Model:     entry.Target.Model,
+			Model:     entry.Model,
 			Target:    targetEntry,
 			Fallbacks: fallbacks,
 		})
 
-		expandedTarget := entry.Target
+		expandedTarget := entry.modelFailoverTarget
 		expandedTarget.BasePath = targetEntry.Upstream.BasePath
 		expandedTarget.ClusterName = targetEntry.Upstream.ClusterName
 		expanded.Targets[i] = modelFailoverTargetEntry{
-			Target:           expandedTarget,
-			Fallbacks:        expandedFallbacks,
-			AggregateCluster: xds.AggregateClusterName(routeKey, i),
+			modelFailoverTarget: expandedTarget,
+			Fallbacks:           expandedFallbacks,
+			AggregateCluster:    xds.AggregateClusterName(routeKey, i),
 		}
+	}
+
+	// retryOn/retriableStatusCodes: statusCodes REPLACES the "any 5xx" default
+	// rather than extending it — see modelFailoverParams.StatusCodes.
+	retryOn := []string{"5xx"}
+	var retriableStatusCodes []int
+	if len(params.StatusCodes) > 0 {
+		retryOn = []string{"retriable-status-codes"}
+		retriableStatusCodes = params.StatusCodes
 	}
 
 	return &models.RouteFailover{
 		SuspendDurationSeconds: params.SuspendDuration,
 		Targets:                targets,
-		RetryOn:                []string{"5xx"},
+		RetryOn:                retryOn,
+		RetriableStatusCodes:   retriableStatusCodes,
 	}, expanded, nil
 }
 

@@ -160,9 +160,26 @@ func (t *LLMTransformer) extractLLMMetadata(cfg *models.StoredConfig) *models.LL
 // named-cluster scan below, whose clusters are keyed by
 // additionalProviders[].as/id and would never contain the primary (its cluster
 // is stored with an empty Name — see models.UpstreamCluster.Name's doc comment).
+// resolveFailoverEntry resolves one chain member's real backend (which
+// cluster it dials) and identity (which credential/transform it carries).
+// These are two independent questions: identity always comes from t.Provider
+// (defaulting to the primary), but the dial target defaults to that same
+// name only when t.UpstreamDefinition is empty — an explicit
+// UpstreamDefinition always wins, letting a member reuse one provider's
+// credentials against a differently-named upstream (see modelFailoverTarget's
+// own doc comment).
 func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t modelFailoverTarget, primaryProviderID string) (models.RouteFailoverEntry, error) {
 	providerName := strings.TrimSpace(t.Provider)
-	if providerName == "" || providerName == primaryProviderID {
+	if providerName == "" {
+		providerName = primaryProviderID
+	}
+
+	dialTarget := strings.TrimSpace(t.UpstreamDefinition)
+	if dialTarget == "" {
+		dialTarget = providerName
+	}
+
+	if dialTarget == primaryProviderID {
 		if r.Upstream.Default == nil {
 			return models.RouteFailoverEntry{}, fmt.Errorf("route has no default upstream to use as the primary failover target")
 		}
@@ -170,16 +187,16 @@ func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t mo
 			Model:      t.Model,
 			ClusterKey: r.Upstream.ClusterKey,
 			Upstream:   *r.Upstream.Default,
-			Provider:   primaryProviderID,
+			Provider:   providerName,
 		}, nil
 	}
 
 	for key, uc := range rdc.UpstreamClusters {
-		if uc.Name != providerName {
+		if uc.Name != dialTarget {
 			continue
 		}
 		if len(uc.Endpoints) == 0 {
-			return models.RouteFailoverEntry{}, fmt.Errorf("provider %q has no endpoints", providerName)
+			return models.RouteFailoverEntry{}, fmt.Errorf("upstream %q has no endpoints", dialTarget)
 		}
 		scheme := "http"
 		defaultPort := 80
@@ -213,5 +230,5 @@ func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t mo
 			Provider: providerName,
 		}, nil
 	}
-	return models.RouteFailoverEntry{}, fmt.Errorf("provider %q not found among configured upstreams", providerName)
+	return models.RouteFailoverEntry{}, fmt.Errorf("upstream %q not found among configured upstreams", dialTarget)
 }

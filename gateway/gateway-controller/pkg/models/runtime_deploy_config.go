@@ -166,8 +166,16 @@ type RouteFailover struct {
 	// RetryOn is the set of Envoy RetryPolicy.retry_on conditions that
 	// trigger escalation to the next chain member. Always non-empty by the
 	// time this reaches the xDS translator — buildRouteFailoverFromPolicy
-	// (pkg/transform) always sets it to ["5xx"], which is not configurable.
+	// (pkg/transform) defaults it to ["5xx"], or ["retriable-status-codes"]
+	// when RetriableStatusCodes is set.
 	RetryOn []string
+
+	// RetriableStatusCodes is the author-configured statusCodes list (empty
+	// unless explicitly set), consumed by the xDS translator as Envoy
+	// RetryPolicy.retriable_status_codes alongside RetryOn containing
+	// "retriable-status-codes". Set together with RetryOn by
+	// buildRouteFailoverFromPolicy — never independently.
+	RetriableStatusCodes []int
 }
 
 // RouteFailoverTarget is one client-requested model's own failover chain.

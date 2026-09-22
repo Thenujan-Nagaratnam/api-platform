@@ -46,7 +46,7 @@ code, into an ordinary policy — `model-failover` — attached and executed the
 ## 3. Config surface
 
 `resilience.failover` is removed from the LlmProxy schema. In its place, `model-failover` is attached
-like any other policy, with the same params shape the old schema carried:
+like any other policy:
 
 ```yaml
 operationPolicies:
@@ -55,13 +55,43 @@ operationPolicies:
     paths: [{ path: /chat/completions, methods: [POST] }]
     params:
       targets:
-        - target: { model: gpt-4o }
+        - model: gpt-4o
           fallbacks:
-            - { model: claude-sonnet-4-5-20250929, provider: anthropic-upstream }
-        - target: { model: gpt-4o-mini }
+            - model: claude-sonnet-4-5-20250929
+              provider: anthropic-upstream
+        - model: gpt-4o-mini
           fallbacks:
-            - { model: claude-3-5-haiku, provider: anthropic-upstream }
+            - model: claude-3-5-haiku
+              provider: anthropic-upstream
+              upstreamDefinition: anthropic-eu-west   # optional — see below
+      statusCodes: [500, 502, 503, 429]   # optional — see below
       suspendDuration: 900
+```
+
+**Post-implementation revision:** the params shape above supersedes an earlier one where each entry
+wrapped its primary slot in a nested `target: { model, provider }` object while `fallbacks[]` entries
+were already flat. Two changes:
+
+- **Flattened target entries.** `model`/`provider` now sit directly on each `targets[]` entry, at the
+  same level `fallbacks[]` entries already used — the primary slot is authored exactly like a fallback
+  slot (just without its own further fallbacks), removing an asymmetry that served no purpose.
+- **`upstreamDefinition` decouples credential identity from dial target.** `provider` alone used to do
+  double duty: it named both which credential/transformer applies (the `selected_provider` identity)
+  *and*, by being looked up as a named upstream cluster, which physical backend gets dialed — this is
+  exactly the overload `resolvedProvider()` (§7) exists to work around on the runtime side. An optional
+  `upstreamDefinition` on any member (a named `additionalProviders[].as`/`.id`, or any hand-declared
+  `upstreamDefinitions[].name` — resolution doesn't distinguish their origin) now carries the dial
+  target instead, letting one provider's credentials be reused against a differently-named upstream
+  (a regional/load-balanced variant, for instance) without touching `provider`. Omitted, it defaults to
+  `provider` — today's behavior, unchanged.
+- **`statusCodes` makes the escalation trigger configurable again**, restoring (in a stricter, integer-
+  status-code form) the configurability the original `resilience.failover.retryOn` had before this
+  session hardcoded it to `["5xx"]` (§5's original claim). Omitted, the default stays "any 5xx". Set,
+  it REPLACES that default entirely rather than extending it — list every code that should trigger
+  failover, 5xx codes included if still wanted. Drives both Envoy's own `retry_policy` (via a new
+  `RetriableStatusCodes` carried on `models.RouteFailover`, mapped to Envoy's native
+  `retriable_status_codes` + `retry_on: "retriable-status-codes"`) and the policy's own suspension
+  trigger (`isFailureStatus`), so the two stay in agreement about what counts as "this target failed."
 ```
 
 That's the *author-facing* shape — what an operator (or the LlmProxy transformer, if this stays

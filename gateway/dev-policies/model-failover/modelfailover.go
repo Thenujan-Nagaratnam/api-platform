@@ -65,6 +65,16 @@ const attemptIndexMetadataKey = "model_failover_attempt_index"
 type FailoverTarget struct {
 	Model    string `json:"model"`
 	Provider string `json:"provider,omitempty"`
+	// UpstreamDefinition is author-facing: the name of the upstream this
+	// member actually dials (a named additionalProviders[].as/.id, or any
+	// hand-declared upstreamDefinitions[].name — the controller's lookup
+	// doesn't distinguish their origin). Optional; when empty, gateway-controller
+	// resolves the dial target from Provider instead (today's default
+	// behavior — same-named provider and dial target). Decoupled from
+	// Provider so a member's credential/transform identity and its physical
+	// backend can differ — e.g. reusing one provider's credentials against a
+	// differently-named regional/load-balanced upstream.
+	UpstreamDefinition string `json:"upstreamDefinition,omitempty"`
 	// BasePath is injected by gateway-controller: the resolved upstream base
 	// path of the cluster this member dials. Every member of a chain is a
 	// loopback upstream on the SAME host:port, so auto_host_rewrite leaves
@@ -81,9 +91,13 @@ type FailoverTarget struct {
 	ClusterName string `json:"clusterName,omitempty"`
 }
 
-// FailoverTargetEntry is one client-requested-model's primary + fallback chain.
+// FailoverTargetEntry is one client-requested-model's primary + fallback
+// chain. FailoverTarget is embedded (not nested under a "target" key) so the
+// entry's own model/provider/upstreamDefinition sit at the same JSON level as
+// each entry in Fallbacks — the primary slot is authored exactly like a
+// fallback slot, just without its own further fallbacks.
 type FailoverTargetEntry struct {
-	Target    FailoverTarget   `json:"target"`
+	FailoverTarget
 	Fallbacks []FailoverTarget `json:"fallbacks"`
 	// AggregateCluster is injected by gateway-controller — see this plan's
 	// shared params contract.
@@ -94,6 +108,13 @@ type FailoverTargetEntry struct {
 type ModelFailoverParams struct {
 	Targets         []FailoverTargetEntry `json:"targets"`
 	SuspendDuration int                   `json:"suspendDuration"`
+	// StatusCodes is the set of response status codes that trigger escalation
+	// to the next chain member and count as this target's failure for
+	// suspension purposes. Empty/omitted defaults to "any 5xx" — this
+	// policy's original, hardcoded behavior. When set, it REPLACES that
+	// default entirely (it is not additive to "any 5xx"): list every code
+	// that should trigger failover, 5xx codes included, if you still want them.
+	StatusCodes []int `json:"statusCodes,omitempty"`
 	// PrimaryProvider is injected by gateway-controller: the identity a member
 	// authored without `provider:` resolves to (the primary provider ID). Used
 	// for selected_provider metadata and suspension keys; never as a cluster name.
@@ -162,6 +183,21 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 		}
 	}
 
+	if codesRaw, ok := raw["statusCodes"]; ok {
+		codes, ok := codesRaw.([]interface{})
+		if !ok {
+			return params, fmt.Errorf("'statusCodes' must be an array of numbers")
+		}
+		params.StatusCodes = make([]int, 0, len(codes))
+		for _, c := range codes {
+			n, ok := c.(float64)
+			if !ok {
+				return params, fmt.Errorf("'statusCodes' entries must be numbers")
+			}
+			params.StatusCodes = append(params.StatusCodes, int(n))
+		}
+	}
+
 	return params, nil
 }
 
@@ -194,11 +230,11 @@ func requestedModel(body []byte) string {
 	return strings.TrimSpace(payload.Model)
 }
 
-// findEntry returns the target entry whose Target.Model matches the
-// requested model, or nil.
+// findEntry returns the target entry whose own Model matches the requested
+// model, or nil.
 func (p *Policy) findEntry(model string) *FailoverTargetEntry {
 	for i := range p.params.Targets {
-		if strings.EqualFold(p.params.Targets[i].Target.Model, model) {
+		if strings.EqualFold(p.params.Targets[i].Model, model) {
 			return &p.params.Targets[i]
 		}
 	}
@@ -222,6 +258,23 @@ func (p *Policy) resolvedProvider(m FailoverTarget) string {
 		return p.params.PrimaryProvider
 	}
 	return m.Provider
+}
+
+// isFailureStatus reports whether a response status counts as this target's
+// failure, for both suspension and (mirrored in gateway-controller's xDS
+// generation) Envoy's own escalation decision. Defaults to "any 5xx" when
+// StatusCodes is unset; when set, it replaces that default rather than
+// extending it.
+func (p *Policy) isFailureStatus(status int) bool {
+	if len(p.params.StatusCodes) == 0 {
+		return status >= 500 && status < 600
+	}
+	for _, code := range p.params.StatusCodes {
+		if code == status {
+			return true
+		}
+	}
+	return false
 }
 
 // isSuspended checks and lazily clears an expired suspension entry — same
@@ -278,7 +331,7 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 		return policy.UpstreamRequestModifications{}
 	}
 
-	if !p.isSuspended(entry.Target.Model, p.resolvedProvider(entry.Target)) {
+	if !p.isSuspended(entry.Model, p.resolvedProvider(entry.FailoverTarget)) {
 		cluster := entry.AggregateCluster
 		return policy.UpstreamRequestModifications{UpstreamName: &cluster}
 	}
@@ -410,7 +463,7 @@ func attemptCount(headers *policy.Headers) int {
 // (1 = primary target, 2 = Fallbacks[0], ...), or nil past the chain's end.
 func resolveAttempt(entry *FailoverTargetEntry, index int) *FailoverTarget {
 	if index <= 1 {
-		return &entry.Target
+		return &entry.FailoverTarget
 	}
 	fallbackIdx := index - 2
 	if fallbackIdx >= len(entry.Fallbacks) {
@@ -520,7 +573,8 @@ func responseAttemptIndex(respCtx *policy.ResponseHeaderContext) int {
 	return attemptCount(respCtx.RequestHeaders)
 }
 
-// OnResponseHeaders records suspension for a failing attempt (any 5xx) and,
+// OnResponseHeaders records suspension for a failing attempt (isFailureStatus
+// — any 5xx by default, or exactly the configured StatusCodes) and,
 // for an attempt that escalated past the primary — whether by Envoy retrying
 // inside the aggregate or by the downstream bypass dispatching straight at a
 // fallback — sets ResolvedFailoverProviderHeader for downstream analytics
@@ -535,7 +589,7 @@ func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHe
 	}
 	member, index := match.member, match.index
 
-	if respCtx.ResponseStatus >= 500 {
+	if p.isFailureStatus(int(respCtx.ResponseStatus)) {
 		p.suspend(member.Model, p.resolvedProvider(*member))
 	}
 

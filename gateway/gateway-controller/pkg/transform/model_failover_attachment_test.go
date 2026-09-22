@@ -131,7 +131,7 @@ func modelFailoverProxyConfig() api.LLMProxyConfiguration {
 					Params: map[string]interface{}{
 						"targets": []interface{}{
 							map[string]interface{}{
-								"target": map[string]interface{}{"model": "gpt-4o"},
+								"model": "gpt-4o",
 								"fallbacks": []interface{}{
 									map[string]interface{}{
 										"model":    "claude-sonnet-4-5-20250929",
@@ -259,7 +259,7 @@ func TestLLMTransformer_ModelFailoverPolicy_UnknownProviderRejected(t *testing.T
 	params := (*proxy.Spec.OperationPolicies)[0].Paths[0].Params
 	params["targets"] = []interface{}{
 		map[string]interface{}{
-			"target": map[string]interface{}{"model": "gpt-4o"},
+			"model": "gpt-4o",
 			"fallbacks": []interface{}{
 				map[string]interface{}{"model": "claude", "provider": "not-a-configured-provider"},
 			},
