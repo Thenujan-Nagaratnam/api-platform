@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -129,9 +130,76 @@ type ModelFailoverParams struct {
 // chain-position resolution + provider/model metadata seeding + suspension.
 type Policy struct {
 	params ModelFailoverParams
+	susp   *suspensionState
+}
 
-	mu               sync.Mutex
-	suspendedTargets map[string]time.Time
+// suspensionState is the in-process suspension bookkeeping for one
+// model-failover chain attachment (one client-facing route). It exists
+// separately from Policy so it can be SHARED between multiple *Policy
+// instances of the same chain — see sharedSuspensionStateFor.
+type suspensionState struct {
+	mu        sync.Mutex
+	suspended map[string]time.Time
+}
+
+// sharedSuspensionRegistry maps an aggregate-cluster-derived key to the one
+// suspensionState every *Policy instance for that chain shares.
+//
+// model-failover is attached TWICE per route: once downstream
+// (operationPolicies:, decides routing) and once upstream (the
+// controller-synthesized copy, resolves chain position and records
+// suspension). registry.GetInstance creates a genuinely separate *Policy
+// object — with its own state, no built-in caching — for EACH attachment,
+// every time the policy chain is (re)built. Without this registry, a
+// suspension the upstream instance records is invisible to the downstream
+// instance's isSuspended check: the downstream call never bypasses a
+// suspended primary at all, because it's asking a different object that
+// never saw the failure. Keyed by aggregate cluster name(s) (controller-
+// computed via xds.AggregateClusterName, unique per route) rather than by
+// caching the whole *Policy: each GetPolicy call still gets fresh params
+// (so a redeploy is picked up immediately), while suspension bookkeeping is
+// shared with — and outlives — any one instance.
+//
+// This map is never evicted as routes are deleted; acceptable for now given
+// suspension state is already documented as ephemeral/in-process-only (no
+// cross-replica sharing), but worth revisiting if proxy churn in a long-
+// running process becomes a real concern.
+var (
+	sharedSuspensionMu       sync.Mutex
+	sharedSuspensionRegistry = map[string]*suspensionState{}
+)
+
+// sharedSuspensionKey derives the registry key from every target entry's
+// AggregateCluster. Empty (no aggregate cluster injected — e.g. a hand-built
+// Policy in a unit test) signals "don't share": the caller falls back to a
+// private, unshared state instead of bucketing unrelated instances together.
+func sharedSuspensionKey(params ModelFailoverParams) string {
+	names := make([]string, 0, len(params.Targets))
+	for _, t := range params.Targets {
+		if t.AggregateCluster != "" {
+			names = append(names, t.AggregateCluster)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
+}
+
+func sharedSuspensionStateFor(params ModelFailoverParams) *suspensionState {
+	key := sharedSuspensionKey(params)
+	if key == "" {
+		return &suspensionState{suspended: make(map[string]time.Time)}
+	}
+	sharedSuspensionMu.Lock()
+	defer sharedSuspensionMu.Unlock()
+	if s, ok := sharedSuspensionRegistry[key]; ok {
+		return s
+	}
+	s := &suspensionState{suspended: make(map[string]time.Time)}
+	sharedSuspensionRegistry[key] = s
+	return s
 }
 
 // GetPolicy is the v1alpha2 factory entry point.
@@ -140,7 +208,7 @@ func GetPolicy(_ policy.PolicyMetadata, rawParams map[string]interface{}) (polic
 	if err != nil {
 		return nil, fmt.Errorf("%s: invalid params: %w", PolicyName, err)
 	}
-	return &Policy{params: params, suspendedTargets: make(map[string]time.Time)}, nil
+	return &Policy{params: params, susp: sharedSuspensionStateFor(params)}, nil
 }
 
 func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
@@ -281,17 +349,17 @@ func (p *Policy) isFailureStatus(status int) bool {
 // check-and-delete-if-expired pattern model-round-robin uses (no background
 // sweep).
 func (p *Policy) isSuspended(model, provider string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.susp.mu.Lock()
+	defer p.susp.mu.Unlock()
 	key := suspensionKey(model, provider)
-	until, ok := p.suspendedTargets[key]
+	until, ok := p.susp.suspended[key]
 	if !ok {
 		return false
 	}
 	if time.Now().Before(until) {
 		return true
 	}
-	delete(p.suspendedTargets, key)
+	delete(p.susp.suspended, key)
 	return false
 }
 
@@ -299,9 +367,9 @@ func (p *Policy) suspend(model, provider string) {
 	if p.params.SuspendDuration <= 0 {
 		return
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.suspendedTargets[suspensionKey(model, provider)] = time.Now().Add(time.Duration(p.params.SuspendDuration) * time.Second)
+	p.susp.mu.Lock()
+	defer p.susp.mu.Unlock()
+	p.susp.suspended[suspensionKey(model, provider)] = time.Now().Add(time.Duration(p.params.SuspendDuration) * time.Second)
 }
 
 // OnRequestBody parses the client-requested model, matches it against the

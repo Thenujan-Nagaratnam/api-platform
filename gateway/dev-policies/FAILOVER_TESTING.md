@@ -51,6 +51,11 @@ expected to pass against the released modules.
     `X-Mock-Received-Auth`, and `X-Mock-Received-Model` headers, so a live
     request can assert exactly which backend served it, with what model, and
     what credential arrived — without needing to poll `/control/history`.
+    Each checks its own provider's conventional credential header first
+    (mock-openai: `Authorization`, mock-anthropic: `X-Api-Key`) but falls back
+    to the other — a request can physically land on either mock while
+    carrying the other provider's credential convention (see folder 9,
+    `upstreamDefinition`), and `X-Mock-Received-Auth` must still show it.
 - `postman/llm-failover-e2e.postman_collection.json` — the full e2e suite.
 
 ## 1. Start the mocks (host machine, not containers)
@@ -90,11 +95,24 @@ docker compose --profile redis up -d gateway-controller gateway-runtime sample-b
 
 Import `postman/llm-failover-e2e.postman_collection.json` into Postman (or
 run headless: `newman run postman/llm-failover-e2e.postman_collection.json
---insecure`). Its **Setup** folder registers both `LlmProvider`s and the one
-`LlmProxy` (idempotent — accepts 201 or 409 on repeat runs), then each
-numbered folder exercises one flow. Run the whole collection top to bottom;
-folder 4 (suspension expiry) has a ~6s in-script busy-wait to clear the
-5s `suspendDuration` configured on the proxy.
+--insecure`). Its **Setup** folder registers every `LlmProvider` and
+`LlmProxy` this collection needs (idempotent — accepts 201 or 409 on repeat
+runs), then each numbered folder exercises one flow. Run the whole collection
+top to bottom; folder 4 (suspension expiry) has a ~6s in-script busy-wait to
+clear the 5s `suspendDuration` configured on `failover-default`.
+
+Setup registers three proxies, each isolating one concern so folders never
+share suspension state or interfere with each other's assertions:
+`failover-default` (the default config, `suspendDuration: 5`, no
+`statusCodes`), `failover-statuscodes` (`statusCodes: [429]`,
+`suspendDuration: 0`), and `failover-upstreamdef` (a fallback whose
+`upstreamDefinition` points at a *different* named upstream than its
+`provider` — see folder 9). The last of these also needs a second
+`LlmProvider`, `anthropic-mirror-provider`, whose `upstream.url` deliberately
+points at mock-**openai**'s own address (`:9611`) under a distinct identity —
+it exists purely to give `upstreamDefinition` a physically distinguishable
+dial target that's provably *not* where `provider: anthropic-upstream` alone
+would have routed; its own auth/transformer are never attached or used.
 
 ## What each folder proves
 
@@ -107,17 +125,8 @@ folder 4 (suspension expiry) has a ~6s in-script busy-wait to clear the
 | 5. Both Fail | Client sees the *last* attempt's error response (Envoy's own exhaustion behavior) |
 | 6. No Model Match | A model absent from `model-failover`'s `targets` param never touches the fallback provider at all |
 | 7. Streaming | A failover-driven attempt with `"stream": true` gets a real Anthropic SSE response, translated to OpenAI `chat.completion.chunk` events |
-
-Note: escalation trigger codes are configurable again via `model-failover`'s
-own `statusCodes` param (a list of literal HTTP status codes, e.g.
-`[500, 502, 429]`) — replacing (not extending) the default "any 5xx" when set.
-This is a different shape than the superseded `resilience.failover` schema's
-symbolic `retryOn` (e.g. `retriable-4xx`), but restores the same
-configurability. **Not yet exercised by this collection** — no folder here
-sets `statusCodes` or `upstreamDefinition` (the other new, optional param that
-decouples a fallback's credential identity from which upstream it dials); both
-are currently only covered by gateway-controller unit tests, not this live
-e2e suite.
+| 8. Configurable statusCodes | A `statusCodes: [429]`-configured proxy fails over on 429; the default (`5xx`-only) proxy does not — same primary response, different configured trigger set |
+| 9. upstreamDefinition Overrides Dial Target | A fallback with `provider: anthropic-upstream, upstreamDefinition: anthropic-mirror` dials mock-**openai**'s server (proven via `X-Mock-Backend: openai`) while still carrying `anthropic-upstream`'s own credential (`X-Mock-Received-Auth` matches `anthropicApiKey`, not the primary's) — and mock-anthropic's real cluster is never touched (`callCount: 0`) |
 
 ## Cleanup
 

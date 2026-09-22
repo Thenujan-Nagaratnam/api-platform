@@ -97,6 +97,15 @@ WORKDIR /api-platform/common
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
+# policy-engine/go.mod carries local replace directives for every system/dev
+# policy it directly imports (e.g. system-policies/analytics,
+# dev-policies/model-failover) — each target's go.mod must be present before
+# `go mod download` below, the same reason sdk-core/httpkit are copied above.
+# Only go.mod is needed (mirroring that pattern): these modules aren't
+# downloaded here themselves, only resolved as replace targets.
+COPY --from=system-policies analytics/go.mod /api-platform/gateway/system-policies/analytics/
+COPY --from=dev-policies model-failover/go.mod /api-platform/gateway/dev-policies/model-failover/
+
 # Download policy-engine dependencies (cached by go.mod/go.sum changes)
 WORKDIR /api-platform/gateway/gateway-runtime/policy-engine
 COPY policy-engine/go.mod policy-engine/go.sum ./

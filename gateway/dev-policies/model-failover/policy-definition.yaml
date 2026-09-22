@@ -1,0 +1,98 @@
+name: model-failover
+version: v0.1.0
+description: |
+  Retries a failed LLM request against a declared fallback chain of
+  {model, provider} targets on upstream failure, with correct per-attempt
+  credential injection and payload translation.
+
+parameters:
+  type: object
+  properties:
+    targets:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: |
+        Ordered list of client-requested-model failover chains. Each entry's
+        own model/provider/upstreamDefinition are authored at the same level
+        as fallbacks[] entries use.
+      items:
+        type: object
+        properties:
+          model:
+            type: string
+            description: The client-requested model this chain matches.
+            minLength: 1
+          provider:
+            type: string
+            description: |
+              Optionally names the provider this target's own request is sent
+              to. Must match an LlmProxy additionalProviders[].as value (or
+              the provider id when `as` is absent), or the primary provider.
+              Omitted, defaults to the proxy's own primary provider.
+            minLength: 1
+          upstreamDefinition:
+            type: string
+            description: |
+              Optionally overrides which named upstream this target actually
+              dials, independent of `provider` (which still determines
+              credential/transform identity). Omitted, the dial target
+              defaults to `provider`.
+            minLength: 1
+          fallbacks:
+            type: array
+            description: Ordered fallback chain tried in sequence after the target fails.
+            items:
+              type: object
+              properties:
+                model:
+                  type: string
+                  description: The model to request from this fallback.
+                  minLength: 1
+                provider:
+                  type: string
+                  description: |
+                    Names the provider this fallback is sent to. Must match
+                    an LlmProxy additionalProviders[].as value (or the
+                    provider id when `as` is absent), or the primary
+                    provider. Omitted, defaults to the proxy's own primary
+                    provider.
+                  minLength: 1
+                upstreamDefinition:
+                  type: string
+                  description: |
+                    Optionally overrides which named upstream this fallback
+                    actually dials, independent of `provider`.
+                  minLength: 1
+              required:
+                - model
+        required:
+          - model
+      minItems: 1
+    statusCodes:
+      type: array
+      x-wso2-policy-advanced-param: true
+      description: |
+        Response status codes that trigger escalation to the next chain
+        member, and count as this target's failure for suspension purposes.
+        Omitted, defaults to any 5xx. When set, this REPLACES that default
+        entirely rather than extending it — list every code that should
+        trigger failover, 5xx codes included if still wanted.
+      items:
+        type: integer
+        minimum: 100
+        maximum: 599
+      minItems: 1
+    suspendDuration:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        Seconds a target is skipped for after a failure. Set to 0 to disable
+        suspension tracking entirely.
+      minimum: 0
+      default: 0
+  required:
+    - targets
+
+systemParameters:
+  type: object
+  properties: {}

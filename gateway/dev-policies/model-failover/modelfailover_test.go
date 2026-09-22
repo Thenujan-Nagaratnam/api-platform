@@ -52,7 +52,7 @@ func TestOnRequestBody_RoutesToMatchedTargetAggregate(t *testing.T) {
 				},
 			},
 		},
-		suspendedTargets: make(map[string]time.Time),
+		susp: &suspensionState{suspended: make(map[string]time.Time)},
 	}
 	reqCtx := &policy.RequestContext{
 		Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true},
@@ -68,8 +68,8 @@ func TestOnRequestBody_RoutesToMatchedTargetAggregate(t *testing.T) {
 
 func TestOnRequestBody_NoMatchIsNoop(t *testing.T) {
 	p := &Policy{
-		params:           ModelFailoverParams{Targets: []FailoverTargetEntry{{FailoverTarget: FailoverTarget{Model: "gpt-4o"}}}},
-		suspendedTargets: make(map[string]time.Time),
+		params: ModelFailoverParams{Targets: []FailoverTargetEntry{{FailoverTarget: FailoverTarget{Model: "gpt-4o"}}}},
+		susp:   &suspensionState{suspended: make(map[string]time.Time)},
 	}
 	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"some-other-model"}`), Present: true}}
 
@@ -91,9 +91,9 @@ func TestOnRequestBody_SuspendedTargetSkipsToFallback(t *testing.T) {
 				},
 			},
 		},
-		suspendedTargets: map[string]time.Time{
+		susp: &suspensionState{suspended: map[string]time.Time{
 			suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour),
-		},
+		}},
 	}
 	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
@@ -117,7 +117,7 @@ func TestOnRequestBody_SkipsFallbackWithEmptyProvider(t *testing.T) {
 				AggregateCluster: "failover_agg_chat_0",
 			}},
 		},
-		suspendedTargets: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)},
+		susp: &suspensionState{suspended: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)}},
 	}
 	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
@@ -136,7 +136,7 @@ func TestOnRequestBody_OnlyEmptyProviderFallbacksRoutesToAggregate(t *testing.T)
 				AggregateCluster: "failover_agg_chat_0",
 			}},
 		},
-		suspendedTargets: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)},
+		susp: &suspensionState{suspended: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)}},
 	}
 	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
@@ -148,8 +148,8 @@ func TestOnRequestBody_OnlyEmptyProviderFallbacksRoutesToAggregate(t *testing.T)
 
 func TestOnRequestBody_EmptyAggregateClusterIsNoop(t *testing.T) {
 	p := &Policy{
-		params:           ModelFailoverParams{Targets: []FailoverTargetEntry{{FailoverTarget: FailoverTarget{Model: "gpt-4o"}}}},
-		suspendedTargets: make(map[string]time.Time),
+		params: ModelFailoverParams{Targets: []FailoverTargetEntry{{FailoverTarget: FailoverTarget{Model: "gpt-4o"}}}},
+		susp:   &suspensionState{suspended: make(map[string]time.Time)},
 	}
 	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
@@ -160,8 +160,8 @@ func TestOnRequestBody_EmptyAggregateClusterIsNoop(t *testing.T) {
 
 func TestSuspension_ConcurrentAccess(t *testing.T) {
 	p := &Policy{
-		params:           ModelFailoverParams{SuspendDuration: 60},
-		suspendedTargets: make(map[string]time.Time),
+		params: ModelFailoverParams{SuspendDuration: 60},
+		susp:   &suspensionState{suspended: make(map[string]time.Time)},
 	}
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
@@ -183,7 +183,7 @@ func chainPolicy() *Policy {
 			}},
 			SuspendDuration: 900,
 		},
-		suspendedTargets: make(map[string]time.Time),
+		susp: &suspensionState{suspended: make(map[string]time.Time)},
 	}
 }
 
@@ -734,4 +734,75 @@ func TestParseParams_CarriesUpstreamDefinition(t *testing.T) {
 	// Provider stays the credential/transform identity, independent of which
 	// physical upstream was named — the whole point of the split.
 	assert.Equal(t, "anthropic-upstream", params.Targets[0].Fallbacks[0].Provider)
+}
+
+// ─── Suspension state shared across GetPolicy() calls for the same chain ────
+
+// TestGetPolicy_SharesSuspensionStateAcrossInstancesOfTheSameChain is the
+// regression test for a real, live-e2e-caught bug: model-failover is
+// attached twice per route (once downstream via operationPolicies:, once
+// upstream via the controller's synthesized copy), and
+// registry.GetInstance creates a genuinely separate *Policy object for each
+// attachment — no built-in instance caching. Before sharedSuspensionStateFor
+// existed, each *Policy had its own private suspendedTargets map, so a
+// suspension the upstream instance recorded (OnResponseHeaders, on a 5xx)
+// was invisible to a DIFFERENT *Policy instance's isSuspended check
+// (OnRequestBody) — the downstream routing decision never saw it, and a
+// known-bad primary was never actually bypassed. Reproduced live: two
+// requests through the real gateway, back to back, both hit the primary
+// even after the first one's 500 should have suspended it.
+func TestGetPolicy_SharesSuspensionStateAcrossInstancesOfTheSameChain(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":            "gpt-4o",
+				"aggregateCluster": "failover_agg_shared_test_0",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude", "provider": "anthropic-upstream"},
+				},
+			},
+		},
+		"suspendDuration": float64(900),
+	}
+
+	downstreamInstance, err := GetPolicy(policy.PolicyMetadata{}, raw)
+	require.NoError(t, err)
+	upstreamInstance, err := GetPolicy(policy.PolicyMetadata{}, raw)
+	require.NoError(t, err)
+
+	downstreamPolicy := downstreamInstance.(*Policy)
+	upstreamPolicy := upstreamInstance.(*Policy)
+	require.NotSame(t, downstreamPolicy, upstreamPolicy,
+		"GetPolicy must still return a distinct *Policy per call (fresh params on redeploy) — only suspension state is shared")
+
+	// The upstream instance records a suspension (as OnResponseHeaders would
+	// on a 5xx)...
+	upstreamPolicy.suspend("gpt-4o", "")
+
+	// ...and the DOWNSTREAM instance — a different Go object — must see it.
+	assert.True(t, downstreamPolicy.isSuspended("gpt-4o", ""),
+		"suspension recorded by one *Policy instance of a chain must be visible to another instance of the SAME chain")
+}
+
+// A *Policy built without an injected aggregateCluster (e.g. directly, as
+// every other test in this file does) must not share state with anything —
+// sharedSuspensionKey returns "" and each instance gets its own private map.
+func TestGetPolicy_NoAggregateClusterMeansPrivateUnsharedState(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}},
+		},
+	}
+
+	a, err := GetPolicy(policy.PolicyMetadata{}, raw)
+	require.NoError(t, err)
+	b, err := GetPolicy(policy.PolicyMetadata{}, raw)
+	require.NoError(t, err)
+
+	aPolicy, bPolicy := a.(*Policy), b.(*Policy)
+	aPolicy.params.SuspendDuration = 900
+	aPolicy.suspend("gpt-4o", "")
+
+	assert.False(t, bPolicy.isSuspended("gpt-4o", ""),
+		"without an aggregate cluster key, instances must not accidentally share suspension state")
 }
