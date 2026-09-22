@@ -28,8 +28,10 @@ code, into an ordinary policy — `model-failover` — attached and executed the
 
 ## 2. Goal
 
-- `model-failover` is a real policy: same attachment syntax (`operationPolicies:`/`upstreamPolicies:`),
+- `model-failover` is a real policy: same author-facing attachment syntax (`operationPolicies:`),
   same params-from-config pattern, same `Mode()`-declared phase participation as any other policy.
+  Its second, upstream-attempt attachment is controller-synthesized, not author-written — see §3's
+  post-implementation note on why `upstreamPolicies:` has no author-facing schema field at all.
 - It owns the full failover lifecycle: downstream target selection and suspension pre-emption, and
   per-attempt chain-position resolution, provider/model identity seeding, and suspension recording —
   the runtime logic `resilience.failover` currently spreads across the kernel.
@@ -88,6 +90,18 @@ primary; deploy-time error otherwise). The policy is also attached under `upstre
 *same expanded params* — the controller synthesizes this second attachment automatically when it sees
 `model-failover` under `operationPolicies:`, the same way it already synthesizes provider-scoped
 `upstreamPolicies:` attachments for credential/transform policies (§6).
+
+**Post-implementation correction:** `upstreamPolicies:` has no author-facing schema field at all —
+removed from `LLMProxyConfigData`/`LLMProviderConfigData` after this session established that nothing,
+model-failover included, ever needed an author to hand-write it (every real consumer is
+controller-synthesized), and that keeping it open invited exactly the kind of downstream/upstream
+credential double-attachment §8 had to fix. `upstreamPolicies:` throughout this document names the
+*internal* wire representation the controller populates programmatically — never something an operator
+writes in a proxy/provider's YAML. The underlying execution mechanism (`models.Policy.Upstream bool`,
+the runtime chain's upstream-policy list, the four `ExecuteUpstreamAttempt*` executor functions) is
+unaffected; only the schema door for hand-authoring it was closed. A future policy that also needs
+per-attempt execution gets its own controller-side synthesis, the same way Step 3.6 does for
+`model-failover`, rather than a generic author-facing attachment point.
 
 ## 4. Downstream phase
 

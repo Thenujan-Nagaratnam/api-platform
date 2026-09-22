@@ -279,8 +279,12 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 	// attached at all). Moved ahead of Step 3.5 so it can be consulted there:
 	// a provider a failover chain references must NOT also get a downstream
 	// attachment (see Step 3.5's skip below for why).
+	//
+	// upstreamPolicies has no author-facing schema field any more — there is
+	// no operator-facing upstream-attempt attachment point — so it starts
+	// empty and is populated purely by Step 3.6's synthesis below.
 	opLevelPolicies := collectOperationLevelLLMPolicies(proxy.Spec.OperationPolicies, proxy.Spec.Policies)
-	upstreamPolicies := derefOperationPolicies(proxy.Spec.UpstreamPolicies)
+	var upstreamPolicies []api.OperationPolicy
 	modelFailoverAttachments := operationPoliciesNamed(opLevelPolicies, modelFailoverPolicyName)
 	var failoverReferencedProviders []string
 	failoverReferencedProviderSet := map[string]bool{}
@@ -377,10 +381,12 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 	// chains. When one is present the controller synthesizes two further
 	// attachments:
 	//
-	//  a) a second, unconditioned instance of model-failover itself under
-	//     upstreamPolicies:, carrying the exact same params — it is what resolves
-	//     each attempt's chain position and seeds selected_provider/selected_model
-	//     into the shared request metadata during the upstream-attempt phase.
+	//  a) a second, unconditioned instance of model-failover itself, carrying
+	//     the exact same params — it is what resolves each attempt's chain
+	//     position and seeds selected_provider/selected_model into the shared
+	//     request metadata during the upstream-attempt phase. There is no
+	//     author-facing upstreamPolicies: field for an author to have already
+	//     written this instance themselves, so it is always appended fresh.
 	//  b) one upstream-attempt instance of every provider-scoped
 	//     credential/transform policy, per provider the chain references, each
 	//     gated by the same selectedProviderExecutionCondition CEL expression
@@ -390,8 +396,8 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 	//     route. The policies themselves need no code changes — only the
 	//     attachment point and the condition differ (design doc §8).
 	//
-	// (a) is attached by appending to upstreamPolicies below, so it flows through
-	// the ordinary Phase 2 attachment loop and therefore lands ahead of every
+	// (a) is appended to upstreamPolicies below, so it flows through the
+	// ordinary Phase 2 attachment loop and therefore lands ahead of every
 	// provider-scoped attachment appended in Phase 3 — the ordering the metadata
 	// hand-off requires (design doc §9).
 	//
@@ -400,14 +406,7 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 	// Step 3.5 needed to consult failoverReferencedProviderSet.
 	var modelFailoverProviderPolicies []api.Policy
 	if len(modelFailoverAttachments) > 0 {
-		if len(operationPoliciesNamed(upstreamPolicies, modelFailoverPolicyName)) == 0 {
-			// Copy rather than append in place: derefOperationPolicies hands back
-			// the caller's own slice, whose spare capacity is not ours to write.
-			combined := make([]api.OperationPolicy, 0, len(upstreamPolicies)+len(modelFailoverAttachments))
-			combined = append(combined, upstreamPolicies...)
-			combined = append(combined, modelFailoverAttachments...)
-			upstreamPolicies = combined
-		}
+		upstreamPolicies = append(upstreamPolicies, modelFailoverAttachments...)
 
 		for _, providerID := range failoverReferencedProviders {
 			condition := selectedProviderExecutionCondition(providerID, false)
@@ -738,9 +737,14 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 			}
 		}
 
-		// Phase 3: Process User-Defined Policies (operationPolicies + deprecated policies)
+		// Phase 3: Process User-Defined Policies (operationPolicies + deprecated policies).
+		// LlmProvider has no upstream-attempt synthesis of its own (that's a
+		// model-failover/LlmProxy-only mechanism) and there is no author-facing
+		// upstreamPolicies: field any more, so this is always empty — kept as a
+		// variable rather than removed so orderedLLMPolicyAttachments' shared
+		// two-list signature below needs no LlmProvider-specific branch.
 		opLevelPolicies := collectOperationLevelLLMPolicies(provider.Spec.OperationPolicies, provider.Spec.Policies)
-		upstreamPolicies := derefOperationPolicies(provider.Spec.UpstreamPolicies)
+		var upstreamPolicies []api.OperationPolicy
 		if len(opLevelPolicies) > 0 || len(upstreamPolicies) > 0 {
 			registerExplicitLLMPolicyOperations(operationRegistry, append(append([]api.OperationPolicy{}, opLevelPolicies...), upstreamPolicies...), func(path, method string) bool {
 				return !isDeniedByException(path, method, deniedPathMethods)
@@ -842,9 +846,10 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 			operationRegistry[key] = op
 		}
 
-		// Phase 3: Process Policies with Dynamic Operation Creation (operationPolicies + deprecated policies)
+		// Phase 3: Process Policies with Dynamic Operation Creation (operationPolicies + deprecated policies).
+		// See the AllowAll branch above for why upstreamPolicies is always empty here.
 		opLevelPolicies := collectOperationLevelLLMPolicies(provider.Spec.OperationPolicies, provider.Spec.Policies)
-		upstreamPolicies := derefOperationPolicies(provider.Spec.UpstreamPolicies)
+		var upstreamPolicies []api.OperationPolicy
 		if len(opLevelPolicies) > 0 || len(upstreamPolicies) > 0 {
 			registerExplicitLLMPolicyOperations(operationRegistry, append(append([]api.OperationPolicy{}, opLevelPolicies...), upstreamPolicies...), func(path, method string) bool {
 				return isAllowedByAccessControl(path, method, normalizedExceptions)
@@ -1406,13 +1411,6 @@ func orderedLLMPolicyAttachments(policies, upstreamPolicies []api.OperationPolic
 	})
 
 	return attachments
-}
-
-func derefOperationPolicies(p *[]api.OperationPolicy) []api.OperationPolicy {
-	if p == nil {
-		return nil
-	}
-	return *p
 }
 
 func upstreamFlag(upstream bool) *bool {

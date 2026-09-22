@@ -390,15 +390,16 @@ func TestTransform_ModelFailoverPolicy_NoAttachment_NoUpstreamInstances(t *testi
 	}
 }
 
-// TestTransform_ModelFailoverPolicy_ExistingUpstreamAttachmentNotDuplicated
-// guards the idempotency of the synthesized attachment: an author who already
-// spelled model-failover out under upstreamPolicies: gets exactly one upstream
-// instance, not two.
-func TestTransform_ModelFailoverPolicy_ExistingUpstreamAttachmentNotDuplicated(t *testing.T) {
+// TestTransform_ModelFailoverPolicy_SynthesizedUpstreamInstanceIsExactlyOne
+// pins that the synthesized upstream-attempt instance never duplicates itself
+// across repeated Transform calls or otherwise. upstreamPolicies: has no
+// author-facing schema field any more — there is no way for an author to have
+// pre-declared one for the controller to detect and skip — so this is the
+// only source of that instance, always exactly one.
+func TestTransform_ModelFailoverPolicy_SynthesizedUpstreamInstanceIsExactlyOne(t *testing.T) {
 	_, transformer := newFailoverAuthTestStore(t)
 
 	proxy := modelFailoverProxy()
-	proxy.Spec.UpstreamPolicies = &[]api.OperationPolicy{modelFailoverOperationPolicy()}
 
 	result, err := transformer.Transform(proxy, &api.RestAPI{})
 	require.NoError(t, err)

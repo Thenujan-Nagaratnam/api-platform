@@ -9,10 +9,14 @@ established for the oauth2 policy.
 ## What's here
 
 Per-attempt upstream policy participation no longer needs a forked policy or
-an unreleased SDK field at all: any policy attached under `upstreamPolicies:`
-in the LlmProvider/LlmProxy config runs per upstream attempt using its own,
-unmodified `RequestPolicy`/`ResponsePolicy`/`RequestHeaderPolicy`/`ResponseHeaderPolicy`
+an unreleased SDK field at all: a policy the controller marks for the
+upstream-attempt phase runs per upstream attempt using its own, unmodified
+`RequestPolicy`/`ResponsePolicy`/`RequestHeaderPolicy`/`ResponseHeaderPolicy`
 implementation (see `docs/superpowers/specs/2026-09-21-upstream-policy-reuse-design.md`).
+There is no author-facing `upstreamPolicies:` YAML field — the only way a
+policy instance reaches this phase today is via `model-failover`'s own
+controller-side synthesis (attaching itself plus the credential/transformer
+of every provider its chain references).
 `build.yaml` now references the released `gomodule:` versions of every
 policy — the local `dev-policies/openai-to-anthropic-transformer/`,
 `dev-policies/oauth2-generator/`, `dev-policies/llm-upstream-provider-auth/`
