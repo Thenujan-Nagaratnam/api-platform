@@ -201,6 +201,22 @@ selected_provider != '' && selected_provider == 'anthropic-upstream'
 implementations already do the right thing when the executor simply doesn't call them for an attempt
 whose condition doesn't match.
 
+**Post-implementation correction:** a provider referenced by a `model-failover` chain (the primary
+included, via the implicit-target rule) no longer *also* gets its ordinary downstream instance
+attached. Initially it did — the downstream instance (gated on "nothing else claimed this provider
+yet") and the upstream-attempt instance above coexisted. That downstream instance fires
+unconditionally, before `model-failover`'s own routing decision even runs, since nothing has set
+`selected_provider` yet at that point. On a cross-provider retry or the suspended-primary bypass, its
+header was never removed — since a different provider typically uses a different header name
+(`Authorization` vs `X-Api-Key`), `HeadersToSet`'s overwrite semantics never collided with it, so it
+rode along to the wrong backend as a leaked, spurious credential. The fix: the controller now skips
+the downstream attachment entirely for any provider a `model-failover` chain references, since the
+upstream-attempt instance already covers every attempt including the first (Envoy's upstream ext_proc
+phase runs on attempt 1 too, not only retries) — one attachment point owns each such provider's
+credential/transform decision, not two racing against each other. A provider used only through some
+other downstream mechanism (`llm-header-router`, `model-round-robin`) and never named in any
+`model-failover` chain is unaffected and keeps its downstream attachment as before.
+
 ## 9. Executor change
 
 `internal/executor/chain.go`'s four upstream-attempt dispatch functions

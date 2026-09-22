@@ -274,16 +274,92 @@ func TestTransform_ModelFailoverPolicy_AttachedDownstreamAndUpstreamWithProvider
 	assert.Less(t, failoverIdx, transformerIdx)
 	assert.Less(t, failoverIdx, setHeadersIdx)
 
-	// The pre-existing downstream mechanism must be untouched.
-	downstreamOauth2 := downstreamAttachments(policies, constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME)
-	require.Len(t, downstreamOauth2, 1)
-	require.NotNil(t, downstreamOauth2[0].ExecutionCondition)
-	require.NotNil(t, downstreamOauth2[0].Params)
-	assert.Equal(t, "anthropic-upstream", (*downstreamOauth2[0].Params)["providerId"],
-		"proxyUpstreamAuthPolicy must inject providerId into oauth2-generator's own params so it can self-gate a failover attempt")
-	downstreamTransformer := downstreamAttachments(policies, testTransformerPolicyName)
-	require.Len(t, downstreamTransformer, 1)
-	require.NotNil(t, downstreamTransformer[0].ExecutionCondition)
+	// A provider a model-failover chain references must NOT ALSO get a
+	// downstream attachment: the upstream-attempt instance above already
+	// covers every attempt, including the first (Envoy's upstream ext_proc
+	// phase runs on attempt 1 too, not just retries) — a downstream copy
+	// would fire unconditionally before model-failover's own routing
+	// decision even runs, and nothing removes it if a later attempt
+	// resolves to a different provider whose credential uses a different
+	// header name, leaking this one alongside the correct one.
+	assert.Empty(t, downstreamAttachments(policies, constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME),
+		"a failover-referenced additional provider's credential must not also be attached downstream")
+	assert.Empty(t, downstreamAttachments(policies, testTransformerPolicyName),
+		"a failover-referenced additional provider's transformer must not also be attached downstream")
+	// set-headers also implements the unrelated, always-present internal
+	// loopback marker (x-wso2-internal-loopback) — exclude it, the same way
+	// llm_transformer_multiprovider_test.go already does, to isolate the
+	// primary's actual credential attachment.
+	assert.Empty(t, credentialAttachments(downstreamAttachments(policies, constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME)),
+		"the primary provider is failover-referenced too (implicit target), so its credential must not be attached downstream either")
+}
+
+// credentialAttachments filters out the internal loopback marker instance
+// (also named "set-headers") from a list of downstream/upstream attachments,
+// isolating the actual provider-credential instance(s).
+func credentialAttachments(policies []api.Policy) []api.Policy {
+	var out []api.Policy
+	for _, p := range policies {
+		if !hasInternalLoopbackMarkerPolicy([]api.Policy{p}) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// TestTransform_ModelFailoverPolicy_NonReferencedProviderKeepsDownstreamAttachment
+// guards the fix's precise scope: only providers a model-failover chain
+// actually references lose their downstream attachment. A third provider used
+// solely via some other downstream selection mechanism (here simulated by just
+// not naming it in any target/fallback) keeps its ordinary downstream
+// credential/transformer instance untouched.
+func TestTransform_ModelFailoverPolicy_NonReferencedProviderKeepsDownstreamAttachment(t *testing.T) {
+	db, transformer := newFailoverAuthTestStore(t)
+	saveFailoverAuthTestProvider(t, db, "mistral-provider", "/mistral-provider")
+
+	proxy := modelFailoverProxy()
+	additional := append(*proxy.Spec.AdditionalProviders, api.LLMProxyAdditionalProvider{
+		Id: "mistral-provider",
+		As: stringPtr("mistral-upstream"),
+		Auth: &api.LLMUpstreamAuth{
+			Type:   api.LLMUpstreamAuthTypeApiKey,
+			Header: stringPtr("Authorization"),
+			Value:  stringPtr("Bearer mistral"),
+		},
+		Transformer: &api.LLMProxyTransformer{
+			Type:    "openai-to-mistral-transformer",
+			Version: "v0",
+		},
+	})
+	proxy.Spec.AdditionalProviders = &additional
+
+	result, err := transformer.Transform(proxy, &api.RestAPI{})
+	require.NoError(t, err)
+
+	chatOp := findChatCompletionsOperation(t, result.Spec.Operations)
+	require.NotNil(t, chatOp.Policies)
+	policies := *chatOp.Policies
+
+	// mistral-upstream is not named in the failover chain's target or
+	// fallbacks at all, so it must keep its ordinary downstream attachment.
+	// The primary also uses "set-headers" (api-key-auth) downstream, but the
+	// primary IS failover-referenced (the implicit target) so its downstream
+	// copy is skipped — leaving only mistral's own instance under this name
+	// (credentialAttachments also excludes the always-present, unrelated
+	// internal loopback marker, which shares this same policy name).
+	downstreamMistralAuth := credentialAttachments(downstreamAttachments(policies, constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME))
+	require.Len(t, downstreamMistralAuth, 1, "only mistral-upstream's own downstream credential should remain")
+	require.NotNil(t, downstreamMistralAuth[0].ExecutionCondition)
+	assert.Contains(t, *downstreamMistralAuth[0].ExecutionCondition, "mistral-upstream")
+
+	downstreamMistralTransformer := downstreamAttachments(policies, "openai-to-mistral-transformer")
+	require.Len(t, downstreamMistralTransformer, 1,
+		"mistral-upstream's transformer is untouched since it is not referenced by any model-failover chain")
+
+	// It must NOT gain an upstream-attempt instance either — only chain-
+	// referenced providers do.
+	assert.Empty(t, upstreamAttachments(policies, "openai-to-mistral-transformer"),
+		"a non-referenced provider gains no upstream-attempt instance")
 }
 
 // TestTransform_ModelFailoverPolicy_NoAttachment_NoUpstreamInstances is the
