@@ -37,8 +37,12 @@ type pathMethodKey struct {
 type llmPolicyAttachment struct {
 	policy    api.OperationPolicy
 	pathEntry api.OperationPolicyPath
-	// upstream marks an attachment that came from upstreamPolicies: the policy
-	// engine runs it in the upstream-attempt phase instead of the downstream one.
+	// upstream marks an attachment the policy engine runs in the
+	// upstream-attempt phase instead of the downstream one — either an author
+	// set operationPolicies:'s own upstream: true on this entry, or (model-
+	// failover's synthesized attachments only) it was appended via the
+	// second, controller-only upstreamPolicies parameter to
+	// orderedLLMPolicyAttachments.
 	upstream bool
 }
 
@@ -1396,8 +1400,14 @@ func collectOperationLevelLLMPolicies(operationPolicies *[]api.OperationPolicy, 
 func orderedLLMPolicyAttachments(policies, upstreamPolicies []api.OperationPolicy) []llmPolicyAttachment {
 	attachments := make([]llmPolicyAttachment, 0)
 	for _, llmPol := range policies {
+		// An author can mark an operationPolicies: entry upstream: true
+		// directly (OperationPolicy.Upstream) — the same per-attempt
+		// execution mechanism model-failover's own synthesis uses, now also
+		// available hand-authored and path/method-scoped, mirroring what
+		// globalPolicies:'s Policy.Upstream already allowed API-wide.
+		authoredUpstream := llmPol.Upstream != nil && *llmPol.Upstream
 		for _, pathEntry := range llmPol.Paths {
-			attachments = append(attachments, llmPolicyAttachment{policy: llmPol, pathEntry: pathEntry})
+			attachments = append(attachments, llmPolicyAttachment{policy: llmPol, pathEntry: pathEntry, upstream: authoredUpstream})
 		}
 	}
 	for _, llmPol := range upstreamPolicies {

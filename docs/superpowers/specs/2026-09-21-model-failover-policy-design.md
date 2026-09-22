@@ -121,17 +121,25 @@ primary; deploy-time error otherwise). The policy is also attached under `upstre
 `model-failover` under `operationPolicies:`, the same way it already synthesizes provider-scoped
 `upstreamPolicies:` attachments for credential/transform policies (§6).
 
-**Post-implementation correction:** `upstreamPolicies:` has no author-facing schema field at all —
-removed from `LLMProxyConfigData`/`LLMProviderConfigData` after this session established that nothing,
-model-failover included, ever needed an author to hand-write it (every real consumer is
-controller-synthesized), and that keeping it open invited exactly the kind of downstream/upstream
-credential double-attachment §8 had to fix. `upstreamPolicies:` throughout this document names the
-*internal* wire representation the controller populates programmatically — never something an operator
-writes in a proxy/provider's YAML. The underlying execution mechanism (`models.Policy.Upstream bool`,
-the runtime chain's upstream-policy list, the four `ExecuteUpstreamAttempt*` executor functions) is
-unaffected; only the schema door for hand-authoring it was closed. A future policy that also needs
-per-attempt execution gets its own controller-side synthesis, the same way Step 3.6 does for
-`model-failover`, rather than a generic author-facing attachment point.
+**Post-implementation correction:** `upstreamPolicies:` has no author-facing schema *list* field at
+all — removed from `LLMProxyConfigData`/`LLMProviderConfigData` after this session established that
+nothing, model-failover included, ever needed an author to hand-write a separate list for it (every
+real consumer is controller-synthesized), and that keeping it open invited exactly the kind of
+downstream/upstream credential double-attachment §8 had to fix. `upstreamPolicies:` throughout this
+document names the *internal* wire representation the controller populates programmatically for
+model-failover's own synthesis — never a list an operator writes directly.
+
+That said, hand-authored per-attempt execution IS a supported, deliberate mechanism — just expressed as
+a boolean on an existing attachment, not a second list. `Policy.upstream` (on `globalPolicies:`
+entries) and `OperationPolicy.upstream` (on `operationPolicies:` entries, added after the removal
+above, for parity) both let an author mark ANY attachment to run once per upstream attempt instead of
+once downstream — the exact same generic dispatch (`if policyConfig.Upstream { ... }` in
+`internal/xdsclient/handler.go`) that model-failover's synthesized attachments use, with no
+policy-name special-casing. This is the intended way for a policy other than model-failover to
+participate in the upstream-attempt phase: mark it `upstream: true` directly, rather than needing its
+own bespoke controller-side synthesis the way Step 3.6 provides for model-failover specifically (that
+synthesis exists only because model-failover's upstream instance needs *computed* values — an author
+marking an ordinary policy `upstream: true` needs nothing computed, so no synthesis is needed for it).
 
 ## 4. Downstream phase
 

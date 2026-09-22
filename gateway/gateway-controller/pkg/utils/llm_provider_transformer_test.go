@@ -8497,3 +8497,74 @@ func TestTransform_Provider_UpstreamUrl_Unchanged(t *testing.T) {
 	assert.Nil(t, res.Spec.Upstream.Main.Ref)
 	assert.Nil(t, res.Spec.UpstreamDefinitions)
 }
+
+// TestTransform_OperationPolicies_AuthoredUpstreamFlagIsHonored pins the
+// author-facing upstream: true field on an operationPolicies: entry
+// (mirroring globalPolicies:'s Policy.Upstream): a plain, hand-attached
+// policy with no model-failover involvement still runs in the
+// upstream-attempt phase when explicitly marked, path/method scoping intact.
+func TestTransform_OperationPolicies_AuthoredUpstreamFlagIsHonored(t *testing.T) {
+	transformer, _ := setupTestTransformer(t)
+
+	downstream := []api.OperationPolicy{{
+		Name:    "content-length-guardrail",
+		Version: "v0.1.0",
+		Paths: []api.OperationPolicyPath{{
+			Path:    "/chat/completions",
+			Methods: []api.OperationPolicyPathMethods{api.OperationPolicyPathMethodsPOST},
+			Params:  map[string]interface{}{"maxRequestBodySize": 1024},
+		}},
+	}}
+	upstream := []api.OperationPolicy{{
+		Name:     "content-length-guardrail",
+		Version:  "v0.1.0",
+		Upstream: api.Ptr(true),
+		Paths: []api.OperationPolicyPath{{
+			Path:    "/chat/completions",
+			Methods: []api.OperationPolicyPathMethods{api.OperationPolicyPathMethodsPOST},
+			Params:  map[string]interface{}{"maxRequestBodySize": 2048},
+		}},
+	}}
+
+	provider := &api.LLMProviderConfiguration{
+		ApiVersion: "gateway.api-platform.wso2.com/v1",
+		Kind:       "LlmProvider",
+		Metadata:   api.Metadata{Name: "openai-provider"},
+		Spec: api.LLMProviderConfigData{
+			DisplayName:       "test",
+			Version:           "v1.0",
+			Template:          "openai",
+			Upstream:          api.LLMProviderConfigData_Upstream{Url: stringPtr("https://api.example.com")},
+			AccessControl:     api.LLMAccessControl{Mode: api.AllowAll},
+			OperationPolicies: api.Ptr(append(append([]api.OperationPolicy{}, downstream...), upstream...)),
+		},
+	}
+
+	result, err := transformer.Transform(provider, &api.RestAPI{})
+	require.NoError(t, err)
+
+	var op *api.Operation
+	for i := range result.Spec.Operations {
+		if result.Spec.Operations[i].EffectivePath() == "/chat/completions" {
+			op = &result.Spec.Operations[i]
+		}
+	}
+	require.NotNil(t, op)
+	require.NotNil(t, op.Policies)
+
+	var flagged, unflagged int
+	for _, p := range *op.Policies {
+		if p.Name != "content-length-guardrail" {
+			continue
+		}
+		if p.Upstream != nil && *p.Upstream {
+			flagged++
+			assert.EqualValues(t, 2048, (*p.Params)["maxRequestBodySize"])
+		} else {
+			unflagged++
+			assert.EqualValues(t, 1024, (*p.Params)["maxRequestBodySize"])
+		}
+	}
+	assert.Equal(t, 1, flagged, "the entry with upstream: true must be flagged upstream")
+	assert.Equal(t, 1, unflagged, "the entry without it must stay downstream")
+}

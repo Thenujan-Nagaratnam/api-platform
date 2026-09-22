@@ -4759,6 +4759,15 @@ components:
         executionCondition:
           type: string
           description: Expression controlling conditional execution of the policy
+        upstream:
+          type: boolean
+          description: >
+            Runs this attachment in the upstream-attempt phase instead of the
+            downstream phase — once per Envoy attempt to a backend, including
+            retries to a different one, rather than once per client request.
+            executionCondition IS evaluated in this phase, gated against
+            whatever metadata a phase-aware policy (e.g. model-failover) seeds
+            into the shared request metadata for that specific attempt.
         paths:
           type: array
           items:
