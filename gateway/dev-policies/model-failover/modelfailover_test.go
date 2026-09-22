@@ -2,6 +2,7 @@ package modelfailover
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -55,7 +56,8 @@ func TestOnRequestBody_RoutesToMatchedTargetAggregate(t *testing.T) {
 		susp: &suspensionState{suspended: make(map[string]time.Time)},
 	}
 	reqCtx := &policy.RequestContext{
-		Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true},
+		Downstream: &policy.DownstreamContext{},
+		Body:       &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true},
 	}
 
 	action := p.OnRequestBody(context.Background(), reqCtx, nil)
@@ -71,7 +73,7 @@ func TestOnRequestBody_NoMatchIsNoop(t *testing.T) {
 		params: ModelFailoverParams{Targets: []FailoverTargetEntry{{FailoverTarget: FailoverTarget{Model: "gpt-4o"}}}},
 		susp:   &suspensionState{suspended: make(map[string]time.Time)},
 	}
-	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"some-other-model"}`), Present: true}}
+	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"some-other-model"}`), Present: true}}
 
 	action := p.OnRequestBody(context.Background(), reqCtx, nil)
 
@@ -95,7 +97,7 @@ func TestOnRequestBody_SuspendedTargetSkipsToFallback(t *testing.T) {
 			suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour),
 		}},
 	}
-	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
 	action := p.OnRequestBody(context.Background(), reqCtx, nil)
 
@@ -119,7 +121,7 @@ func TestOnRequestBody_SkipsFallbackWithEmptyProvider(t *testing.T) {
 		},
 		susp: &suspensionState{suspended: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)}},
 	}
-	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
 	mods := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
 
@@ -138,7 +140,7 @@ func TestOnRequestBody_OnlyEmptyProviderFallbacksRoutesToAggregate(t *testing.T)
 		},
 		susp: &suspensionState{suspended: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)}},
 	}
-	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
 	mods := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
 
@@ -151,7 +153,7 @@ func TestOnRequestBody_EmptyAggregateClusterIsNoop(t *testing.T) {
 		params: ModelFailoverParams{Targets: []FailoverTargetEntry{{FailoverTarget: FailoverTarget{Model: "gpt-4o"}}}},
 		susp:   &suspensionState{suspended: make(map[string]time.Time)},
 	}
-	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
 	mods := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
 
@@ -336,7 +338,7 @@ func TestOnResponseHeaders_5xxSuspendsUnderResolvedKeyAndDownstreamSeesIt(t *tes
 	assert.True(t, p.isSuspended("gpt-4o", "openai-primary"))
 	assert.False(t, p.isSuspended("gpt-4o", ""), "must not be recorded under the empty key")
 
-	reqCtx := &policy.RequestContext{Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 	mods, ok := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
 	require.True(t, ok)
 	require.NotNil(t, mods.UpstreamName)
@@ -805,4 +807,256 @@ func TestGetPolicy_NoAggregateClusterMeansPrivateUnsharedState(t *testing.T) {
 
 	assert.False(t, bPolicy.isSuspended("gpt-4o", ""),
 		"without an aggregate cluster key, instances must not accidentally share suspension state")
+}
+
+// ─── Upstream-attempt body rewrite (model translation with no provider change) ─
+
+// samePlusCrossProviderChainPolicy has a same-provider fallback (empty
+// Provider, cheaper model, same physical cluster as the primary) AND a
+// cross-provider fallback, on the same target entry, so tests can exercise
+// both without duplicating the chain shape.
+func samePlusCrossProviderChainPolicy() *Policy {
+	return &Policy{
+		params: ModelFailoverParams{
+			Targets: []FailoverTargetEntry{{
+				FailoverTarget: FailoverTarget{Model: "gpt-4o"},
+				Fallbacks: []FailoverTarget{
+					{Model: "gpt-4o-mini"}, // same provider (empty -> primary), same cluster
+					{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"},
+				},
+				AggregateCluster: "failover_agg_chat_0",
+			}},
+		},
+		susp: &suspensionState{suspended: make(map[string]time.Time)},
+	}
+}
+
+func TestOnRequestBody_UpstreamInvocationRewritesModelForSameProviderFallback(t *testing.T) {
+	p := samePlusCrossProviderChainPolicy()
+	reqCtx := &policy.RequestContext{
+		// Downstream == nil is the upstream-attempt signal.
+		Headers:  policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"2"}}),
+		Upstream: &policy.UpstreamRequestContext{RouteCluster: "failover_agg_chat_0"},
+		Body:     &policy.Body{Content: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	require.True(t, ok)
+	require.NotNil(t, mods.Body, "must rewrite the replayed body since Envoy never recomputes it per attempt")
+	assert.Nil(t, mods.UpstreamName, "an upstream-attempt invocation must never re-target the upstream cluster")
+
+	var rewritten map[string]interface{}
+	require.NoError(t, json.Unmarshal(mods.Body, &rewritten))
+	assert.Equal(t, "gpt-4o-mini", rewritten["model"])
+	assert.NotNil(t, rewritten["messages"], "only the model field changes, the rest of the payload survives")
+}
+
+func TestOnRequestBody_UpstreamInvocationNoRewriteWhenModelAlreadyMatches(t *testing.T) {
+	p := samePlusCrossProviderChainPolicy()
+	reqCtx := &policy.RequestContext{
+		Headers:  policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"1"}}),
+		Upstream: &policy.UpstreamRequestContext{RouteCluster: "failover_agg_chat_0"},
+		Body:     &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	require.True(t, ok)
+	assert.Nil(t, mods.Body, "attempt 1 already carries the primary's own model — nothing to rewrite")
+}
+
+func TestOnRequestBody_UpstreamInvocationAlsoRewritesModelForCrossProviderFallback(t *testing.T) {
+	p := samePlusCrossProviderChainPolicy()
+	reqCtx := &policy.RequestContext{
+		Headers:  policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"3"}}),
+		Upstream: &policy.UpstreamRequestContext{RouteCluster: "failover_agg_chat_0"},
+		Body:     &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	require.True(t, ok)
+	require.NotNil(t, mods.Body)
+	var rewritten map[string]interface{}
+	require.NoError(t, json.Unmarshal(mods.Body, &rewritten))
+	assert.Equal(t, "claude-sonnet-4-5-20250929", rewritten["model"],
+		"harmless even here: openai-to-anthropic-transformer rebuilds the body from its own params.model anyway")
+}
+
+func TestOnRequestBody_UpstreamInvocationUnknownClusterIsNoop(t *testing.T) {
+	p := samePlusCrossProviderChainPolicy()
+	reqCtx := &policy.RequestContext{
+		Headers:  policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"2"}}),
+		Upstream: &policy.UpstreamRequestContext{RouteCluster: "some-unrelated-cluster"},
+		Body:     &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	require.True(t, ok)
+	assert.Nil(t, mods.Body)
+}
+
+func TestOnRequestBody_UpstreamInvocationMalformedBodyIsNoop(t *testing.T) {
+	p := samePlusCrossProviderChainPolicy()
+	reqCtx := &policy.RequestContext{
+		Headers:  policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"2"}}),
+		Upstream: &policy.UpstreamRequestContext{RouteCluster: "failover_agg_chat_0"},
+		Body:     &policy.Body{Content: []byte(`not json`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	require.True(t, ok)
+	assert.Nil(t, mods.Body)
+}
+
+func TestOnRequestBody_UpstreamInvocationNilUpstreamIsNoop(t *testing.T) {
+	p := samePlusCrossProviderChainPolicy()
+	reqCtx := &policy.RequestContext{
+		Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	require.True(t, ok)
+	assert.Nil(t, mods.Body)
+	assert.Nil(t, mods.UpstreamName)
+}
+
+// ─── Consecutive-failure threshold and exponential backoff ─────────────────
+
+func TestParseParams_CarriesSuspendAfterFailuresAndMaxSuspendDuration(t *testing.T) {
+	params, err := parseParams(map[string]interface{}{
+		"targets":              []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}}},
+		"suspendAfterFailures": float64(3),
+		"maxSuspendDuration":   float64(600),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 3, params.SuspendAfterFailures)
+	assert.Equal(t, 600, params.MaxSuspendDuration)
+}
+
+func TestParseParams_SuspendAfterFailuresRejectsNonNumber(t *testing.T) {
+	_, err := parseParams(map[string]interface{}{
+		"targets":              []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}}},
+		"suspendAfterFailures": "three",
+	})
+	require.Error(t, err)
+}
+
+func TestRecordOutcome_DefaultThresholdSuspendsOnFirstFailure(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60}, susp: newSuspensionState()}
+
+	p.recordOutcome("gpt-4o", "", true)
+
+	assert.True(t, p.isSuspended("gpt-4o", ""), "SuspendAfterFailures unset must default to 1 (today's original behavior)")
+}
+
+func TestRecordOutcome_ConfiguredThresholdRequiresConsecutiveFailures(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, SuspendAfterFailures: 3}, susp: newSuspensionState()}
+
+	p.recordOutcome("gpt-4o", "", true)
+	assert.False(t, p.isSuspended("gpt-4o", ""), "1 of 3 required failures must not suspend yet")
+
+	p.recordOutcome("gpt-4o", "", true)
+	assert.False(t, p.isSuspended("gpt-4o", ""), "2 of 3 required failures must not suspend yet")
+
+	p.recordOutcome("gpt-4o", "", true)
+	assert.True(t, p.isSuspended("gpt-4o", ""), "the 3rd consecutive failure must suspend")
+}
+
+func TestRecordOutcome_SuccessResetsTheConsecutiveFailureCounter(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, SuspendAfterFailures: 3}, susp: newSuspensionState()}
+
+	p.recordOutcome("gpt-4o", "", true)
+	p.recordOutcome("gpt-4o", "", true)
+	p.recordOutcome("gpt-4o", "", false) // success — counter must reset to zero
+	p.recordOutcome("gpt-4o", "", true)
+
+	assert.False(t, p.isSuspended("gpt-4o", ""), "only 1 consecutive failure since the last success — must not suspend")
+}
+
+func TestRecordOutcome_ZeroSuspendDurationNeverTracksOrSuspends(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 0, SuspendAfterFailures: 1}, susp: newSuspensionState()}
+
+	p.recordOutcome("gpt-4o", "", true)
+
+	assert.False(t, p.isSuspended("gpt-4o", ""))
+	assert.Empty(t, p.susp.failureCounts, "suspension disabled entirely means no bookkeeping at all, not just no suspension")
+}
+
+func TestBackoffDuration_FirstStreakIsExactlyTheBaseDuration(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60}}
+	assert.Equal(t, 60*time.Second, p.backoffDuration(1))
+}
+
+func TestBackoffDuration_DoublesEachStreak(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, MaxSuspendDuration: 100000}}
+	assert.Equal(t, 60*time.Second, p.backoffDuration(1))
+	assert.Equal(t, 120*time.Second, p.backoffDuration(2))
+	assert.Equal(t, 240*time.Second, p.backoffDuration(3))
+	assert.Equal(t, 480*time.Second, p.backoffDuration(4))
+}
+
+func TestBackoffDuration_DefaultCapIsEightTimesBase(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60}} // MaxSuspendDuration unset
+
+	// streak 4 (8x) is exactly the default cap; streak 5+ (16x, uncapped)
+	// must clamp down to that same 8x ceiling.
+	assert.Equal(t, 480*time.Second, p.backoffDuration(4))
+	assert.Equal(t, 480*time.Second, p.backoffDuration(5))
+	assert.Equal(t, 480*time.Second, p.backoffDuration(10))
+}
+
+func TestBackoffDuration_RespectsConfiguredMaxSuspendDuration(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, MaxSuspendDuration: 150}}
+
+	assert.Equal(t, 120*time.Second, p.backoffDuration(2))
+	assert.Equal(t, 150*time.Second, p.backoffDuration(3), "240s would exceed the configured 150s cap")
+	assert.Equal(t, 150*time.Second, p.backoffDuration(10))
+}
+
+func TestRecordOutcome_ImmediateResuspensionAfterExpiryDoublesTheWindow(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, MaxSuspendDuration: 100000}, susp: newSuspensionState()}
+
+	p.recordOutcome("gpt-4o", "", true) // 1st suspension: streak 1, ~60s window
+	require.True(t, p.isSuspended("gpt-4o", ""))
+	firstUntil := p.susp.suspended[suspensionKey("gpt-4o", "")]
+	assert.WithinDuration(t, time.Now().Add(60*time.Second), firstUntil, 2*time.Second)
+
+	// Force the window to have already expired (isSuspended's lazy-expiry
+	// pattern), then fail again immediately — simulating "still broken the
+	// moment it came back".
+	p.susp.mu.Lock()
+	p.susp.suspended[suspensionKey("gpt-4o", "")] = time.Now().Add(-time.Second)
+	p.susp.mu.Unlock()
+
+	p.recordOutcome("gpt-4o", "", true) // 2nd consecutive cycle: streak 2, ~120s window
+	require.True(t, p.isSuspended("gpt-4o", ""))
+	secondUntil := p.susp.suspended[suspensionKey("gpt-4o", "")]
+	assert.WithinDuration(t, time.Now().Add(120*time.Second), secondUntil, 2*time.Second,
+		"a target that fails again immediately after its window expires must get a longer window, not the same flat one")
+}
+
+func TestRecordOutcome_SuccessResetsTheBackoffStreak(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, MaxSuspendDuration: 100000}, susp: newSuspensionState()}
+
+	p.recordOutcome("gpt-4o", "", true) // streak 1
+	p.susp.mu.Lock()
+	p.susp.suspended[suspensionKey("gpt-4o", "")] = time.Now().Add(-time.Second) // force-expire
+	p.susp.mu.Unlock()
+	p.recordOutcome("gpt-4o", "", false) // success in between — must reset the streak, not just the counter
+
+	p.recordOutcome("gpt-4o", "", true) // a fresh incident: must be back to streak 1, not streak 2
+	until := p.susp.suspended[suspensionKey("gpt-4o", "")]
+	assert.WithinDuration(t, time.Now().Add(60*time.Second), until, 2*time.Second,
+		"an intervening success must reset backoff back to the base duration for the next incident")
 }

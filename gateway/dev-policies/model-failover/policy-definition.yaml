@@ -86,8 +86,28 @@ parameters:
       type: integer
       x-wso2-policy-advanced-param: true
       description: |
-        Seconds a target is skipped for after a failure. Set to 0 to disable
+        Base seconds a target is skipped for after suspending (see
+        suspendAfterFailures and maxSuspendDuration). Set to 0 to disable
         suspension tracking entirely.
+      minimum: 0
+      default: 0
+    suspendAfterFailures:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        Number of CONSECUTIVE qualifying failures (per statusCodes) required
+        before a target is suspended. A success resets the count. Omitted or
+        1 suspends on the very first qualifying failure.
+      minimum: 1
+      default: 1
+    maxSuspendDuration:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        Caps exponential backoff: each time a target is re-suspended
+        immediately after a previous suspension window expired with no
+        intervening success, its suspend window doubles, up to this ceiling
+        in seconds. Omitted or 0 defaults to 8x suspendDuration.
       minimum: 0
       default: 0
   required:

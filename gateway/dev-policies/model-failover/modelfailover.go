@@ -124,6 +124,18 @@ type ModelFailoverParams struct {
 	// operation-relative path (e.g. "/chat/completions"). Joined with a
 	// member's BasePath it yields that member's correct outbound :path.
 	OperationPath string `json:"operationPath,omitempty"`
+	// SuspendAfterFailures requires this many CONSECUTIVE qualifying failures
+	// (per isFailureStatus) for the same (model, provider) before suspending
+	// it — a single success resets the counter to zero. Omitted/<=0 defaults
+	// to 1 (suspend on the very first qualifying failure, this policy's
+	// original behavior).
+	SuspendAfterFailures int `json:"suspendAfterFailures,omitempty"`
+	// MaxSuspendDuration caps exponential backoff (see backoffDuration): each
+	// time a target is re-suspended immediately after a previous suspension
+	// window expired with no intervening success, its suspend duration
+	// doubles, up to this ceiling (seconds). Omitted/<=0 defaults to 8x
+	// SuspendDuration.
+	MaxSuspendDuration int `json:"maxSuspendDuration,omitempty"`
 }
 
 // Policy implements downstream target selection and, per upstream attempt,
@@ -140,6 +152,14 @@ type Policy struct {
 type suspensionState struct {
 	mu        sync.Mutex
 	suspended map[string]time.Time
+	// failureCounts tracks CONSECUTIVE qualifying failures per key since the
+	// last success, for SuspendAfterFailures thresholding. A success (or any
+	// non-failure outcome) deletes the entry, exactly like isSuspended lazily
+	// deletes an expired suspension — no background sweep either way.
+	failureCounts map[string]int
+	// suspensionStreak counts consecutive suspend-then-immediately-refail
+	// cycles per key (a success resets it to zero), driving backoffDuration.
+	suspensionStreak map[string]int
 }
 
 // sharedSuspensionRegistry maps an aggregate-cluster-derived key to the one
@@ -187,17 +207,25 @@ func sharedSuspensionKey(params ModelFailoverParams) string {
 	return strings.Join(names, ",")
 }
 
+func newSuspensionState() *suspensionState {
+	return &suspensionState{
+		suspended:        make(map[string]time.Time),
+		failureCounts:    make(map[string]int),
+		suspensionStreak: make(map[string]int),
+	}
+}
+
 func sharedSuspensionStateFor(params ModelFailoverParams) *suspensionState {
 	key := sharedSuspensionKey(params)
 	if key == "" {
-		return &suspensionState{suspended: make(map[string]time.Time)}
+		return newSuspensionState()
 	}
 	sharedSuspensionMu.Lock()
 	defer sharedSuspensionMu.Unlock()
 	if s, ok := sharedSuspensionRegistry[key]; ok {
 		return s
 	}
-	s := &suspensionState{suspended: make(map[string]time.Time)}
+	s := newSuspensionState()
 	sharedSuspensionRegistry[key] = s
 	return s
 }
@@ -240,15 +268,14 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 		params.OperationPath = op
 	}
 
-	if suspendRaw, ok := raw["suspendDuration"]; ok {
-		switch v := suspendRaw.(type) {
-		case float64:
-			params.SuspendDuration = int(v)
-		case int:
-			params.SuspendDuration = v
-		default:
-			return params, fmt.Errorf("'suspendDuration' must be a number")
-		}
+	if params.SuspendDuration, err = parseOptionalInt(raw, "suspendDuration"); err != nil {
+		return params, err
+	}
+	if params.SuspendAfterFailures, err = parseOptionalInt(raw, "suspendAfterFailures"); err != nil {
+		return params, err
+	}
+	if params.MaxSuspendDuration, err = parseOptionalInt(raw, "maxSuspendDuration"); err != nil {
+		return params, err
 	}
 
 	if codesRaw, ok := raw["statusCodes"]; ok {
@@ -267,6 +294,24 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 	}
 
 	return params, nil
+}
+
+// parseOptionalInt reads an optional numeric field from raw params, returning
+// 0 if absent. Params arrive JSON-shaped, so a present numeric value decodes
+// as float64.
+func parseOptionalInt(raw map[string]interface{}, key string) (int, error) {
+	v, ok := raw[key]
+	if !ok {
+		return 0, nil
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n), nil
+	case int:
+		return n, nil
+	default:
+		return 0, fmt.Errorf("'%s' must be a number", key)
+	}
 }
 
 // Mode declares participation in both the downstream body phase (target
@@ -363,6 +408,11 @@ func (p *Policy) isSuspended(model, provider string) bool {
 	return false
 }
 
+// suspend immediately marks (model, provider) suspended for the base
+// SuspendDuration, bypassing the SuspendAfterFailures threshold and backoff
+// streak entirely — a direct, unconditional primitive kept for tests and for
+// any future caller that wants "suspend this right now" without going
+// through recordOutcome's bookkeeping.
 func (p *Policy) suspend(model, provider string) {
 	if p.params.SuspendDuration <= 0 {
 		return
@@ -372,12 +422,90 @@ func (p *Policy) suspend(model, provider string) {
 	p.susp.suspended[suspensionKey(model, provider)] = time.Now().Add(time.Duration(p.params.SuspendDuration) * time.Second)
 }
 
-// OnRequestBody parses the client-requested model, matches it against the
-// configured chain, and routes to that chain's aggregate cluster — skipping
-// straight to the first non-suspended fallback's own single cluster if the
-// primary target is currently suspended (bypassing the aggregate for a
-// known-bad primary, per the design's §4).
+// recordOutcome updates per-(model,provider) failure/backoff bookkeeping for
+// one attempt's outcome. A success (failed == false) resets both the
+// consecutive-failure counter and the backoff streak — a target that
+// recovers even once starts the next incident fresh. A qualifying failure
+// increments the counter; once it reaches SuspendAfterFailures (default 1,
+// i.e. immediate), the target is suspended for backoffDuration's computed
+// window and the streak advances, so a target that keeps failing
+// immediately after each suspension expires gets progressively longer
+// windows rather than flapping at a fixed interval forever.
+func (p *Policy) recordOutcome(model, provider string, failed bool) {
+	if p.params.SuspendDuration <= 0 {
+		return // suspension disabled entirely; nothing to track
+	}
+	key := suspensionKey(model, provider)
+
+	p.susp.mu.Lock()
+	defer p.susp.mu.Unlock()
+	if p.susp.failureCounts == nil {
+		p.susp.failureCounts = map[string]int{}
+	}
+	if p.susp.suspensionStreak == nil {
+		p.susp.suspensionStreak = map[string]int{}
+	}
+
+	if !failed {
+		delete(p.susp.failureCounts, key)
+		delete(p.susp.suspensionStreak, key)
+		return
+	}
+
+	threshold := p.params.SuspendAfterFailures
+	if threshold <= 0 {
+		threshold = 1
+	}
+	p.susp.failureCounts[key]++
+	if p.susp.failureCounts[key] < threshold {
+		return
+	}
+	p.susp.failureCounts[key] = 0
+	p.susp.suspensionStreak[key]++
+	p.susp.suspended[key] = time.Now().Add(p.backoffDuration(p.susp.suspensionStreak[key]))
+}
+
+// backoffDuration computes the suspend window for the nth consecutive
+// suspend-then-immediately-refail cycle of the same target (streak == 1 is
+// the first cycle, i.e. exactly the base SuspendDuration). Each further
+// cycle doubles the window, capped at MaxSuspendDuration (default 8x the
+// base when unset/<=0) so a chronically broken target's window grows but
+// never runs away unbounded.
+func (p *Policy) backoffDuration(streak int) time.Duration {
+	base := time.Duration(p.params.SuspendDuration) * time.Second
+	if streak < 1 {
+		streak = 1
+	}
+	shift := streak - 1
+	if shift > 20 { // guards against a pathologically long streak overflowing the shift
+		shift = 20
+	}
+	duration := base * time.Duration(int64(1)<<uint(shift))
+
+	cap := time.Duration(p.params.MaxSuspendDuration) * time.Second
+	if cap <= 0 {
+		cap = base * 8
+	}
+	if duration > cap {
+		duration = cap
+	}
+	return duration
+}
+
+// OnRequestBody's downstream invocation parses the client-requested model,
+// matches it against the configured chain, and routes to that chain's
+// aggregate cluster — skipping straight to the first non-suspended fallback's
+// own single cluster if the primary target is currently suspended (bypassing
+// the aggregate for a known-bad primary, per the design's §4). For an
+// upstream-attempt invocation (Downstream == nil), it instead delegates to
+// onUpstreamAttemptRequestBody — this instance is also attached via
+// upstreamPolicies: (see OnRequestHeaders), and Mode()'s RequestBodyMode
+// applies to both attachments, so this method is called for every attempt too.
 func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+	if reqCtx.Downstream == nil {
+		return p.onUpstreamAttemptRequestBody(reqCtx)
+	}
+
 	if reqCtx.Body == nil || !reqCtx.Body.Present || len(reqCtx.Body.Content) == 0 {
 		return policy.UpstreamRequestModifications{}
 	}
@@ -434,6 +562,55 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 	// own retry exhaustion behavior applies; nothing left to skip to).
 	cluster := entry.AggregateCluster
 	return policy.UpstreamRequestModifications{UpstreamName: &cluster}
+}
+
+// onUpstreamAttemptRequestBody rewrites the replayed client body's "model"
+// field to this attempt's resolved chain member, when that member's model
+// differs from what's currently in the body.
+//
+// Envoy replays attempt 1's original body verbatim on every retry — unlike
+// :path (corrected per attempt in OnRequestHeaders), nothing recomputes the
+// body by default. A cross-provider fallback gets model translation "for
+// free" from that provider's own transformer policy (e.g.
+// openai-to-anthropic-transformer, which builds its outbound body from its
+// own params.model, not from this policy's selected_model metadata) — but a
+// same-provider fallback (no transformer in the chain at all) has nothing
+// else to do this, so this policy must do it directly for that case.
+//
+// This uses the same cluster+attempt-count resolution as OnRequestHeaders
+// (resolveAttemptForCluster) rather than reading back the selected_model
+// metadata OnRequestHeaders already wrote: OnRequestHeaders and OnRequestBody
+// both run once per attempt, but body-phase policies execute before
+// header-phase modifications are guaranteed visible to a later body-phase
+// call in the same chain, so re-resolving directly is the same pattern
+// OnRequestHeaders/OnResponseHeaders already use rather than a new one.
+func (p *Policy) onUpstreamAttemptRequestBody(reqCtx *policy.RequestContext) policy.RequestAction {
+	if reqCtx.Upstream == nil {
+		return policy.UpstreamRequestModifications{}
+	}
+	match := p.resolveAttemptForCluster(reqCtx.Upstream.RouteCluster, attemptCount(reqCtx.Headers))
+	if match == nil {
+		return policy.UpstreamRequestModifications{}
+	}
+	member := match.member
+	if member.Model == "" || reqCtx.Body == nil || !reqCtx.Body.Present || len(reqCtx.Body.Content) == 0 {
+		return policy.UpstreamRequestModifications{}
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(reqCtx.Body.Content, &payload); err != nil {
+		return policy.UpstreamRequestModifications{}
+	}
+	if current, _ := payload["model"].(string); current == member.Model {
+		return policy.UpstreamRequestModifications{}
+	}
+	payload["model"] = member.Model
+
+	newBody, err := json.Marshal(payload)
+	if err != nil {
+		return policy.UpstreamRequestModifications{}
+	}
+	return policy.UpstreamRequestModifications{Body: newBody}
 }
 
 // findEntryByAggregateCluster returns the target entry whose AggregateCluster
@@ -641,11 +818,14 @@ func responseAttemptIndex(respCtx *policy.ResponseHeaderContext) int {
 	return attemptCount(respCtx.RequestHeaders)
 }
 
-// OnResponseHeaders records suspension for a failing attempt (isFailureStatus
-// — any 5xx by default, or exactly the configured StatusCodes) and,
-// for an attempt that escalated past the primary — whether by Envoy retrying
+// OnResponseHeaders records this attempt's outcome (isFailureStatus — any
+// 5xx by default, or exactly the configured StatusCodes) via recordOutcome —
+// a qualifying failure counts toward SuspendAfterFailures and, once that
+// threshold is met, suspends the target for a backoff-computed window; a
+// non-qualifying response resets that bookkeeping instead. Separately, for
+// an attempt that escalated past the primary — whether by Envoy retrying
 // inside the aggregate or by the downstream bypass dispatching straight at a
-// fallback — sets ResolvedFailoverProviderHeader for downstream analytics
+// fallback — it sets ResolvedFailoverProviderHeader for downstream analytics
 // attribution.
 func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
 	if respCtx.Downstream != nil || respCtx.Upstream == nil {
@@ -657,9 +837,7 @@ func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHe
 	}
 	member, index := match.member, match.index
 
-	if p.isFailureStatus(int(respCtx.ResponseStatus)) {
-		p.suspend(member.Model, p.resolvedProvider(*member))
-	}
+	p.recordOutcome(member.Model, p.resolvedProvider(*member), p.isFailureStatus(int(respCtx.ResponseStatus)))
 
 	if index > 1 {
 		return policy.DownstreamResponseHeaderModifications{

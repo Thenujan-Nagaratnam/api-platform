@@ -41,6 +41,10 @@
     {
       "key": "mockAnthropicMirrorBaseUrl",
       "value": "http://localhost:9613"
+    },
+    {
+      "key": "mockOpenaiBackupBaseUrl",
+      "value": "http://localhost:9614"
     }
   ],
   "item": [
@@ -272,6 +276,108 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-upstreamdef\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover UpstreamDefinition\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-upstreamdef\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      },\n      {\n        \"id\": \"anthropic-mirror-provider\",\n        \"as\": \"anthropic-mirror\"\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\",\n                      \"upstreamDefinition\": \"anthropic-mirror\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 0\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.9 Register Provider - openai-backup-provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProvider\",\n  \"metadata\": {\n    \"name\": \"openai-backup-provider\"\n  },\n  \"spec\": {\n    \"displayName\": \"OpenAI Backup Region (second mock-openai instance, port 9614)\",\n    \"version\": \"v1.0\",\n    \"template\": \"openai\",\n    \"context\": \"/openai-backup-provider\",\n    \"upstream\": {\n      \"url\": \"http://host.docker.internal:9614/v1\"\n    },\n    \"accessControl\": {\n      \"mode\": \"allow_all\"\n    }\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-providers"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.10 Register Proxy - failover-samemodel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-samemodel\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Same-Provider Same-Backend (Model Only)\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-samemodel\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"gpt-4o-mini\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 0\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.11 Register Proxy - failover-sameprovider-upstreamdef",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-sameprovider-upstreamdef\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Same-Provider upstreamDefinition (Backup Region)\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-sameprovider-upstreamdef\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"openai-backup-provider\",\n        \"as\": \"openai-backup\"\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"gpt-4o\",\n                      \"upstreamDefinition\": \"openai-backup\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 0\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
             },
             "url": "{{controllerBaseUrl}}/llm-proxies"
           },
@@ -1152,6 +1258,227 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"mock-anthropic-mirror's call count is 1 - upstreamDefinition genuinely redirected the dial target\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. Same-Provider Fallback (Model Only)",
+      "item": [
+        {
+          "name": "10.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "10.2 Arm OpenAI 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"armed\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10.3 Chat Completion - retries the identical primary cluster/credential with a cheaper model",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-samemodel/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200 (client never sees the primary's 500)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"still served by openai - same provider, same physical cluster\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});",
+                  "pm.test(\"credential identity is unchanged - still the primary's own\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Auth\")).to.eql(\"Bearer \" + pm.collectionVariables.get(\"primaryApiKey\"));",
+                  "});",
+                  "pm.test(\"model was rewritten to the fallback's cheaper model on retry\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Model\")).to.eql(\"gpt-4o-mini\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10.4 Verify mock-openai's call count is 2 (attempt 1 failed, attempt 2 succeeded, same cluster both times)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-openai's call count is 2 - both attempts landed on the same physical cluster\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11. Same-Provider upstreamDefinition (Backup Region)",
+      "item": [
+        {
+          "name": "11.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "11.2 Reset Mock OpenAI Backup",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBackupBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "11.3 Arm OpenAI 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"armed\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11.4 Chat Completion - dials the backup-region upstream with the primary's own credential",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-sameprovider-upstreamdef/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200 (client never sees the primary's 500)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"credential identity stayed the primary's own, decoupled from the dial target\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Auth\")).to.eql(\"Bearer \" + pm.collectionVariables.get(\"primaryApiKey\"));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11.5 Verify mock-openai's (primary) call count is 1 - only the failing attempt landed there",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-openai's call count is 1 - the retry did not land back on the primary\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11.6 Verify mock-openai-backup's call count is 1 - upstreamDefinition genuinely redirected the dial target",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBackupBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-openai-backup's call count is 1 - the backup region genuinely received the retry\", function () {",
                   "    pm.expect(pm.response.json().callCount).to.eql(1);",
                   "});"
                 ]
