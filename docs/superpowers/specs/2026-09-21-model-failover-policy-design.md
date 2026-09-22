@@ -72,6 +72,17 @@ never needs to compute or guess a cluster name; it only ever reads one it was ha
 truth (the controller), and matching in §6 is a plain string comparison against `params`, not a
 recomputation.
 
+Implementation additionally injects, per target/fallback member and discovered only once the kernel's
+`:path`-correction and aggregate-dispatch gaps below were found (§10): `primaryProvider` (the entry's
+own resolved provider id, so a member authored with no `provider:` — meaning "the primary" — can still
+be told apart from an explicit one when seeding `selected_provider`); each member's own `basePath` and
+the route's `operationPath` (so the upstream phase can reconstruct the per-attempt `:path`, see §6);
+and each member's own resolved Envoy `clusterName` (so the upstream phase can recognize a dispatch that
+bypassed the aggregate entirely — the suspended-primary case in §4 — by matching the cluster Envoy
+actually reports rather than the aggregate name it will never see on that path). All of these are
+controller-computed and always overwrite any author-supplied value of the same name; none of them are
+part of the author-facing shape above.
+
 Same validation rules as before (`provider` must resolve to `additionalProviders[].as`/`.id` or the
 primary; deploy-time error otherwise). The policy is also attached under `upstreamPolicies:` with the
 *same expanded params* — the controller synthesizes this second attachment automatically when it sees
@@ -228,15 +239,47 @@ attachments — the same pattern, nothing new required in the executor or the SD
 
 - `RouteConfig.Metadata.FailoverTargets` and its xDS sync (`gateway-controller/pkg/xds/translator.go`
   → `gateway-runtime` route metadata) — `model-failover`'s own policy params replace it.
-- `resolveBackend`'s failover-entry-matching branch (`kernel/upstream_extproc.go`) — the *real* backend
-  URL/basePath for an aggregate member is already resolvable through the existing generic
-  cluster-name-based resolution (global cluster index / route `DefaultUpstream`), since every failover
-  target is also a normally-registered provider cluster; the failover-specific branch only ever existed
-  to produce `{model, provider}` *labels*, which `model-failover` now produces itself.
+- `resolveBackend`'s failover-entry-matching branch (`kernel/upstream_extproc.go`) — but **this claim
+  was corrected during implementation, not confirmed as written**: the aggregate cluster is *not*
+  resolvable through the existing generic cluster-name-based resolution. It is not a normally-registered
+  provider cluster and appears in no cluster index or route `DefaultUpstream` — a failover aggregate's
+  Envoy name (`failover_agg_<routeKey>_<i>`, `pkg/xds/failover_cluster.go`) follows none of the naming
+  conventions that resolution assumes, so a plain removal of this branch left `resolveUpstreamRedirect`
+  re-prefixing the aggregate name into a cluster that doesn't exist, and left `state.basePath` empty for
+  every aggregate-routed attempt. The actual fix: the xDS wire field `upstream_definition_paths`
+  (name → base path) was widened to a name → `{cluster_name, base_path}` registry entry per aggregate
+  (the primary member's base path), so `resolveUpstreamRedirect` can use a registered cluster name
+  verbatim instead of re-deriving one — dual-emitted alongside the original narrow shape under its own
+  key (`upstream_definition_targets`) so a gateway-runtime instance one release behind the controller
+  during a rolling upgrade still resolves every *ordinary* named upstream's base path from the
+  unchanged legacy key, rather than silently losing the whole registry to a type-assertion failure on
+  the new shape. The kernel also gained one small, permanent, non-failover-specific addition: it adopts
+  `state.basePath` from `Upstream.BasePath` if a header-phase policy set one, generically — this is what
+  lets `model-failover` (or anything else) correct the resolved base path from the upstream-attempt
+  phase without the kernel knowing what failover is.
+  The failover-specific branch's *other* job — producing `{model, provider}` labels — is now produced by
+  `model-failover` itself, confirmed as originally claimed.
+- The kernel's per-attempt `:path` correction (`upstream_extproc.go`) — **also not a clean removal**.
+  `additionalProviders` are loopback upstreams sharing one host:port (`AutoHostRewrite` makes
+  `:authority` identical across every chain member), so `:path` is the *only* discriminator between
+  providers on a cross-provider retry, and Envoy never recomputes it per attempt. Removing the kernel's
+  `:path`-rewrite left every retry past the first reusing attempt 1's path against whichever backend the
+  aggregate happened to route it to. Restored as a policy-owned mechanism instead of a kernel one:
+  `model-failover`'s upstream `OnRequestHeaders` computes `joinBasePathAndOperation(member.basePath,
+  operationPath)` (both now controller-injected params, §3) and returns a `:path` header modification
+  when it differs from the request's current path — byte-identical join semantics to the removed kernel
+  helper (including the same pre-existing behavior of dropping the query string, which is parity, not a
+  regression).
 - The kernel's dedicated suspension tracker (§7).
 - `ResolvedFailoverProviderHeader`'s kernel-side emission (`upstream_extproc.go`) — `model-failover`
   can set this itself in its own `OnResponseHeaders` when it detects `index > 0` for the current
-  attempt, using the same header/analytics-attribution contract, no kernel involvement needed.
+  attempt, using the same header/analytics-attribution contract, no kernel involvement needed. This
+  also covers the suspended-primary bypass case in §4 (dispatch straight at a fallback's own cluster,
+  never through the aggregate): the upstream phase identifies which chain member an attempt belongs to
+  either by the aggregate cluster name (attempt-count-indexed, the normal path) or, when that doesn't
+  match, by a controller-injected `clusterName` on each fallback member (§3) — never on a chain's
+  primary member, whose cluster is the route's own default cluster and would otherwise mis-attribute an
+  ordinary non-failover request landing on it.
 
 ## Non-goals (unchanged from the superseded design)
 
@@ -251,3 +294,12 @@ attachments — the same pattern, nothing new required in the executor or the SD
 None outstanding. Aggregate-cluster naming, attachment ordering, and the downstream body+routing shape
 were all verified against the existing codebase this session (§3, §9, §4) — see each section for the
 resolution and citations.
+
+**Post-implementation correction:** §10's original claim that generic cluster-name-based resolution
+already covers the aggregate-cluster case, and its silence on the per-attempt `:path` correction, were
+both found to be factually wrong once the kernel-side removal (Task 10 of the implementation plan) was
+actually attempted — not gaps left open at design time, but a design premise disproven by tracing the
+real Envoy/xDS mechanics. §10 has been amended in place to describe the actual mechanism (wire-field
+widening + dual-emit, policy-owned `:path` correction, cluster-name-based chain-membership matching for
+the suspended-primary bypass) rather than the disproven one. No further open items follow from this;
+the amendment is documentation catching up to already-shipped, already-reviewed code.
