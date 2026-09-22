@@ -13,10 +13,13 @@ an unreleased SDK field at all: a policy the controller marks for the
 upstream-attempt phase runs per upstream attempt using its own, unmodified
 `RequestPolicy`/`ResponsePolicy`/`RequestHeaderPolicy`/`ResponseHeaderPolicy`
 implementation (see `docs/superpowers/specs/2026-09-21-upstream-policy-reuse-design.md`).
-There is no author-facing `upstreamPolicies:` YAML field — the only way a
-policy instance reaches this phase today is via `model-failover`'s own
-controller-side synthesis (attaching itself plus the credential/transformer
-of every provider its chain references).
+There is no author-facing `upstreamPolicies:` YAML *list* field — but any
+`operationPolicies:`/`globalPolicies:` entry can be marked `upstream: true`
+directly to run in this phase (the same generic dispatch model-failover's own
+controller-side synthesis uses). `model-failover` is still the only policy
+whose upstream attachment is auto-synthesized (it needs controller-computed
+values an author can't hand-write); an ordinary policy marked `upstream: true`
+by its own author needs no synthesis at all.
 `build.yaml` now references the released `gomodule:` versions of every
 policy — the local `dev-policies/openai-to-anthropic-transformer/`,
 `dev-policies/oauth2-generator/`, `dev-policies/llm-upstream-provider-auth/`
@@ -105,11 +108,16 @@ folder 4 (suspension expiry) has a ~6s in-script busy-wait to clear the
 | 6. No Model Match | A model absent from `model-failover`'s `targets` param never touches the fallback provider at all |
 | 7. Streaming | A failover-driven attempt with `"stream": true` gets a real Anthropic SSE response, translated to OpenAI `chat.completion.chunk` events |
 
-Note: the superseded `resilience.failover` schema supported a configurable
-`retryOn` (e.g. `retriable-4xx`) that this policy does not — `model-failover`
-hardcodes escalation to Envoy's `5xx` retry-on condition only (see the design
-doc's discussion of this tradeoff), so there is no "custom retryOn" folder in
-this collection.
+Note: escalation trigger codes are configurable again via `model-failover`'s
+own `statusCodes` param (a list of literal HTTP status codes, e.g.
+`[500, 502, 429]`) — replacing (not extending) the default "any 5xx" when set.
+This is a different shape than the superseded `resilience.failover` schema's
+symbolic `retryOn` (e.g. `retriable-4xx`), but restores the same
+configurability. **Not yet exercised by this collection** — no folder here
+sets `statusCodes` or `upstreamDefinition` (the other new, optional param that
+decouples a fallback's credential identity from which upstream it dials); both
+are currently only covered by gateway-controller unit tests, not this live
+e2e suite.
 
 ## Cleanup
 
