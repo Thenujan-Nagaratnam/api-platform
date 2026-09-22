@@ -957,9 +957,13 @@ func apiKeyAuthValuePrefix(globalPolicies *[]api.Policy) string {
 // provider/additionalProviders auth config. valuePrefix is the provider's own
 // api-key-auth value prefix, applied the same way to the loopback credential.
 // providerID is this provider's own identity (primary's Id, or an
-// additionalProviders[].as/.id) - injected into oauth2-generator's params so
-// it can self-gate a failover attempt via
-// UpstreamAttemptContext.ResolvedProvider (see OnUpstreamRequestBody).
+// additionalProviders[].as/.id). It is the value the caller pairs with
+// selectedProviderExecutionCondition, the CEL gate that decides whether this
+// attachment runs on a given attempt: that gate compares providerID against
+// the 'selected_provider' key model-failover seeds into the attempt's
+// SharedContext.Metadata. For oauth2 it is additionally injected into the
+// policy's own params (see below), so oauth2-generator can read back which
+// provider the attempt resolved to.
 func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAuth, valuePrefix, providerID, field string) (*api.Policy, error) {
 	if auth == nil {
 		return nil, nil
@@ -998,7 +1002,9 @@ func (t *LLMProviderTransformer) proxyUpstreamAuthPolicy(auth *api.LLMUpstreamAu
 		// providerId injection below - harmless when the proxy declares no
 		// failover chains, since oauth2-generator's OnUpstreamRequestBody (the
 		// only consumer of this param) is never invoked unless a request
-		// actually reaches the upstream ext_proc phase via an aggregate cluster.
+		// actually reaches the upstream ext_proc phase on a cluster a failover
+		// chain owns (its aggregate, or a member's own cluster on the
+		// suspended-primary bypass).
 		(*pol.Params)["providerId"] = providerID
 		return pol, nil
 	case api.LLMUpstreamAuthTypeOther:

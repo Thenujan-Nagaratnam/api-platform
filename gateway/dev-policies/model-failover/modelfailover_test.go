@@ -477,3 +477,156 @@ func TestJoinBasePathAndOperation(t *testing.T) {
 	assert.Equal(t, "/chat", joinBasePathAndOperation("", "/chat"))
 	assert.Equal(t, "", joinBasePathAndOperation("/p", ""))
 }
+
+// ─── Suspended-primary bypass: upstream-phase identification ─────────────────
+
+// bypassChainPolicy is pathChainPolicy plus the controller-injected real Envoy
+// cluster name for each member — what an attempt dispatched straight onto a
+// fallback (rather than through the aggregate) reports as xds.cluster_name.
+func bypassChainPolicy() *Policy {
+	p := pathChainPolicy()
+	p.params.PrimaryProvider = "openai-upstream"
+	p.params.Targets[0].Target.ClusterName = "upstream_LlmProxy_abc_openai-upstream"
+	p.params.Targets[0].Fallbacks[0].ClusterName = "upstream_LlmProxy_abc_anthropic-upstream"
+	return p
+}
+
+// TestOnRequestHeaders_BypassClusterSeedsSelectedProviderAndModel is the
+// regression test for the suspended-primary bypass: OnRequestBody dispatches
+// at a fallback's OWN cluster, so RouteCluster is that cluster and never the
+// aggregate. Without the member-cluster match nothing seeds selected_provider,
+// every provider-scoped upstream attachment's CEL gate is false, and the
+// fallback is dialed with no credential injected and an untranslated body.
+func TestOnRequestHeaders_BypassClusterSeedsSelectedProviderAndModel(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("upstream_LlmProxy_abc_anthropic-upstream", "1",
+		"/anthropic-provider/chat/completions")
+
+	bypassChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "anthropic-upstream", reqCtx.SharedContext.Metadata[selectedProviderMetadataKey])
+	assert.Equal(t, "claude-sonnet-4-5-20250929", reqCtx.SharedContext.Metadata[selectedModelMetadataKey])
+	assert.Equal(t, 2, reqCtx.SharedContext.Metadata[attemptIndexMetadataKey],
+		"the bypassed-to member keeps its own chain position, not the attempt count")
+}
+
+func TestOnRequestHeaders_BypassClusterSetsUpstreamBasePath(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("upstream_LlmProxy_abc_anthropic-upstream", "1",
+		"/anthropic-provider/chat/completions")
+
+	action := bypassChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "/anthropic-provider", reqCtx.Upstream.BasePath)
+	assert.Nil(t, action, "the downstream redirect already rewrote :path to this member's base path")
+}
+
+// A bypass dispatch ignores x-envoy-attempt-count: a retry against a single
+// (non-aggregate) cluster re-dials that same member, so the cluster name alone
+// decides which member this is.
+func TestOnRequestHeaders_BypassClusterIgnoresAttemptCount(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("upstream_LlmProxy_abc_anthropic-upstream", "3",
+		"/anthropic-provider/chat/completions")
+
+	bypassChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "anthropic-upstream", reqCtx.SharedContext.Metadata[selectedProviderMetadataKey])
+	assert.Equal(t, 2, reqCtx.SharedContext.Metadata[attemptIndexMetadataKey])
+}
+
+// The primary member's cluster is the route's OWN default cluster, which an
+// ordinary request whose model matches no chain also lands on. Matching it
+// would seed a chain's model/provider onto a request that never entered the
+// chain, so only fallbacks are cluster-matched.
+func TestOnRequestHeaders_PrimaryMemberClusterIsNotMatched(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("upstream_LlmProxy_abc_openai-upstream", "1",
+		"/openai-provider/chat/completions")
+
+	bypassChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Empty(t, reqCtx.SharedContext.Metadata)
+}
+
+// A member with no controller-injected clusterName must never match — an empty
+// RouteCluster is already rejected, but an empty stored name must not match an
+// arbitrary cluster either.
+func TestOnRequestHeaders_EmptyMemberClusterNameNeverMatches(t *testing.T) {
+	p := bypassChainPolicy()
+	p.params.Targets[0].Fallbacks[0].ClusterName = ""
+	reqCtx := attemptReqCtxWithPath("some-unrelated-cluster", "1", "/x")
+
+	p.OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Empty(t, reqCtx.SharedContext.Metadata)
+}
+
+func TestOnRequestHeaders_NilSharedContextIsCreated(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("upstream_LlmProxy_abc_anthropic-upstream", "1",
+		"/anthropic-provider/chat/completions")
+	reqCtx.SharedContext = nil
+
+	bypassChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	require.NotNil(t, reqCtx.SharedContext)
+	assert.Equal(t, "anthropic-upstream", reqCtx.SharedContext.Metadata[selectedProviderMetadataKey])
+}
+
+func TestOnRequestHeaders_NilMetadataMapIsCreated(t *testing.T) {
+	reqCtx := attemptReqCtxWithPath("upstream_LlmProxy_abc_anthropic-upstream", "1",
+		"/anthropic-provider/chat/completions")
+	reqCtx.SharedContext = &policy.SharedContext{}
+
+	bypassChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	assert.Equal(t, "anthropic-upstream", reqCtx.SharedContext.Metadata[selectedProviderMetadataKey])
+}
+
+func TestOnResponseHeaders_BypassClusterSuspendsAndAttributes(t *testing.T) {
+	p := bypassChainPolicy()
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext: &policy.SharedContext{
+			Metadata: map[string]interface{}{attemptIndexMetadataKey: 2},
+		},
+		ResponseStatus: 503,
+		Upstream: &policy.UpstreamResponseContext{
+			RouteCluster: "upstream_LlmProxy_abc_anthropic-upstream",
+		},
+	}
+
+	action := p.OnResponseHeaders(context.Background(), respCtx, nil)
+
+	assert.True(t, p.isSuspended("claude-sonnet-4-5-20250929", "anthropic-upstream"))
+	mods, ok := action.(policy.DownstreamResponseHeaderModifications)
+	require.True(t, ok, "a bypass dispatch IS an escalation past the primary")
+	assert.Equal(t, "anthropic-upstream", mods.HeadersToSet[ResolvedFailoverProviderHeader])
+}
+
+func TestParseParams_CarriesInjectedClusterName(t *testing.T) {
+	params, err := parseParams(map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"target": map[string]interface{}{"model": "gpt-4o", "clusterName": "upstream_x_primary"},
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude", "provider": "anthropic-upstream", "clusterName": "upstream_x_anthropic"},
+				},
+				"aggregateCluster": "failover_agg_chat_0",
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "upstream_x_primary", params.Targets[0].Target.ClusterName)
+	assert.Equal(t, "upstream_x_anthropic", params.Targets[0].Fallbacks[0].ClusterName)
+}
+
+// The aggregate name must win even if it somehow also appears as a member's
+// cluster name: an aggregate attempt is the only one whose member is selected
+// by attempt count.
+func TestResolveAttemptForCluster_AggregateMatchTakesPrecedence(t *testing.T) {
+	p := bypassChainPolicy()
+	p.params.Targets[0].Fallbacks[0].ClusterName = "failover_agg_chat_0"
+
+	match := p.resolveAttemptForCluster("failover_agg_chat_0", 1)
+
+	require.NotNil(t, match)
+	assert.Equal(t, "gpt-4o", match.member.Model)
+	assert.Equal(t, 1, match.index)
+}

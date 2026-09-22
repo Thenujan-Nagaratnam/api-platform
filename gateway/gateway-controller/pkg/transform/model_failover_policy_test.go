@@ -174,6 +174,48 @@ func TestBuildRouteFailoverFromPolicy_OverwritesAuthoredBasePathAndOperationPath
 	assert.Equal(t, "/openai-provider", expanded.Targets[0].Target.BasePath)
 }
 
+// TestBuildRouteFailoverFromPolicy_InjectsMemberClusterNames pins the field
+// that lets the policy recognise a suspended-primary bypass: that dispatch goes
+// straight onto a fallback's own Envoy cluster rather than the chain's
+// aggregate, so the policy's upstream phase sees that cluster's name and has
+// nothing else to match it against.
+func TestBuildRouteFailoverFromPolicy_InjectsMemberClusterNames(t *testing.T) {
+	rdc, route := failoverTestRDC()
+
+	params := &modelFailoverParams{
+		Targets: []modelFailoverTargetEntry{{
+			Target:    modelFailoverTarget{Model: "gpt-4o"},
+			Fallbacks: []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+		}},
+	}
+
+	_, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.NoError(t, err)
+	assert.Equal(t, "upstream_main_openai_com_443", expanded.Targets[0].Target.ClusterName)
+	assert.Equal(t, "upstream_anthropic-upstream_anthropic_com_443", expanded.Targets[0].Fallbacks[0].ClusterName)
+	assert.Empty(t, params.Targets[0].Fallbacks[0].ClusterName, "input params must not be mutated")
+}
+
+// An author-supplied clusterName is never trusted — it would otherwise let an
+// attachment claim an arbitrary cluster as a chain member.
+func TestBuildRouteFailoverFromPolicy_OverwritesAuthoredClusterName(t *testing.T) {
+	rdc, route := failoverTestRDC()
+
+	params := &modelFailoverParams{
+		Targets: []modelFailoverTargetEntry{{
+			Target:    modelFailoverTarget{Model: "gpt-4o", ClusterName: "attacker-cluster"},
+			Fallbacks: []modelFailoverTarget{{Model: "c", Provider: "anthropic-upstream", ClusterName: "attacker-cluster"}},
+		}},
+	}
+
+	_, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.NoError(t, err)
+	assert.Equal(t, "upstream_main_openai_com_443", expanded.Targets[0].Target.ClusterName)
+	assert.Equal(t, "upstream_anthropic-upstream_anthropic_com_443", expanded.Targets[0].Fallbacks[0].ClusterName)
+}
+
 func TestBuildRouteFailoverFromPolicy_UnknownProviderIsAnError(t *testing.T) {
 	rdc, route := failoverTestRDC()
 	params := &modelFailoverParams{Targets: []modelFailoverTargetEntry{{

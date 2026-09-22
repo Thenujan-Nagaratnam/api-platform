@@ -72,6 +72,13 @@ type FailoverTarget struct {
 	// the only thing distinguishing one provider's loopback route from
 	// another's. See OnRequestHeaders' per-attempt :path correction.
 	BasePath string `json:"basePath,omitempty"`
+	// ClusterName is injected by gateway-controller: the real Envoy cluster
+	// this member dials. It is the fallback match for an attempt that did NOT
+	// arrive through the chain's aggregate — the suspended-primary bypass in
+	// OnRequestBody dispatches straight at a fallback's own cluster, so Envoy
+	// reports that cluster via xds.cluster_name and the aggregate-name
+	// comparison finds nothing. See resolveAttemptForCluster.
+	ClusterName string `json:"clusterName,omitempty"`
 }
 
 // FailoverTargetEntry is one client-requested-model's primary + fallback chain.
@@ -287,6 +294,16 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 			// fails (the aggregate was never entered). See design doc's
 			// discussion of this tradeoff (inherited from the superseded
 			// design's §5.3/§10).
+			//
+			// Nothing about this choice is seeded into metadata here: the
+			// upstream phase gets its own fresh SharedContext, so
+			// OnRequestHeaders re-identifies this member from the cluster
+			// Envoy reports (resolveAttemptForCluster's member-cluster
+			// match) and seeds it there, exactly as for an aggregate-routed
+			// attempt. Seeding downstream instead would be both too late for
+			// the downstream header-phase credential injection and wrong for
+			// the body phase — a provider's translator would then run
+			// downstream AND again upstream, on its own output.
 			upstream := fallback.Provider
 			return policy.UpstreamRequestModifications{UpstreamName: &upstream}
 		}
@@ -307,6 +324,66 @@ func (p *Policy) findEntryByAggregateCluster(cluster string) *FailoverTargetEntr
 	for i := range p.params.Targets {
 		if p.params.Targets[i].AggregateCluster == cluster {
 			return &p.params.Targets[i]
+		}
+	}
+	return nil
+}
+
+// chainMatch is one resolved upstream attempt: which chain entry it belongs
+// to, which member of that chain it dials, and that member's 1-based position
+// in the chain (1 = the entry's own target, 2 = Fallbacks[0], ...).
+type chainMatch struct {
+	entry  *FailoverTargetEntry
+	member *FailoverTarget
+	index  int
+}
+
+// resolveAttemptForCluster identifies which chain member an upstream attempt
+// represents, from the cluster Envoy reported plus that attempt's count.
+//
+// Two dispatch shapes reach the upstream phase, and they are distinguished by
+// the cluster name alone:
+//
+//   - Through the chain's AGGREGATE cluster (the normal path). Envoy reports
+//     the aggregate's own name on every attempt against it, never the real
+//     member it dialed, so x-envoy-attempt-count is what selects the member.
+//   - Directly onto a MEMBER's own cluster. OnRequestBody does this when the
+//     primary is suspended, skipping the aggregate entirely. The cluster name
+//     identifies the member exactly, and the attempt count is meaningless here
+//     (a retry re-dials that same single cluster), so it is ignored — matching
+//     what the superseded kernel-side resolution did for this same case.
+//
+// Only fallbacks are matched by cluster name. A chain's primary member dials
+// the route's own default cluster, which is also where an ordinary request
+// whose model matches no chain lands; matching it would mean seeding a chain's
+// model/provider onto a request that never entered that chain. The bypass only
+// ever dispatches at a fallback, so nothing needs the primary matched this way.
+//
+// Known limitation: if two entries list the SAME provider as a fallback under
+// different models, a bypass onto that shared cluster matches the first
+// declared one, so selected_model can name the other entry's model. The
+// provider — which is what gates credential/transform policies — is correct
+// either way, and the upstream phase has no request body to disambiguate with.
+func (p *Policy) resolveAttemptForCluster(cluster string, attempt int) *chainMatch {
+	if cluster == "" {
+		return nil
+	}
+	if entry := p.findEntryByAggregateCluster(cluster); entry != nil {
+		member := resolveAttempt(entry, attempt)
+		if member == nil {
+			return nil
+		}
+		return &chainMatch{entry: entry, member: member, index: attempt}
+	}
+	for i := range p.params.Targets {
+		entry := &p.params.Targets[i]
+		for j := range entry.Fallbacks {
+			// An empty ClusterName means the controller injected nothing for
+			// this member; never let it match an attempt.
+			if entry.Fallbacks[j].ClusterName == "" || entry.Fallbacks[j].ClusterName != cluster {
+				continue
+			}
+			return &chainMatch{entry: entry, member: &entry.Fallbacks[j], index: j + 2}
 		}
 	}
 	return nil
@@ -364,26 +441,37 @@ func joinBasePathAndOperation(basePath, operationPath string) string {
 }
 
 // OnRequestHeaders is meaningful only for an upstream-attempt invocation on a
-// cluster this instance's chain owns; otherwise a no-op. It resolves the chain
-// member for this attempt, seeds selected_provider/selected_model metadata
-// (plus the attempt index for the response phase), tells the kernel which base
-// path this attempt actually dials, and corrects a stale :path left over from
-// an earlier attempt.
+// cluster this instance's chain owns — the chain's aggregate, or a fallback's
+// own cluster when the suspended-primary bypass dispatched straight at it;
+// otherwise a no-op. It resolves the chain member for this attempt, seeds
+// selected_provider/selected_model metadata (plus the chain index for the
+// response phase), tells the kernel which base path this attempt actually
+// dials, and corrects a stale :path left over from an earlier attempt.
+//
+// The metadata seeding is what makes the per-provider credential/transform
+// policies work: the controller attaches one upstream-attempt instance of each
+// per referenced provider, every one gated by a CEL condition of the form
+// `'selected_provider' in request.Metadata && request.Metadata['selected_provider'] == '<id>'`
+// against this attempt's own SharedContext. Each attempt gets a FRESH
+// SharedContext (kernel.NewUpstreamAttemptSharedContext), so nothing the
+// downstream phase wrote carries in and this is the only thing that populates
+// those keys. Seed nothing and every one of those conditions is false: the
+// attempt reaches its provider with no credential injected and an untranslated
+// body. Ordering holds because the controller emits this instance ahead of
+// them in the upstream chain (llm_transformer.go Step 3.6 / Phase 2 vs 3).
 func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeaderContext, _ map[string]interface{}) policy.RequestHeaderAction {
 	if reqCtx.Downstream != nil || reqCtx.Upstream == nil {
 		return nil
 	}
-	entry := p.findEntryByAggregateCluster(reqCtx.Upstream.RouteCluster)
-	if entry == nil {
+	match := p.resolveAttemptForCluster(reqCtx.Upstream.RouteCluster, attemptCount(reqCtx.Headers))
+	if match == nil {
 		return nil
 	}
+	member, index := match.member, match.index
 
-	index := attemptCount(reqCtx.Headers)
-	member := resolveAttempt(entry, index)
-	if member == nil {
-		return nil
+	if reqCtx.SharedContext == nil {
+		reqCtx.SharedContext = &policy.SharedContext{}
 	}
-
 	if reqCtx.SharedContext.Metadata == nil {
 		reqCtx.SharedContext.Metadata = map[string]interface{}{}
 	}
@@ -433,22 +521,19 @@ func responseAttemptIndex(respCtx *policy.ResponseHeaderContext) int {
 }
 
 // OnResponseHeaders records suspension for a failing attempt (any 5xx) and,
-// for an attempt that escalated past the primary, sets
-// ResolvedFailoverProviderHeader for downstream analytics attribution.
+// for an attempt that escalated past the primary — whether by Envoy retrying
+// inside the aggregate or by the downstream bypass dispatching straight at a
+// fallback — sets ResolvedFailoverProviderHeader for downstream analytics
+// attribution.
 func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
 	if respCtx.Downstream != nil || respCtx.Upstream == nil {
 		return nil
 	}
-	entry := p.findEntryByAggregateCluster(respCtx.Upstream.RouteCluster)
-	if entry == nil {
+	match := p.resolveAttemptForCluster(respCtx.Upstream.RouteCluster, responseAttemptIndex(respCtx))
+	if match == nil {
 		return nil
 	}
-
-	index := responseAttemptIndex(respCtx)
-	member := resolveAttempt(entry, index)
-	if member == nil {
-		return nil
-	}
+	member, index := match.member, match.index
 
 	if respCtx.ResponseStatus >= 500 {
 		p.suspend(member.Model, p.resolvedProvider(*member))

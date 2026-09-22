@@ -46,6 +46,14 @@ type modelFailoverTarget struct {
 	// loopback route from another's. Any author-supplied value is overwritten
 	// by buildRouteFailoverFromPolicy.
 	BasePath string `json:"basePath,omitempty"`
+	// ClusterName is injected by the controller (never authored): the real
+	// Envoy cluster this member dials. It is what the policy compares
+	// UpstreamRequestContext.RouteCluster against when an attempt did NOT come
+	// through the chain's aggregate — the suspended-primary bypass dispatches
+	// straight onto a fallback's own cluster, so Envoy reports that cluster's
+	// name and the aggregate-name match finds nothing. Any author-supplied
+	// value is overwritten by buildRouteFailoverFromPolicy.
+	ClusterName string `json:"clusterName,omitempty"`
 }
 
 type modelFailoverTargetEntry struct {
@@ -150,6 +158,7 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 			}
 			fallbacks = append(fallbacks, fbEntry)
 			fb.BasePath = fbEntry.Upstream.BasePath
+			fb.ClusterName = fbEntry.Upstream.ClusterName
 			expandedFallbacks = append(expandedFallbacks, fb)
 		}
 		targets = append(targets, models.RouteFailoverTarget{
@@ -160,6 +169,7 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 
 		expandedTarget := entry.Target
 		expandedTarget.BasePath = targetEntry.Upstream.BasePath
+		expandedTarget.ClusterName = targetEntry.Upstream.ClusterName
 		expanded.Targets[i] = modelFailoverTargetEntry{
 			Target:           expandedTarget,
 			Fallbacks:        expandedFallbacks,

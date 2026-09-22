@@ -393,22 +393,7 @@ func (h *ResourceHandler) HandleRouteConfigUpdate(ctx context.Context, resources
 			rc.Metadata.DefaultUpstream = &info
 		}
 
-		if pathsRaw, ok := data["upstream_definition_paths"].(map[string]interface{}); ok {
-			paths := make(map[string]policyenginev1.UpstreamInfo, len(pathsRaw))
-			for k, v := range pathsRaw {
-				switch value := v.(type) {
-				case map[string]interface{}:
-					paths[k] = policyenginev1.UpstreamInfoFromMap(value)
-				case string:
-					// Wire shape emitted by a gateway-controller older than the
-					// widening to {cluster_name, base_path}: a bare base path.
-					// Accepted so a rolling upgrade doesn't lose every named
-					// upstream's base path until both sides are on the new build.
-					paths[k] = policyenginev1.UpstreamInfo{BasePath: value}
-				}
-			}
-			rc.Metadata.UpstreamDefinitionPaths = paths
-		}
+		rc.Metadata.UpstreamDefinitionPaths = parseUpstreamDefinitionTargets(data)
 
 		routeConfigs[routeKey] = rc
 	}
@@ -421,6 +406,50 @@ func (h *ResourceHandler) HandleRouteConfigUpdate(ctx context.Context, resources
 		"total_routes", len(routeConfigs))
 
 	return nil
+}
+
+// parseUpstreamDefinitionTargets reads a route's name-addressable upstream
+// registry off the wire.
+//
+// The controller dual-emits it: `upstream_definition_targets` carries the full
+// {cluster_name, base_path} object per name, and `upstream_definition_paths`
+// carries the original, narrower name -> base-path string map that a
+// policy-engine predating the object shape understands. The object key is
+// preferred whenever present and the string map is the fallback, so this build
+// works against a controller of either vintage, and an older build works
+// against this controller because the shape it reads never changed.
+//
+// A legacy entry contributes only a base path; its Envoy cluster name is
+// derived from the shared naming convention downstream (see
+// kernel.resolveUpstreamRedirect), exactly as it always was.
+func parseUpstreamDefinitionTargets(data map[string]interface{}) map[string]policyenginev1.UpstreamInfo {
+	if targetsRaw, ok := data["upstream_definition_targets"].(map[string]interface{}); ok {
+		targets := make(map[string]policyenginev1.UpstreamInfo, len(targetsRaw))
+		for k, v := range targetsRaw {
+			if obj, ok := v.(map[string]interface{}); ok {
+				targets[k] = policyenginev1.UpstreamInfoFromMap(obj)
+			}
+		}
+		return targets
+	}
+
+	pathsRaw, ok := data["upstream_definition_paths"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	paths := make(map[string]policyenginev1.UpstreamInfo, len(pathsRaw))
+	for k, v := range pathsRaw {
+		switch value := v.(type) {
+		case string:
+			paths[k] = policyenginev1.UpstreamInfo{BasePath: value}
+		case map[string]interface{}:
+			// A controller that emitted the object shape under the legacy key
+			// (the short-lived shape this dual-emit replaced) — still read it
+			// rather than dropping the entry.
+			paths[k] = policyenginev1.UpstreamInfoFromMap(value)
+		}
+	}
+	return paths
 }
 
 // applyRouteResolution parses a route's resolution fields (resolver_name,

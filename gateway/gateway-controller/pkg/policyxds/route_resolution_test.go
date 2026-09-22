@@ -102,9 +102,13 @@ func restRDC() *models.RuntimeDeployConfig {
 // serialising as {} or 0 is the usual way that happens.
 func TestExistingKindGainsOnlyCanonicalChainKey(t *testing.T) {
 	// The exact field set a pre-resolution controller emitted for a REST route.
+	// upstream_definition_targets is dual-emitted alongside upstream_definition_paths
+	// unconditionally (see createRouteConfigResource) so a policy-engine build that
+	// predates the {cluster_name, base_path} widening still gets every base path
+	// through the legacy key during a rolling upgrade.
 	before := []string{
 		"route_key", "metadata", "resolver_name",
-		"upstream_base_path", "upstream_definition_paths",
+		"upstream_base_path", "upstream_definition_paths", "upstream_definition_targets",
 	}
 
 	resources, err := testTranslator().TranslateRuntimeConfigs([]*models.RuntimeDeployConfig{restRDC()})
@@ -181,9 +185,10 @@ func TestExistingKindGoldenRouteConfigContent(t *testing.T) {
 			"vhost":        "localhost",
 			"path":         "/pets",
 		},
-		"resolver_name":             models.RouteKeyResolverName,
-		"upstream_base_path":        "/",
-		"upstream_definition_paths": map[string]interface{}{},
+		"resolver_name":               models.RouteKeyResolverName,
+		"upstream_base_path":          "/",
+		"upstream_definition_paths":   map[string]interface{}{},
+		"upstream_definition_targets": map[string]interface{}{},
 		// The only addition. Equal to the route key, so which chain gets selected is
 		// unchanged for every kind shipping today.
 		"canonical_chain_key": routeKey,
@@ -689,7 +694,7 @@ func TestRouteConfigRegistersFailoverAggregateClusterByName(t *testing.T) {
 	require.NoError(t, err)
 
 	data := decodeRouteConfig(t, resources[RouteConfigTypeURL][routeKey])
-	registry, ok := data["upstream_definition_paths"].(map[string]interface{})
+	registry, ok := data["upstream_definition_targets"].(map[string]interface{})
 	require.True(t, ok)
 
 	named, ok := registry["anthropic-upstream"].(map[string]interface{})

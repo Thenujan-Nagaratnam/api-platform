@@ -295,10 +295,10 @@ func (t *Translator) TranslateRuntimeConfigs(rdcs []*models.RuntimeDeployConfig)
 			// still derives itself. Only an entry whose cluster name does NOT
 			// follow that convention spells it out, and the policy engine then
 			// uses the supplied name verbatim.
-			upstreamDefPaths := make(map[string]policyenginev1.UpstreamInfo)
+			upstreamDefTargets := make(map[string]policyenginev1.UpstreamInfo)
 			for _, uc := range rdc.UpstreamClusters {
 				if uc.Name != "" {
-					upstreamDefPaths[uc.Name] = policyenginev1.UpstreamInfo{BasePath: uc.BasePath}
+					upstreamDefTargets[uc.Name] = policyenginev1.UpstreamInfo{BasePath: uc.BasePath}
 				}
 			}
 			// A failover aggregate cluster is addressable by name from a policy
@@ -310,14 +310,14 @@ func (t *Translator) TranslateRuntimeConfigs(rdcs []*models.RuntimeDeployConfig)
 			if route.Upstream.Failover != nil {
 				for i, tgt := range route.Upstream.Failover.Targets {
 					aggName := xds.AggregateClusterName(routeKey, i)
-					upstreamDefPaths[aggName] = policyenginev1.UpstreamInfo{
+					upstreamDefTargets[aggName] = policyenginev1.UpstreamInfo{
 						ClusterName: aggName,
 						BasePath:    tgt.Target.Upstream.BasePath,
 					}
 				}
 			}
 
-			resource, err := t.createRouteConfigResource(routeKey, rdc, upstreamBasePath, upstreamDefPaths)
+			resource, err := t.createRouteConfigResource(routeKey, rdc, upstreamBasePath, upstreamDefTargets)
 			if err != nil {
 				t.logger.Error("Failed to create route config resource",
 					slog.String("route_key", routeKey),
@@ -390,12 +390,27 @@ func (t *Translator) createPolicyChainResource(routeKey string, chain *models.Po
 	return toAnyResource(data, PolicyChainTypeURL)
 }
 
+// upstreamDefinitionBasePaths projects the name-addressable upstream registry
+// down to the legacy `upstream_definition_paths` wire shape: name -> base path,
+// one bare string per entry. Every registered target is included, aggregates
+// among them, so a policy-engine that only understands this shape resolves the
+// same base path it always did for an ordinary named upstream (it derives the
+// cluster name itself from the naming convention) — it simply doesn't learn the
+// explicit cluster names the newer key carries.
+func upstreamDefinitionBasePaths(targets map[string]policyenginev1.UpstreamInfo) map[string]string {
+	paths := make(map[string]string, len(targets))
+	for name, target := range targets {
+		paths[name] = target.BasePath
+	}
+	return paths
+}
+
 // createRouteConfigResource creates a RouteConfig xDS resource.
 func (t *Translator) createRouteConfigResource(
 	routeKey string,
 	rdc *models.RuntimeDeployConfig,
 	upstreamBasePath string,
-	upstreamDefPaths map[string]policyenginev1.UpstreamInfo,
+	upstreamDefTargets map[string]policyenginev1.UpstreamInfo,
 ) (types.Resource, error) {
 	route := rdc.Routes[routeKey]
 
@@ -422,9 +437,19 @@ func (t *Translator) createRouteConfigResource(
 		// compatibility default. Every transformer shipping today leaves the route
 		// field empty, so this is byte-identical to what it emitted before per-route
 		// resolvers existed.
-		"resolver_name":             rdc.EffectiveResolverName(route),
-		"upstream_base_path":        upstreamBasePath,
-		"upstream_definition_paths": upstreamDefPaths,
+		"resolver_name":      rdc.EffectiveResolverName(route),
+		"upstream_base_path": upstreamBasePath,
+		// Dual-emitted, deliberately. `upstream_definition_paths` keeps its
+		// original map[string]string shape (name -> base path) because a
+		// policy-engine older than the {cluster_name, base_path} widening drops
+		// any value that is not a string, which would silently strip every named
+		// upstream's base path for the whole route during a rolling upgrade —
+		// controller and runtime are separate Deployments in the Helm chart, so
+		// a new controller routinely serves an old runtime. The richer object
+		// map goes under its own key, which only a policy-engine that knows it
+		// reads; that one prefers it and falls back to the legacy key.
+		"upstream_definition_paths":   upstreamDefinitionBasePaths(upstreamDefTargets),
+		"upstream_definition_targets": upstreamDefTargets,
 	}
 
 	// Emitted explicitly on every *directly-resolved* route, including one where it
