@@ -459,9 +459,21 @@ type upstreamClusterResult struct {
 
 // UpstreamInfo converts the resolved cluster result into the shared wire shape
 // carried to the policy engine (sdk/core/policyengine.UpstreamInfo).
+//
+// ClusterName is ClusterKey, not EnvoyClusterName: translateRuntimeConfig
+// (pkg/xds/translator.go) names the REAL cluster it creates for this upstream
+// after rdc.UpstreamClusters' map key, i.e. ClusterKey ("upstream_main_<host>_<port>")
+// — confirmed live via Envoy's own CDS rejection/acceptance logs — never the
+// differently-formatted EnvoyClusterName ("cluster_<scheme>_<host>"), which
+// names a cluster this deployment does not create via this path. The policy
+// engine keys its upstream-phase backend resolution (resolveBackend) off this
+// exact field matching Envoy's xds.cluster_name attribute, so using the wrong
+// one here means it can never resolve this route's own backend at all — see
+// go-network-service-hardening's upstream ext_proc filter and
+// TestRestAPITransformer_DefaultUpstreamClusterNameReferencesRealCluster.
 func (r *upstreamClusterResult) UpstreamInfo() policyenginev1.UpstreamInfo {
 	return policyenginev1.UpstreamInfo{
-		ClusterName: r.EnvoyClusterName,
+		ClusterName: r.ClusterKey,
 		URL:         r.URL,
 		BasePath:    r.BasePath,
 	}
@@ -642,6 +654,7 @@ func convertAPIPolicyToSDK(p api.Policy, attachedTo policyv1alpha.Level, resolve
 		Version:            resolvedVersion,
 		Enabled:            true,
 		ExecutionCondition: p.ExecutionCondition,
+		Upstream:           p.Upstream != nil && *p.Upstream,
 		Parameters:         paramsMap,
 	}
 }
@@ -657,6 +670,7 @@ func sdkChainToModel(instances []policyenginev1.PolicyInstance) *models.PolicyCh
 			Version:            inst.Version,
 			Params:             inst.Parameters,
 			ExecutionCondition: inst.ExecutionCondition,
+			Upstream:           inst.Upstream,
 		})
 	}
 	return chain

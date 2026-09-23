@@ -20,12 +20,14 @@ package transform
 
 import (
 	"fmt"
+	"strings"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/utils"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
 // LLMTransformer transforms LLM Provider or LLM Proxy StoredConfig into RuntimeDeployConfig.
@@ -105,6 +107,16 @@ func (t *LLMTransformer) Transform(cfg *models.StoredConfig) (*models.RuntimeDep
 	}
 	rdc.SensitiveValues = cfg.SensitiveValues
 
+	// Step 5: Resolve failover (LlmProxy-only) into the generic RouteFailover
+	// shape every route carries. A model-failover policy attachment is the one
+	// and only source: it resolves exactly the routes the policy is attached to.
+	// No-op for any other kind, and for any LlmProxy without the attachment.
+	if proxy, ok := cfg.SourceConfiguration.(api.LLMProxyConfiguration); ok {
+		if err := applyModelFailoverPolicyToRoutes(rdc, llmProxyProviderIdentities(&proxy), proxy.Spec.Provider.Id); err != nil {
+			return nil, fmt.Errorf("resolving %s policy: %w", modelFailoverPolicyName, err)
+		}
+	}
+
 	return rdc, nil
 }
 
@@ -133,4 +145,88 @@ func (t *LLMTransformer) extractLLMMetadata(cfg *models.StoredConfig) *models.LL
 		return nil
 	}
 	return meta
+}
+
+// resolveFailoverEntry resolves one chain member (as authored in a
+// model-failover policy attachment's params) into a real cluster reference,
+// using rdc.UpstreamClusters (already built by RestAPITransformer) to
+// translate a named provider/upstream into a real cluster key + upstream
+// info. This is two independent questions: identity always comes from
+// t.Provider (defaulting to the primary), but the dial target defaults to
+// that same name only when t.UpstreamDefinition is empty — an explicit
+// UpstreamDefinition always wins, letting a member reuse one provider's
+// credentials against a differently-named upstream (see modelFailoverTarget's
+// own doc comment).
+//
+// An empty provider, or a provider equal to the proxy's own primaryProviderID,
+// both mean the route's OWN already-resolved primary upstream
+// (route.Upstream.ClusterKey / .Default) — never a name lookup. A config can
+// legally spell out `provider: <primary's own id>` explicitly, and that must
+// resolve exactly like omitting the field rather than falling through to the
+// named-cluster scan below, whose clusters are keyed by
+// additionalProviders[].as/id and would never contain the primary (its cluster
+// is stored with an empty Name — see models.UpstreamCluster.Name's doc comment).
+func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t modelFailoverTarget, primaryProviderID string) (models.RouteFailoverEntry, error) {
+	providerName := strings.TrimSpace(t.Provider)
+	if providerName == "" {
+		providerName = primaryProviderID
+	}
+
+	dialTarget := strings.TrimSpace(t.UpstreamDefinition)
+	if dialTarget == "" {
+		dialTarget = providerName
+	}
+
+	if dialTarget == primaryProviderID {
+		if r.Upstream.Default == nil {
+			return models.RouteFailoverEntry{}, fmt.Errorf("route has no default upstream to use as the primary failover target")
+		}
+		return models.RouteFailoverEntry{
+			Model:      t.Model,
+			ClusterKey: r.Upstream.ClusterKey,
+			Upstream:   *r.Upstream.Default,
+			Provider:   providerName,
+		}, nil
+	}
+
+	for key, uc := range rdc.UpstreamClusters {
+		if uc.Name != dialTarget {
+			continue
+		}
+		if len(uc.Endpoints) == 0 {
+			return models.RouteFailoverEntry{}, fmt.Errorf("upstream %q has no endpoints", dialTarget)
+		}
+		scheme := "http"
+		defaultPort := 80
+		if uc.TLS != nil && uc.TLS.Enabled {
+			scheme = "https"
+			defaultPort = 443
+		}
+		host := uc.Endpoints[0].Host
+		hostPort := host
+		if uc.Endpoints[0].Port != defaultPort {
+			hostPort = fmt.Sprintf("%s:%d", host, uc.Endpoints[0].Port)
+		}
+		// NOTE: this re-derives the URL from uc.Endpoints[0] with its own default-port
+		// omission logic, rather than reusing the URL restapi.go's addUpstreamCluster
+		// already computed for this same cluster (upstreamClusterResult.URL) — that
+		// value isn't persisted on models.UpstreamCluster, only returned transiently.
+		// The two can disagree in spelling for a non-default port explicitly written
+		// into the source URL (e.g. "https://host:443" vs "https://host"), though both
+		// name the identical backend. Not fixed here: plumbing the original URL onto
+		// UpstreamCluster is more invasive than this warrants — the wire consumer must
+		// not rely on exact string equality between this URL and a same-host
+		// default_upstream.url elsewhere.
+		return models.RouteFailoverEntry{
+			Model:      t.Model,
+			ClusterKey: key,
+			Upstream: policyenginev1.UpstreamInfo{
+				ClusterName: key,
+				URL:         fmt.Sprintf("%s://%s", scheme, hostPort),
+				BasePath:    uc.BasePath,
+			},
+			Provider: providerName,
+		}, nil
+	}
+	return models.RouteFailoverEntry{}, fmt.Errorf("upstream %q not found among configured upstreams", dialTarget)
 }

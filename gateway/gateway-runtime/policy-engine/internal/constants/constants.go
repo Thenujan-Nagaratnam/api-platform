@@ -50,6 +50,13 @@ const (
 	// Policy Engine Socket Path (matches gateway-controller constant)
 	DefaultPolicyEngineSocketPath = "/var/run/api-platform/policy-engine.sock"
 
+	// Upstream (per-cluster) Policy Engine Socket Path (matches
+	// gateway-controller's UpstreamPolicyEngineClusterName/
+	// DefaultUpstreamPolicyEngineSocketPath) — a distinct listener from the
+	// downstream one above; see UpstreamExternalProcessorServer's doc comment
+	// for why they must not share a connection.
+	DefaultUpstreamPolicyEngineSocketPath = "/var/run/api-platform/policy-engine-upstream.sock"
+
 	// Gateway Analytics Socket Path (matches gateway-controller constant)
 	DefaultALSSocketPath = "/var/run/api-platform/gateway-analytics.sock"
 

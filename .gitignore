@@ -166,7 +166,10 @@ gateway/gateway-runtime/target
 gateway/gateway-controller/target/
 gateway/gateway-builder/target/
 event-gateway/gateway-runtime/target/
-dev-policies/
+# dev-policies/
+gateway/dev-policies/mocks/mock-anthropic/mock-anthropic
+gateway/dev-policies/mocks/mock-openai/mock-openai
+gateway/poc/
 
 # Copilot Prompts
 .github/prompts

@@ -482,3 +482,102 @@ func TestRouteConfigUpdate_ValidBodyLimitsAreAccepted(t *testing.T) {
 		})
 	}
 }
+
+// ─── Name-addressable upstream registry ──────────────────────────────────────
+
+// An entry that spells out its own cluster name (a failover aggregate cluster,
+// whose Envoy name follows no derivable convention) must survive the wire, so
+// resolveUpstreamRedirect can use it verbatim instead of re-prefixing it. It
+// travels under its own key, `upstream_definition_targets`.
+func TestRouteConfigUpdate_UpstreamDefinitionTargetsCarryExplicitClusterName(t *testing.T) {
+	h, k := newRouteHandler(t, resolver.DefaultRegistry())
+
+	require.NoError(t, h.HandleRouteConfigUpdate(context.Background(),
+		[]*anypb.Any{routeConfigResource(t, map[string]interface{}{
+			"route_key": "POST|/chat/completions|main",
+			"upstream_definition_targets": map[string]interface{}{
+				"anthropic-upstream": map[string]interface{}{"base_path": "/anthropic-provider"},
+				"failover_agg_chat_0": map[string]interface{}{
+					"cluster_name": "failover_agg_chat_0",
+					"base_path":    "/openai-provider",
+				},
+			},
+		})}, "v1"))
+
+	rc := k.GetRouteConfig("POST|/chat/completions|main")
+	require.NotNil(t, rc)
+	assert.Equal(t, "/anthropic-provider", rc.Metadata.UpstreamDefinitionPaths["anthropic-upstream"].BasePath)
+	assert.Empty(t, rc.Metadata.UpstreamDefinitionPaths["anthropic-upstream"].ClusterName,
+		"an ordinary definition leaves the cluster name to the naming convention")
+	assert.Equal(t, "failover_agg_chat_0", rc.Metadata.UpstreamDefinitionPaths["failover_agg_chat_0"].ClusterName)
+	assert.Equal(t, "/openai-provider", rc.Metadata.UpstreamDefinitionPaths["failover_agg_chat_0"].BasePath)
+}
+
+// The legacy key alone — a gateway-controller predating the richer key, or this
+// one's own dual-emit read by a build that doesn't know the new key. Every base
+// path must survive; the cluster name is left to the naming convention, exactly
+// as it always was.
+func TestRouteConfigUpdate_UpstreamDefinitionPathsLegacyKeyStillWorks(t *testing.T) {
+	h, k := newRouteHandler(t, resolver.DefaultRegistry())
+
+	require.NoError(t, h.HandleRouteConfigUpdate(context.Background(),
+		[]*anypb.Any{routeConfigResource(t, map[string]interface{}{
+			"route_key": "POST|/chat/completions|main",
+			"upstream_definition_paths": map[string]interface{}{
+				"anthropic-upstream":  "/anthropic-provider",
+				"failover_agg_chat_0": "/openai-provider",
+			},
+		})}, "v1"))
+
+	rc := k.GetRouteConfig("POST|/chat/completions|main")
+	require.NotNil(t, rc)
+	assert.Equal(t, "/anthropic-provider", rc.Metadata.UpstreamDefinitionPaths["anthropic-upstream"].BasePath)
+	assert.Empty(t, rc.Metadata.UpstreamDefinitionPaths["anthropic-upstream"].ClusterName)
+	assert.Equal(t, "/openai-provider", rc.Metadata.UpstreamDefinitionPaths["failover_agg_chat_0"].BasePath)
+}
+
+// Dual-emitted: both keys present. The richer one wins, so explicit cluster
+// names are not lost to the flattened legacy copy.
+func TestRouteConfigUpdate_UpstreamDefinitionTargetsWinOverLegacyKey(t *testing.T) {
+	h, k := newRouteHandler(t, resolver.DefaultRegistry())
+
+	require.NoError(t, h.HandleRouteConfigUpdate(context.Background(),
+		[]*anypb.Any{routeConfigResource(t, map[string]interface{}{
+			"route_key": "POST|/chat/completions|main",
+			"upstream_definition_paths": map[string]interface{}{
+				"failover_agg_chat_0": "/openai-provider",
+			},
+			"upstream_definition_targets": map[string]interface{}{
+				"failover_agg_chat_0": map[string]interface{}{
+					"cluster_name": "failover_agg_chat_0",
+					"base_path":    "/openai-provider",
+				},
+			},
+		})}, "v1"))
+
+	rc := k.GetRouteConfig("POST|/chat/completions|main")
+	require.NotNil(t, rc)
+	assert.Equal(t, "failover_agg_chat_0", rc.Metadata.UpstreamDefinitionPaths["failover_agg_chat_0"].ClusterName)
+}
+
+// A short-lived intermediate build emitted the object shape under the LEGACY
+// key. Still read rather than dropped, so no named upstream loses its base path.
+func TestRouteConfigUpdate_UpstreamDefinitionPathsAcceptObjectUnderLegacyKey(t *testing.T) {
+	h, k := newRouteHandler(t, resolver.DefaultRegistry())
+
+	require.NoError(t, h.HandleRouteConfigUpdate(context.Background(),
+		[]*anypb.Any{routeConfigResource(t, map[string]interface{}{
+			"route_key": "POST|/chat/completions|main",
+			"upstream_definition_paths": map[string]interface{}{
+				"failover_agg_chat_0": map[string]interface{}{
+					"cluster_name": "failover_agg_chat_0",
+					"base_path":    "/openai-provider",
+				},
+			},
+		})}, "v1"))
+
+	rc := k.GetRouteConfig("POST|/chat/completions|main")
+	require.NotNil(t, rc)
+	assert.Equal(t, "failover_agg_chat_0", rc.Metadata.UpstreamDefinitionPaths["failover_agg_chat_0"].ClusterName)
+	assert.Equal(t, "/openai-provider", rc.Metadata.UpstreamDefinitionPaths["failover_agg_chat_0"].BasePath)
+}

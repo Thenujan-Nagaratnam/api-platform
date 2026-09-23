@@ -147,6 +147,12 @@ func (k *Kernel) BuildPolicyChain(routeKey string, policySpecs []policy.PolicySp
 					"policy", spec.Name, "mode", mode.ResponseBodyMode, "route", routeKey)
 			}
 		}
+
+		// Note: this entry point has no upstreamPolicies:/Upstream-flag input
+		// (it takes plain PolicySpecs, not wire PolicyInstances) and is not
+		// used by any production chain builder (see the three in xds.go,
+		// xdsclient/handler.go and pkg/engine/engine.go), so it never
+		// populates UpstreamPolicies.
 	}
 
 	// Clear streaming flags when no body policies exist — there is nothing to stream

@@ -3068,6 +3068,26 @@ components:
           pattern: '^\d+(\.\d+)?(ms|s|m|h)$'
           example: 5s
 
+    LLMResilience:
+      type: object
+      description: >
+        LlmProxy-only resilience: the same timeout/idleTimeout every other
+        kind's Resilience carries. Kept as its own schema (rather than reusing
+        the shared Resilience) so LlmProxy-only resilience settings can be added
+        without widening RestApi/McpProxy/LlmProvider. Failover is not declared
+        here — it is configured by attaching the model-failover policy.
+      properties:
+        timeout:
+          type: string
+          description: Maximum time for the entire route (request to upstream response). "0s" disables the timeout.
+          pattern: '^\d+(\.\d+)?(ms|s|m|h)$'
+          example: 15s
+        idleTimeout:
+          type: string
+          description: Per-route stream idle timeout (overrides the listener stream idle timeout for this route). "0s" disables the timeout.
+          pattern: '^\d+(\.\d+)?(ms|s|m|h)$'
+          example: 0s
+
     Resilience:
       type: object
       description: >
@@ -3232,6 +3252,15 @@ components:
           type: string
           description: Expression controlling conditional execution of the policy
           example: "request.metadata[authenticated] != true"
+        upstream:
+          type: boolean
+          description: >
+            Internal: set by the Gateway Controller on a policy instance it has
+            synthesized for the upstream-attempt phase, so the policy engine runs
+            it once per Envoy attempt (including retries to a different backend)
+            instead of once downstream. Never set by an author directly — there
+            is no operator-facing attachment point for this phase. Has no effect
+            when set on any other attachment.
         params:
           type: object
           description: Arbitrary parameters for the policy (free-form key/value structure)
@@ -4730,6 +4759,15 @@ components:
         executionCondition:
           type: string
           description: Expression controlling conditional execution of the policy
+        upstream:
+          type: boolean
+          description: >
+            Runs this attachment in the upstream-attempt phase instead of the
+            downstream phase — once per Envoy attempt to a backend, including
+            retries to a different one, rather than once per client request.
+            executionCondition IS evaluated in this phase, gated against
+            whatever metadata a phase-aware policy (e.g. model-failover) seeds
+            into the shared request metadata for that specific attempt.
         paths:
           type: array
           items:
@@ -4893,7 +4931,7 @@ components:
           default: deployed
           example: deployed
         resilience:
-          $ref: '#/components/schemas/Resilience'
+          $ref: '#/components/schemas/LLMResilience'
           description: >
             API-level backend/route timeout configuration. Applies to all routes generated
             for this LLM Proxy (the routes that forward traffic upstream). Supported at the

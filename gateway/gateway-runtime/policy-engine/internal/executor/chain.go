@@ -147,19 +147,7 @@ func (c *ChainExecutor) ExecuteRequestHeaderPolicies(
 
 		// Apply header mutations to reqCtx so subsequent policies and CEL conditions see the mutated state
 		if mod, ok := action.(policy.UpstreamRequestHeaderModifications); ok {
-			internalHeaders := reqCtx.Headers.UnsafeInternalValues()
-			for k, v := range mod.HeadersToSet {
-				internalHeaders[strings.ToLower(k)] = []string{v}
-			}
-			for _, k := range mod.HeadersToRemove {
-				delete(internalHeaders, strings.ToLower(k))
-			}
-			if mod.Path != nil {
-				reqCtx.Path = *mod.Path
-			}
-			if mod.Method != nil {
-				reqCtx.Method = *mod.Method
-			}
+			applyRequestHeaderModifications(reqCtx, mod)
 		}
 
 		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
@@ -467,13 +455,7 @@ func (c *ChainExecutor) ExecuteResponseHeaderPolicies(
 
 		// Apply header mutations to respCtx so subsequent policies and CEL conditions see the mutated state
 		if mod, ok := action.(policy.DownstreamResponseHeaderModifications); ok {
-			internalHeaders := respCtx.ResponseHeaders.UnsafeInternalValues()
-			for k, v := range mod.HeadersToSet {
-				internalHeaders[strings.ToLower(k)] = []string{v}
-			}
-			for _, k := range mod.HeadersToRemove {
-				delete(internalHeaders, strings.ToLower(k))
-			}
+			applyResponseHeaderModifications(respCtx, mod)
 		}
 
 		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
@@ -667,6 +649,257 @@ func (c *ChainExecutor) ExecuteResponsePolicies(ctx context.Context, policyList 
 
 	result.TotalExecutionTime = time.Since(startTime)
 	return result, nil
+}
+
+// ─── Upstream-attempt phase ──────────────────────────────────────────────────
+//
+// These run once per upstream attempt — including retries to a different
+// backend — scoped to whichever backend Envoy is dialing for that specific
+// attempt. There is no separate interface or context type for this phase: the
+// exact same RequestHeaderPolicy/RequestPolicy/ResponseHeaderPolicy/ResponsePolicy
+// methods and RequestHeaderContext/RequestContext/ResponseHeaderContext/ResponseContext
+// types used downstream are reused, built with Downstream == nil — the signal
+// a policy uses to tell the two invocations apart (see those types' own doc
+// comments in the SDK). A policy opts in purely by attachment point
+// (upstreamPolicies: — see registry.PolicyChain.UpstreamPolicies, populated
+// at chain-build time), so these loops dispatch by interface type assertion
+// alone — every entry
+// here has already declared it wants to participate, via whichever
+// interface(s) it implements. As with the downstream phases above, a policy
+// whose spec carries a CEL executionCondition is skipped on this attempt
+// when the condition evaluates false — this is what lets a provider-scoped
+// policy instance (e.g. gated on selected_provider) run only for the leg it
+// was configured for. Per-policy result tracking/spans are intentionally not
+// kept here (unlike the downstream phases): no caller has ever consumed them
+// for this phase.
+
+// ExecuteUpstreamAttemptRequestHeaderPolicies invokes each RequestHeaderPolicy
+// in policyList, in order, against reqCtx — freshly, for one specific
+// upstream attempt.
+func (c *ChainExecutor) ExecuteUpstreamAttemptRequestHeaderPolicies(
+	ctx context.Context,
+	policyList []policy.Policy,
+	reqCtx *policy.RequestHeaderContext,
+	specs []policy.PolicySpec,
+	api, route string,
+) (policy.RequestHeaderAction, error) {
+	var finalAction policy.RequestHeaderAction
+
+	for i, pol := range policyList {
+		hp, ok := pol.(policy.RequestHeaderPolicy)
+		if !ok {
+			continue
+		}
+		spec := specs[i]
+		if !spec.Enabled {
+			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
+			continue
+		}
+
+		if spec.ExecutionCondition != nil && *spec.ExecutionCondition != "" {
+			conditionMet, err := c.celEvaluator.EvaluateRequestHeaderCondition(*spec.ExecutionCondition, reqCtx)
+			if err != nil {
+				return finalAction, fmt.Errorf("condition evaluation failed for policy %s:%s: %w", spec.Name, spec.Version, err)
+			}
+			if !conditionMet {
+				metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "condition_not_met").Inc()
+				continue
+			}
+		}
+
+		policyStartTime := time.Now()
+		// spec.Parameters.Raw is an immutable snapshot published at chain-build time and
+		// shared read-only across concurrent requests; policies must not mutate it.
+		slog.Debug("[upstream-attempt] calling OnRequestHeaders", "policy", spec.Name, "version", spec.Version, "route", route)
+		action := hp.OnRequestHeaders(ctx, reqCtx, spec.Parameters.Raw)
+		executionTime := time.Since(policyStartTime)
+		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
+		metrics.PolicyDurationSeconds.WithLabelValues(spec.Name, spec.Version, api, route).Observe(executionTime.Seconds())
+
+		if mod, ok := action.(policy.UpstreamRequestHeaderModifications); ok {
+			applyRequestHeaderModifications(reqCtx, mod)
+		}
+		finalAction = action
+
+		if _, ok := action.(policy.ImmediateResponse); ok {
+			metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
+			return action, nil
+		}
+	}
+
+	return finalAction, nil
+}
+
+// ExecuteUpstreamAttemptRequestPolicies invokes each RequestPolicy in
+// policyList, in order, against reqCtx — freshly, for one specific upstream
+// attempt.
+func (c *ChainExecutor) ExecuteUpstreamAttemptRequestPolicies(
+	ctx context.Context,
+	policyList []policy.Policy,
+	reqCtx *policy.RequestContext,
+	specs []policy.PolicySpec,
+	api, route string,
+) (policy.RequestAction, error) {
+	var finalAction policy.RequestAction
+
+	for i, pol := range policyList {
+		rp, ok := pol.(policy.RequestPolicy)
+		if !ok {
+			continue
+		}
+		spec := specs[i]
+		if !spec.Enabled {
+			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
+			continue
+		}
+
+		if spec.ExecutionCondition != nil && *spec.ExecutionCondition != "" {
+			conditionMet, err := c.celEvaluator.EvaluateRequestBodyCondition(*spec.ExecutionCondition, reqCtx)
+			if err != nil {
+				return finalAction, fmt.Errorf("condition evaluation failed for policy %s:%s: %w", spec.Name, spec.Version, err)
+			}
+			if !conditionMet {
+				metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "condition_not_met").Inc()
+				continue
+			}
+		}
+
+		policyStartTime := time.Now()
+		slog.Debug("[upstream-attempt] calling OnRequestBody", "policy", spec.Name, "version", spec.Version, "route", route)
+		action := rp.OnRequestBody(ctx, reqCtx, spec.Parameters.Raw)
+		executionTime := time.Since(policyStartTime)
+		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
+		metrics.PolicyDurationSeconds.WithLabelValues(spec.Name, spec.Version, api, route).Observe(executionTime.Seconds())
+
+		finalAction = action
+		if action == nil {
+			continue
+		}
+		if action.StopExecution() {
+			metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
+			return action, nil
+		}
+		if mods, ok := action.(policy.UpstreamRequestModifications); ok {
+			applyRequestModifications(reqCtx, &mods)
+		}
+	}
+
+	return finalAction, nil
+}
+
+// ExecuteUpstreamAttemptResponseHeaderPolicies invokes each ResponseHeaderPolicy
+// in policyList (reverse order, mirroring the downstream response phase)
+// against respCtx, for one specific upstream attempt's response.
+func (c *ChainExecutor) ExecuteUpstreamAttemptResponseHeaderPolicies(
+	ctx context.Context,
+	policyList []policy.Policy,
+	respCtx *policy.ResponseHeaderContext,
+	specs []policy.PolicySpec,
+	api, route string,
+) (policy.ResponseHeaderAction, error) {
+	var finalAction policy.ResponseHeaderAction
+
+	for i := len(policyList) - 1; i >= 0; i-- {
+		pol := policyList[i]
+		hp, ok := pol.(policy.ResponseHeaderPolicy)
+		if !ok {
+			continue
+		}
+		spec := specs[i]
+		if !spec.Enabled {
+			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
+			continue
+		}
+
+		if spec.ExecutionCondition != nil && *spec.ExecutionCondition != "" {
+			conditionMet, err := c.celEvaluator.EvaluateResponseHeaderCondition(*spec.ExecutionCondition, respCtx)
+			if err != nil {
+				return finalAction, fmt.Errorf("condition evaluation failed for policy %s:%s: %w", spec.Name, spec.Version, err)
+			}
+			if !conditionMet {
+				metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "condition_not_met").Inc()
+				continue
+			}
+		}
+
+		policyStartTime := time.Now()
+		slog.Debug("[upstream-attempt] calling OnResponseHeaders", "policy", spec.Name, "version", spec.Version, "route", route)
+		action := hp.OnResponseHeaders(ctx, respCtx, spec.Parameters.Raw)
+		executionTime := time.Since(policyStartTime)
+		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
+		metrics.PolicyDurationSeconds.WithLabelValues(spec.Name, spec.Version, api, route).Observe(executionTime.Seconds())
+
+		if mod, ok := action.(policy.DownstreamResponseHeaderModifications); ok {
+			applyResponseHeaderModifications(respCtx, mod)
+		}
+		finalAction = action
+
+		if _, ok := action.(policy.ImmediateResponse); ok {
+			metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
+			return action, nil
+		}
+	}
+
+	return finalAction, nil
+}
+
+// ExecuteUpstreamAttemptResponsePolicies invokes each ResponsePolicy in
+// policyList (reverse order, mirroring the downstream response phase)
+// against respCtx — scoped to whichever backend actually produced this
+// attempt's response.
+func (c *ChainExecutor) ExecuteUpstreamAttemptResponsePolicies(
+	ctx context.Context,
+	policyList []policy.Policy,
+	respCtx *policy.ResponseContext,
+	specs []policy.PolicySpec,
+	api, route string,
+) (policy.ResponseAction, error) {
+	var finalAction policy.ResponseAction
+
+	for i := len(policyList) - 1; i >= 0; i-- {
+		pol := policyList[i]
+		rp, ok := pol.(policy.ResponsePolicy)
+		if !ok {
+			continue
+		}
+		spec := specs[i]
+		if !spec.Enabled {
+			metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "disabled").Inc()
+			continue
+		}
+
+		if spec.ExecutionCondition != nil && *spec.ExecutionCondition != "" {
+			conditionMet, err := c.celEvaluator.EvaluateResponseBodyCondition(*spec.ExecutionCondition, respCtx)
+			if err != nil {
+				return finalAction, fmt.Errorf("condition evaluation failed for policy %s:%s: %w", spec.Name, spec.Version, err)
+			}
+			if !conditionMet {
+				metrics.PolicySkippedTotal.WithLabelValues(spec.Name, "", "", "condition_not_met").Inc()
+				continue
+			}
+		}
+
+		policyStartTime := time.Now()
+		slog.Debug("[upstream-attempt] calling OnResponseBody", "policy", spec.Name, "version", spec.Version, "route", route)
+		action := rp.OnResponseBody(ctx, respCtx, spec.Parameters.Raw)
+		executionTime := time.Since(policyStartTime)
+		metrics.PolicyExecutionsTotal.WithLabelValues(spec.Name, spec.Version, api, route, "executed").Inc()
+		metrics.PolicyDurationSeconds.WithLabelValues(spec.Name, spec.Version, api, route).Observe(executionTime.Seconds())
+
+		finalAction = action
+		if action == nil {
+			continue
+		}
+		if action.StopExecution() {
+			metrics.ShortCircuitsTotal.WithLabelValues("", spec.Name).Inc()
+			return action, nil
+		}
+		if mods, ok := action.(policy.DownstreamResponseModifications); ok {
+			applyResponseModifications(respCtx, &mods)
+		}
+	}
+
+	return finalAction, nil
 }
 
 // ─── Streaming request body phase ────────────────────────────────────────────
@@ -1039,6 +1272,37 @@ func applyResponseModifications(ctx *policy.ResponseContext, mods *policy.Downst
 
 	if mods.StatusCode != nil {
 		ctx.ResponseStatus = *mods.StatusCode
+	}
+}
+
+// applyRequestHeaderModifications applies a header-phase policy's mutations to
+// reqCtx, shared by the downstream and upstream-attempt request header phases.
+func applyRequestHeaderModifications(reqCtx *policy.RequestHeaderContext, mod policy.UpstreamRequestHeaderModifications) {
+	internalHeaders := reqCtx.Headers.UnsafeInternalValues()
+	for k, v := range mod.HeadersToSet {
+		internalHeaders[strings.ToLower(k)] = []string{v}
+	}
+	for _, k := range mod.HeadersToRemove {
+		delete(internalHeaders, strings.ToLower(k))
+	}
+	if mod.Path != nil {
+		reqCtx.Path = *mod.Path
+	}
+	if mod.Method != nil {
+		reqCtx.Method = *mod.Method
+	}
+}
+
+// applyResponseHeaderModifications applies a header-phase policy's mutations
+// to respCtx, shared by the downstream and upstream-attempt response header
+// phases.
+func applyResponseHeaderModifications(respCtx *policy.ResponseHeaderContext, mod policy.DownstreamResponseHeaderModifications) {
+	internalHeaders := respCtx.ResponseHeaders.UnsafeInternalValues()
+	for k, v := range mod.HeadersToSet {
+		internalHeaders[strings.ToLower(k)] = []string{v}
+	}
+	for _, k := range mod.HeadersToRemove {
+		delete(internalHeaders, strings.ToLower(k))
 	}
 }
 

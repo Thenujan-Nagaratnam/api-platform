@@ -857,9 +857,21 @@ func (v *LLMValidator) validateProxyData(spec *api.LLMProxyConfigData) []Validat
 
 	// Validate API-level resilience (timeout / idleTimeout). LLM kinds support resilience at
 	// the API level only.
-	errors = append(errors, validateResilienceTimeouts("spec.resilience", spec.Resilience)...)
+	errors = append(errors, validateResilienceTimeouts("spec.resilience", ToBaseResilience(spec.Resilience))...)
 
 	return errors
+}
+
+// ToBaseResilience adapts LlmProxy's LLMResilience down to the shared
+// Resilience shape so the one existing timeout/idleTimeout validator serves
+// every kind. nil in, nil out. LLMResilience is kept as its own schema rather
+// than collapsed into Resilience so LlmProxy-only resilience settings can be
+// added without widening the shared one.
+func ToBaseResilience(r *api.LLMResilience) *api.Resilience {
+	if r == nil {
+		return nil
+	}
+	return &api.Resilience{Timeout: r.Timeout, IdleTimeout: r.IdleTimeout}
 }
 
 func (v *LLMValidator) validateLLMProxyTransformer(fieldPrefix string, transformer *api.LLMProxyTransformer) []ValidationError {

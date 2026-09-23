@@ -148,6 +148,78 @@ type RouteUpstream struct {
 	// the policy engine as the route's single default upstream field, regardless
 	// of which slot it is.
 	Default *policyenginev1.UpstreamInfo
+
+	// Failover is this route's failover configuration (nil unless the source
+	// LlmProxy attached the model-failover policy to this route). See
+	// RouteFailover.
+	Failover *RouteFailover
+}
+
+// RouteFailover declares, for one route, the ordered failover chains a
+// client-requested model can match against. Populated only when the source
+// LlmProxy attaches the model-failover policy; nil otherwise. See
+// docs/superpowers/specs/2026-09-17-llm-model-failover-design.md.
+type RouteFailover struct {
+	SuspendDurationSeconds int
+	Targets                []RouteFailoverTarget
+
+	// RetryOn is the set of Envoy RetryPolicy.retry_on conditions that
+	// trigger escalation to the next chain member. Always non-empty by the
+	// time this reaches the xDS translator — buildRouteFailoverFromPolicy
+	// (pkg/transform) defaults it to ["5xx"], or ["retriable-status-codes"]
+	// when RetriableStatusCodes is set.
+	RetryOn []string
+
+	// RetriableStatusCodes is the author-configured statusCodes list (empty
+	// unless explicitly set), consumed by the xDS translator as Envoy
+	// RetryPolicy.retriable_status_codes (alongside RetryOn containing
+	// "retriable-status-codes") — and by the model-failover policy itself
+	// (isFailureStatus) as its own suspension trigger, so a target's "this
+	// counts as a failure" definition never disagrees between Envoy's
+	// in-request retry and the policy's cross-request suspension.
+	RetriableStatusCodes []int
+
+	// SuspendAfterFailures is the author-configured suspendAfterFailures
+	// (consecutive qualifying failures required before a target is
+	// suspended), passed straight through to the model-failover policy's own
+	// params — suspension is policy-side state, never Envoy-native
+	// outlier_detection (applying both would let Envoy's own LB eject/avoid a
+	// host on its own timeline, fighting the policy's suspend/resume
+	// decisions). Defaults to 1 when unset/<=0 (suspend on the very first
+	// qualifying failure).
+	SuspendAfterFailures int
+
+	// MaxSuspendDurationSeconds caps the policy's own exponential backoff
+	// (each consecutive suspend-then-immediately-refail cycle for the same
+	// target doubles the suspend window). Defaults to 8x
+	// SuspendDurationSeconds when unset/<=0.
+	MaxSuspendDurationSeconds int
+}
+
+// RouteFailoverTarget is one client-requested model's own failover chain.
+type RouteFailoverTarget struct {
+	Model     string
+	Target    RouteFailoverEntry
+	Fallbacks []RouteFailoverEntry
+}
+
+// RouteFailoverEntry is a single attempt slot: which model to send (may
+// differ from RouteFailoverTarget.Model for a fallback using a cheaper
+// model), which real cluster to dial, and that cluster's resolved upstream
+// info.
+type RouteFailoverEntry struct {
+	Model      string
+	ClusterKey string
+	Upstream   policyenginev1.UpstreamInfo
+
+	// Provider is the resolved provider id/name for this entry (the primary
+	// provider's own id for the no-provider/self-referencing case, or the
+	// matched additionalProviders[].as/id for a named entry). Neither
+	// Upstream.ClusterName (empty for the primary slot cluster) nor
+	// Upstream.URL (a loopback address for named providers, not the real
+	// backend) can be resolved back to a provider identity by a downstream
+	// consumer, so this field carries it explicitly on the wire.
+	Provider string
 }
 
 // PolicyChain is an ordered list of policies for a route.
@@ -161,6 +233,8 @@ type Policy struct {
 	Version            string
 	Params             map[string]interface{}
 	ExecutionCondition *string
+	// Upstream runs this policy in the upstream-attempt phase (upstreamPolicies).
+	Upstream bool
 }
 
 // UpstreamCluster represents an Envoy cluster with its endpoints.

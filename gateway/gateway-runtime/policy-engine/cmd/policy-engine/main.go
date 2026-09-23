@@ -289,6 +289,30 @@ func main() {
 	grpcServer := grpc.NewServer(extProcServerOptions(cfg)...)
 	extprocv3.RegisterExternalProcessorServer(grpcServer, extprocServer)
 
+	// Create and start the upstream (per-cluster) ext_proc gRPC server — a
+	// genuinely separate listener from the downstream one above, so Envoy's
+	// per-cluster filter attachment and the listener-level attachment are
+	// unambiguous, distinct connections (see UpstreamExternalProcessorServer's
+	// doc comment). UDS-only for now, matching gateway-controller's
+	// createUpstreamPolicyEngineCluster.
+	upstreamExtprocServer := kernel.NewUpstreamExternalProcessorServer(k, chainExecutor)
+	upstreamSocketPath := constants.DefaultUpstreamPolicyEngineSocketPath
+	if err := os.Remove(upstreamSocketPath); err != nil && !os.IsNotExist(err) {
+		slog.WarnContext(ctx, "Failed to remove existing upstream socket file", "path", upstreamSocketPath, "error", err)
+	}
+	upstreamLis, err := net.Listen("unix", upstreamSocketPath)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to listen on upstream Unix socket", "path", upstreamSocketPath, "error", err)
+		os.Exit(1)
+	}
+	if err := os.Chmod(upstreamSocketPath, 0660); err != nil {
+		slog.WarnContext(ctx, "Failed to set upstream socket permissions", "path", upstreamSocketPath, "error", err)
+	}
+	slog.InfoContext(ctx, "Upstream Policy Engine listening on Unix socket", "path", upstreamSocketPath)
+
+	upstreamGrpcServer := grpc.NewServer(extProcServerOptions(cfg)...)
+	extprocv3.RegisterExternalProcessorServer(upstreamGrpcServer, upstreamExtprocServer)
+
 	// Enable block/mutex profiling sampling when pprof is enabled. These are the
 	// only profiles that need explicit rate setup; 0 leaves them disabled. Gated so
 	// the sampling overhead is never paid unless pprof is deliberately turned on.
@@ -349,6 +373,11 @@ func main() {
 			serverErrCh <- err
 		}
 	}()
+	go func() {
+		if err := upstreamGrpcServer.Serve(upstreamLis); err != nil {
+			serverErrCh <- err
+		}
+	}()
 
 	// Wait for shutdown signal or server error
 	select {
@@ -400,6 +429,7 @@ func main() {
 	}
 
 	grpcServer.GracefulStop()
+	upstreamGrpcServer.GracefulStop()
 
 	// Cleanup Unix socket if used (UDS mode)
 	if serverMode == "uds" {
@@ -407,6 +437,10 @@ func main() {
 			slog.WarnContext(ctx, "Failed to cleanup socket file on shutdown",
 				"path", constants.DefaultPolicyEngineSocketPath, "error", err)
 		}
+	}
+	if err := os.Remove(constants.DefaultUpstreamPolicyEngineSocketPath); err != nil && !os.IsNotExist(err) {
+		slog.WarnContext(ctx, "Failed to cleanup upstream socket file on shutdown",
+			"path", constants.DefaultUpstreamPolicyEngineSocketPath, "error", err)
 	}
 
 	slog.InfoContext(ctx, "Policy Engine shut down successfully")

@@ -65,4 +65,53 @@ type PolicyChain struct {
 	// control Envoy header transport (headers always flow for lifecycle reasons).
 	// It reflects callback participation intent.
 	RequiresResponseHeader bool
+
+	// Computed flag: true if UpstreamPolicies contains at least one policy
+	// implementing RequestPolicy or RequestHeaderPolicy. Drives whether the
+	// control plane attaches the per-backend upstream ext_proc filter for this
+	// route at all — routes with no such policy pay zero cost.
+	RequiresUpstreamRequest bool
+
+	// Computed flag: response-phase analog of RequiresUpstreamRequest — true
+	// if UpstreamPolicies contains at least one policy implementing
+	// ResponsePolicy or ResponseHeaderPolicy.
+	RequiresUpstreamResponse bool
+
+	// UpstreamPolicies holds every policy attached via upstreamPolicies: (see
+	// the LlmProvider/LlmProxy schema) — never also in Policies, since the
+	// attachment point alone decides the phase: a policy attached under
+	// operationPolicies: runs downstream only, one attached under
+	// upstreamPolicies: runs per upstream attempt only (once per Envoy
+	// attempt, including retries to a different backend). Attaching the same
+	// policy under both runs it in both phases, as two separate instances.
+	// There is no separate upstream interface: the kernel invokes the same
+	// RequestPolicy/ResponsePolicy/RequestHeaderPolicy/ResponseHeaderPolicy
+	// methods a policy already implements for the downstream phase, against a
+	// context built for that attempt (see those context types' own doc
+	// comments in the SDK).
+	UpstreamPolicies []policy.Policy
+
+	// UpstreamPolicySpecs is aligned with UpstreamPolicies, mirroring PolicySpecs.
+	UpstreamPolicySpecs []policy.PolicySpec
+}
+
+// ComputeUpstreamRequirements inspects a chain's UpstreamPolicies list and
+// reports whether it needs the request/response upstream-attempt phase at
+// all, by checking which interfaces are actually implemented.
+func ComputeUpstreamRequirements(policies []policy.Policy) (requiresRequest, requiresResponse bool) {
+	for _, p := range policies {
+		if _, ok := p.(policy.RequestPolicy); ok {
+			requiresRequest = true
+		}
+		if _, ok := p.(policy.RequestHeaderPolicy); ok {
+			requiresRequest = true
+		}
+		if _, ok := p.(policy.ResponsePolicy); ok {
+			requiresResponse = true
+		}
+		if _, ok := p.(policy.ResponseHeaderPolicy); ok {
+			requiresResponse = true
+		}
+	}
+	return
 }

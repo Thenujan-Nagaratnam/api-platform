@@ -127,6 +127,41 @@ func (p *ConfigurableMockPolicy) OnResponseBody(_ context.Context, ctx *policy.R
 }
 
 // =============================================================================
+// ConfigurableUpstreamMockPolicy - A flexible mock policy for the
+// upstream-attempt phase. There is no separate upstream interface: the
+// kernel dispatches the upstream-attempt phase via the same RequestPolicy/
+// ResponsePolicy methods used downstream, against a RequestContext/
+// ResponseContext built with Downstream == nil for that attempt — see
+// registry.PolicyChain.UpstreamPolicies and kernel.BuildUpstreamAttemptRequestContext.
+// =============================================================================
+
+type ConfigurableUpstreamMockPolicy struct {
+	Name     string
+	Version  string
+	MockMode policy.ProcessingMode
+	OnReqFn  func(*policy.RequestContext, map[string]interface{}) policy.RequestAction
+	OnRespFn func(*policy.ResponseContext, map[string]interface{}) policy.ResponseAction
+}
+
+func (p *ConfigurableUpstreamMockPolicy) Mode() policy.ProcessingMode {
+	return p.MockMode
+}
+
+func (p *ConfigurableUpstreamMockPolicy) OnRequestBody(_ context.Context, ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
+	if p.OnReqFn != nil {
+		return p.OnReqFn(ctx, params)
+	}
+	return nil
+}
+
+func (p *ConfigurableUpstreamMockPolicy) OnResponseBody(_ context.Context, ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
+	if p.OnRespFn != nil {
+		return p.OnRespFn(ctx, params)
+	}
+	return nil
+}
+
+// =============================================================================
 // SimpleMockPolicy - A simple mock policy with name and version
 // =============================================================================
 

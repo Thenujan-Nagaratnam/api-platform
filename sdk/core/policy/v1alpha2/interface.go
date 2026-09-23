@@ -71,6 +71,19 @@ const (
 // ProcessingMode declares a policy's processing requirements for each phase.
 // The kernel uses this at chain-build time to decide whether to buffer bodies
 // and which Envoy ext_proc modes to request.
+//
+// There is no separate mode or interface for the upstream-attempt phase
+// (once per Envoy attempt, including retries to a different backend): a
+// policy attached via upstreamPolicies: (see the LlmProvider/LlmProxy schema)
+// runs there using exactly the same RequestPolicy.OnRequestBody/RequestHeaderPolicy.OnRequestHeaders/
+// ResponsePolicy.OnResponseBody/ResponseHeaderPolicy.OnResponseHeaders it
+// already implements for the downstream phase (gated by the same
+// RequestBodyMode/RequestHeaderMode/ResponseBodyMode/ResponseHeaderMode
+// below), against a context built for that attempt — Downstream is nil in
+// that context (see RequestContext/ResponseContext's own doc comments), the
+// one signal distinguishing an attempt invocation from a genuine downstream
+// one. Attaching the same policy under both operationPolicies: and
+// upstreamPolicies: runs it in both phases.
 type ProcessingMode struct {
 	RequestHeaderMode  HeaderProcessingMode
 	RequestBodyMode    BodyProcessingMode

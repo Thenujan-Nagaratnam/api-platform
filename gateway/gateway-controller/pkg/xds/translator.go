@@ -53,6 +53,7 @@ import (
 	luav3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/lua/v3"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	previous_prioritiesv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/retry/priority/previous_priorities/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
@@ -68,6 +69,7 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
+	"google.golang.org/protobuf/proto"
 	anypb "google.golang.org/protobuf/types/known/anypb"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -268,11 +270,72 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 				parsedURL.Scheme = "https"
 			}
 			c := t.createCluster(clusterName, parsedURL, nil, connectTimeout)
+			if clusterNeedsUpstreamPolicyFilter(clusterName, rdc) {
+				if err := attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName); err != nil {
+					return nil, nil, fmt.Errorf("failed to attach upstream policy filter to cluster %q: %w", clusterName, err)
+				}
+			}
 			clusters = append(clusters, c)
 			continue
 		}
 		c := t.createWeightedCluster(clusterName, uc.Endpoints, uc.TLS, connectTimeout)
+		if clusterNeedsUpstreamPolicyFilter(clusterName, rdc) {
+			if err := attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName); err != nil {
+				return nil, nil, fmt.Errorf("failed to attach upstream policy filter to cluster %q: %w", clusterName, err)
+			}
+		}
 		clusters = append(clusters, c)
+	}
+
+	// Build one aggregate cluster per model-failover targets[] entry,
+	// deduped by route key + entry index (multiple operations of the same
+	// LlmProxy share the identical failover block, so this avoids emitting
+	// duplicate aggregate clusters with colliding names).
+	seenAggregates := map[string]bool{}
+	for routeKey, rdcRoute := range rdc.Routes {
+		if rdcRoute.Upstream.Failover == nil {
+			continue
+		}
+		aggClusters, err := buildFailoverAggregateClusters(rdcRoute.Upstream.Failover, routeKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
+		}
+		for _, c := range aggClusters {
+			if seenAggregates[c.Name] {
+				continue
+			}
+			seenAggregates[c.Name] = true
+			clusters = append(clusters, c)
+		}
+	}
+
+	// Stamp every real cluster a model-failover chain references with its own
+	// identity (see applyMemberClusterIdentityMetadata) — never on the
+	// aggregate cluster itself, only its real members. Suspension is handled
+	// entirely by the model-failover policy's own in-process state
+	// (modelfailover.go's suspensionState), not by Envoy-native
+	// outlier_detection: the two would independently and redundantly eject
+	// the same host on different timelines (outlier_detection's ejection
+	// duration scales with cumulative ejection_count and never resets for
+	// the cluster's lifetime), fighting the policy's own suspend/resume
+	// decisions rather than reflecting them.
+	memberClusterKeys := collectMemberClusterKeys(rdc)
+	if len(memberClusterKeys) > 0 {
+		clusterByName := make(map[string]*cluster.Cluster, len(clusters))
+		for _, c := range clusters {
+			clusterByName[c.Name] = c
+		}
+		for clusterKey := range memberClusterKeys {
+			c, ok := clusterByName[clusterKey]
+			if !ok {
+				continue // referenced cluster wasn't built this pass — nothing to stamp
+			}
+			for _, locality := range c.GetLoadAssignment().GetEndpoints() {
+				for _, lbEp := range locality.GetLbEndpoints() {
+					lbEp.Metadata = applyMemberClusterIdentityMetadata(lbEp.Metadata, clusterKey)
+				}
+			}
+		}
 	}
 
 	// Build routes from Routes map. Iterate in a deterministic order — ascending
@@ -307,6 +370,22 @@ func (t *Translator) routeTimeoutOrDefault(v *time.Duration, defaultMs uint32) *
 	}
 	return durationpb.New(time.Duration(defaultMs) * time.Millisecond)
 }
+
+// mustMarshalAny marshals a fixed, compile-time-constant proto message into an anypb.Any.
+// Intended only for literals that never vary at runtime, where a marshal failure would
+// indicate a broken build rather than a request-time condition worth propagating as an error.
+func mustMarshalAny(msg proto.Message) *anypb.Any {
+	a, err := anypb.New(msg)
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal constant proto message %T: %v", msg, err))
+	}
+	return a
+}
+
+// failoverRetryPriorityConfig is the marshalled envoy.extensions.retry.priority.previous_priorities.v3.
+// PreviousPrioritiesConfig attached to every failover route's RetryPolicy. It carries no per-route
+// variability (see createRouteFromRDC), so it's marshalled once here rather than on every route.
+var failoverRetryPriorityConfig = mustMarshalAny(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
 
 // createRouteFromRDC creates an Envoy route from a RuntimeDeployConfig Route.
 func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig) *route.Route {
@@ -358,6 +437,58 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		routeAction.Route.HostRewriteSpecifier = &route.RouteAction_AutoHostRewrite{
 			AutoHostRewrite: &wrapperspb.BoolValue{Value: true},
 		}
+	}
+
+	// Failover routes always auto-rewrite Host (needed for per-attempt
+	// backend resolution to tell attempts apart, see the design spec) and
+	// carry a retry policy that escalates through the aggregate cluster's
+	// priority levels on a 5xx.
+	if rdcRoute.Upstream.Failover != nil {
+		routeAction.Route.HostRewriteSpecifier = &route.RouteAction_AutoHostRewrite{
+			AutoHostRewrite: &wrapperspb.BoolValue{Value: true},
+		}
+		// NumRetries must cover the deepest fallback chain among this route's targets, not
+		// any single target's own depth — RetryPolicy is one object per ROUTE, shared by every
+		// target, so a shallower target must not cap how far a deeper target's chain can
+		// escalate. Envoy defaults num_retries to 1 when unset, which would silently strand
+		// fallbacks[1:] unreachable (previous_priorities only advances one priority per retry).
+		maxFallbackDepth := 0
+		for _, target := range rdcRoute.Upstream.Failover.Targets {
+			if len(target.Fallbacks) > maxFallbackDepth {
+				maxFallbackDepth = len(target.Fallbacks)
+			}
+		}
+		// RetryOn is expected non-empty by the time it reaches here —
+		// buildRouteFailoverFromPolicy (pkg/transform/model_failover_policy.go)
+		// defaults it to ["5xx"] — but default defensively here too, so a
+		// RouteFailover built any other
+		// way never produces an empty retry_on (which Envoy treats as "never
+		// retry", silently defeating the whole feature). Envoy's retry_on
+		// accepts a comma-separated list of conditions in one string.
+		retryOn := rdcRoute.Upstream.Failover.RetryOn
+		if len(retryOn) == 0 {
+			retryOn = []string{"5xx"}
+		}
+		retryPolicy := &route.RetryPolicy{
+			RetryOn:    strings.Join(retryOn, ","),
+			NumRetries: wrapperspb.UInt32(uint32(maxFallbackDepth)),
+			RetryPriority: &route.RetryPolicy_RetryPriority{
+				Name:       "envoy.retry_priorities.previous_priorities",
+				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: failoverRetryPriorityConfig},
+			},
+		}
+		// RetriableStatusCodes only takes effect when RetryOn includes
+		// "retriable-status-codes" (which buildRouteFailoverFromPolicy only
+		// ever sets together with a non-empty RetriableStatusCodes), so this
+		// is safe to set unconditionally from whatever the model carries.
+		if len(rdcRoute.Upstream.Failover.RetriableStatusCodes) > 0 {
+			codes := make([]uint32, len(rdcRoute.Upstream.Failover.RetriableStatusCodes))
+			for i, code := range rdcRoute.Upstream.Failover.RetriableStatusCodes {
+				codes[i] = uint32(code)
+			}
+			retryPolicy.RetriableStatusCodes = codes
+		}
+		routeAction.Route.RetryPolicy = retryPolicy
 	}
 
 	r := &route.Route{
@@ -856,10 +987,25 @@ func (t *Translator) TranslateConfigs(
 				constants.ExtProcFilterName: extProcDisabledAny,
 			},
 		})
+		// A failover route's RetryPolicy.RetryPriority signals that the vhost needs the
+		// per-attempt count exposed to the upstream ext_proc filter, which uses it to tell
+		// retry attempts apart when resolving the per-attempt backend.
+		vhostNeedsAttemptCount := false
+		for _, r := range routes {
+			if r.GetRoute().GetRetryPolicy().GetRetryPriority() != nil {
+				vhostNeedsAttemptCount = true
+				break
+			}
+		}
 		virtualHost := &route.VirtualHost{
 			Name:    vhost,
 			Domains: t.getVHostDomains(vhost),
 			Routes:  routes,
+			// Set at the VirtualHost level because Envoy has no route-level equivalent for
+			// IncludeRequestAttemptCount — an accepted, Envoy-API-driven limitation, not an
+			// oversight: enabling failover on one LlmProxy route also adds the
+			// x-envoy-attempt-count header to every other unrelated API sharing this vhost.
+			IncludeRequestAttemptCount: vhostNeedsAttemptCount,
 			// Strip any client-supplied x-envoy-original-path so it cannot survive to
 			// the collector.ignore_path_prefixes access-log filter (buildIgnorePathsAccessLogFilter):
 			// on a route that performs a path rewrite, Envoy's router unconditionally
@@ -918,6 +1064,12 @@ func (t *Translator) TranslateConfigs(
 	// Add policy engine cluster
 	policyEngineCluster := t.createPolicyEngineCluster()
 	clusters = append(clusters, policyEngineCluster)
+
+	// Add the upstream (per-cluster) policy engine cluster. Always present,
+	// same as the downstream one above — individual backend clusters only
+	// pay the per-request cost when attachUpstreamPolicyFilter actually wired
+	// the filter to them (see clusterNeedsUpstreamPolicyFilter).
+	clusters = append(clusters, createUpstreamPolicyEngineCluster())
 
 	// Add ALS cluster if the collector is active (it ships access logs over gRPC)
 	log.Debug("gRPC event server config", slog.Any("config", t.config.Collector.Server))

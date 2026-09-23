@@ -1,0 +1,1500 @@
+{
+  "info": {
+    "_postman_id": "6c7f9f1a-6f2a-4e1e-9f0a-llm-failover-e2e",
+    "name": "LLM Model Failover — E2E",
+    "description": "Live e2e verification of the LLM model-failover policy against a real gateway-controller + gateway-runtime stack, with two mock LLM backends (mock-openai, mock-anthropic). See gateway/dev-policies/FAILOVER_TESTING.md for setup. Disable SSL certificate verification before running (gateway-runtime uses a self-signed cert on :8443).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "http://localhost:9090/api/management/v1"
+    },
+    {
+      "key": "runtimeBaseUrl",
+      "value": "https://localhost:8443"
+    },
+    {
+      "key": "mockOpenaiBaseUrl",
+      "value": "http://localhost:9611"
+    },
+    {
+      "key": "mockAnthropicBaseUrl",
+      "value": "http://localhost:9612"
+    },
+    {
+      "key": "adminAuth",
+      "value": "Basic YWRtaW46YWRtaW4="
+    },
+    {
+      "key": "primaryApiKey",
+      "value": "PRIMARY_KEY"
+    },
+    {
+      "key": "anthropicApiKey",
+      "value": "ANTHROPIC_KEY"
+    },
+    {
+      "key": "openaiCallCountAfterTrigger",
+      "value": ""
+    },
+    {
+      "key": "mockAnthropicMirrorBaseUrl",
+      "value": "http://localhost:9613"
+    },
+    {
+      "key": "mockOpenaiBackupBaseUrl",
+      "value": "http://localhost:9614"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Setup",
+      "item": [
+        {
+          "name": "0.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-openai reset\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.2 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-anthropic reset\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.3 Register Provider - openai-provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProvider\",\n  \"metadata\": { \"name\": \"openai-provider\" },\n  \"spec\": {\n    \"displayName\": \"Mock OpenAI Provider\",\n    \"version\": \"v1.0\",\n    \"template\": \"openai\",\n    \"context\": \"/openai-provider\",\n    \"upstream\": { \"url\": \"http://host.docker.internal:9611/v1\" },\n    \"accessControl\": { \"mode\": \"allow_all\" }\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-providers"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.4 Register Provider - anthropic-provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProvider\",\n  \"metadata\": { \"name\": \"anthropic-provider\" },\n  \"spec\": {\n    \"displayName\": \"Mock Anthropic Provider\",\n    \"version\": \"v1.0\",\n    \"template\": \"openai\",\n    \"context\": \"/anthropic-provider\",\n    \"upstream\": { \"url\": \"http://host.docker.internal:9612\" },\n    \"accessControl\": { \"mode\": \"allow_all\" }\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-providers"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.5 Register Proxy - failover-default",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-default\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Default\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-default\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 5\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.6 Register Proxy - failover-statuscodes",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-statuscodes\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover StatusCodes\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-statuscodes\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"statusCodes\": [\n                429\n              ],\n              \"suspendDuration\": 0\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.7 Register Provider - anthropic-mirror-provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProvider\",\n  \"metadata\": {\n    \"name\": \"anthropic-mirror-provider\"\n  },\n  \"spec\": {\n    \"displayName\": \"Anthropic Mirror (second mock-anthropic instance, port 9613)\",\n    \"version\": \"v1.0\",\n    \"template\": \"openai\",\n    \"context\": \"/anthropic-mirror-provider\",\n    \"upstream\": {\n      \"url\": \"http://host.docker.internal:9613\"\n    },\n    \"accessControl\": {\n      \"mode\": \"allow_all\"\n    }\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-providers"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.8 Register Proxy - failover-upstreamdef",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-upstreamdef\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover UpstreamDefinition\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-upstreamdef\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      },\n      {\n        \"id\": \"anthropic-mirror-provider\",\n        \"as\": \"anthropic-mirror\"\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\",\n                      \"upstreamDefinition\": \"anthropic-mirror\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 0\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.9 Register Provider - openai-backup-provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProvider\",\n  \"metadata\": {\n    \"name\": \"openai-backup-provider\"\n  },\n  \"spec\": {\n    \"displayName\": \"OpenAI Backup Region (second mock-openai instance, port 9614)\",\n    \"version\": \"v1.0\",\n    \"template\": \"openai\",\n    \"context\": \"/openai-backup-provider\",\n    \"upstream\": {\n      \"url\": \"http://host.docker.internal:9614/v1\"\n    },\n    \"accessControl\": {\n      \"mode\": \"allow_all\"\n    }\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-providers"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.10 Register Proxy - failover-samemodel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-samemodel\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Same-Provider Same-Backend (Model Only)\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-samemodel\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"gpt-4o-mini\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 0\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.11 Register Proxy - failover-sameprovider-upstreamdef",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-sameprovider-upstreamdef\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Same-Provider upstreamDefinition (Backup Region)\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-sameprovider-upstreamdef\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"openai-backup-provider\",\n        \"as\": \"openai-backup\"\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"gpt-4o\",\n                      \"upstreamDefinition\": \"openai-backup\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 0\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Happy Path",
+      "item": [
+        {
+          "name": "1.1 Chat Completion - Primary Succeeds",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"served by openai (primary, no failover)\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});",
+                  "pm.test(\"primary credential reached openai\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Auth\")).to.eql(\"Bearer \" + pm.collectionVariables.get(\"primaryApiKey\"));",
+                  "});",
+                  "pm.test(\"response is plain OpenAI shape, untranslated\", function () {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.object).to.eql(\"chat.completion\");",
+                  "    pm.expect(body.choices[0].message.content).to.eql(\"mock-openai-response\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Cross-Provider Failover",
+      "item": [
+        {
+          "name": "2.1 Reset Both Mocks",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "2.2 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "2.3 Arm OpenAI Failure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"count\": 1, \"status\": 500 }"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"armed\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.4 Chat Completion - Fails Over To Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200 (client never sees the primary's 500)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"served by anthropic (fallback)\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});",
+                  "pm.test(\"correct per-attempt credential reached anthropic, not the primary's\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Auth\")).to.eql(pm.collectionVariables.get(\"anthropicApiKey\"));",
+                  "});",
+                  "pm.test(\"request body was translated to the fallback's configured model\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Model\")).to.eql(\"claude-3-5-sonnet-20241022\");",
+                  "});",
+                  "pm.test(\"response translated back to OpenAI chat.completion shape\", function () {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.object).to.eql(\"chat.completion\");",
+                  "    pm.expect(body.choices[0].message.content).to.eql(\"mock-anthropic-response\");",
+                  "    pm.expect(body.choices[0].finish_reason).to.eql(\"stop\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Suspension",
+      "item": [
+        {
+          "name": "3.1 Reset Both Mocks (OpenAI)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Section 2 (2.4) suspended openai-provider for suspendDuration (5s) on",
+                  "// gateway-runtime's own in-memory tracker — resetting the MOCK's state",
+                  "// above does not touch that tracker. Without this wait, 3.4 below would",
+                  "// fire while openai-provider is still suspended from 2.4 and silently",
+                  "// bypass the aggregate, never actually dialing openai-provider — leaving",
+                  "// 3.3's armed failure unconsumed and bleeding into a later section.",
+                  "//",
+                  "// 11s, not just past the 5s suspension itself: recordOutcome only treats",
+                  "// a new failure as a FRESH incident (backoff streak reset to 1, i.e. the",
+                  "// base 5s duration again) once streakExpiresAt — one base SuspendDuration",
+                  "// past the suspension's own expiry (5s + 5s = 10s from 2.4) — has passed.",
+                  "// Waiting only past the raw 5s expiry would let 3.4's failure continue",
+                  "// 2.4's streak (streak=2, exponentially backed off to 10s), which then",
+                  "// breaks section 4.1's own fixed wait (tuned for a fresh 5s suspension).",
+                  "var start = Date.now();",
+                  "while (Date.now() - start < 11000) { /* wait past section 2's suspension AND its backoff-streak window */ }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.2 Reset Both Mocks (Anthropic)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "3.3 Arm OpenAI Failure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"count\": 1, \"status\": 500 }"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          }
+        },
+        {
+          "name": "3.4 Chat Completion - Triggers Suspension",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"failed over to anthropic\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});",
+                  "pm.test(\"openai-provider is now suspended for suspendDuration (5s)\", function () { pm.expect(true).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.5 Capture OpenAI Call Count",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.collectionVariables.set(\"openaiCallCountAfterTrigger\", body.callCount);",
+                  "pm.test(\"captured call count\", function () { pm.expect(body.callCount).to.be.a(\"number\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.6 Chat Completion - Second Request Skips Suspended Primary",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello again\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"routed straight to anthropic, bypassing the aggregate entirely\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});",
+                  "pm.test(\"reason it's anthropic is suspension, not another armed failure (none was armed this time)\", function () { pm.expect(true).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.7 Verify OpenAI Was Never Dialed For 3.6",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test(\"openai call count unchanged since the suspension was recorded\", function () {",
+                  "    pm.expect(body.callCount).to.eql(pm.collectionVariables.get(\"openaiCallCountAfterTrigger\"));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Suspension Expiry",
+      "item": [
+        {
+          "name": "4.1 Chat Completion - Primary Retried After Suspension Expires",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello once more\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// suspendDuration on failover-default is 5s (set in 0.5) — busy-wait past it.",
+                  "// A synchronous wait is the only option inside Postman's sandbox; this",
+                  "// blocks the collection runner for ~6s, which is expected and fine here.",
+                  "var start = Date.now();",
+                  "while (Date.now() - start < 6000) { /* wait for suspension to expire */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary is un-suspended and served this request\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Both Providers Fail",
+      "item": [
+        {
+          "name": "5.1 Reset Both Mocks (OpenAI)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "5.2 Reset Both Mocks (Anthropic)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "5.3 Arm OpenAI Failure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"count\": 1, \"status\": 503 }"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          }
+        },
+        {
+          "name": "5.4 Arm Anthropic Failure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"count\": 1, \"status\": 503 }"
+            },
+            "url": "{{mockAnthropicBaseUrl}}/control/arm-failure"
+          }
+        },
+        {
+          "name": "5.5 Chat Completion - Both Fail, Client Sees Last Attempt's Error",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 503, the LAST attempt's status (Envoy retry exhaustion)\", function () {",
+                  "    pm.response.to.have.status(503);",
+                  "});",
+                  "pm.test(\"the last attempt was the fallback (anthropic), proving it did retry before giving up\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. No Model Match",
+      "item": [
+        {
+          "name": "6.1 Reset Both Mocks (OpenAI)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "6.2 Reset Both Mocks (Anthropic)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "6.3 Chat Completion - Unmatched Model Bypasses Failover Entirely",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-3.5-turbo-unlisted\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"served by openai (the only path for an unmatched model)\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6.4 Verify Anthropic Was Never Called",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test(\"anthropic call count is zero - the fallback was never reachable for this model\", function () {",
+                  "    pm.expect(body.callCount).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Streaming (SSE) Translation",
+      "item": [
+        {
+          "name": "8.1 Reset Both Mocks (OpenAI)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "8.2 Reset Both Mocks (Anthropic)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "8.3 Arm OpenAI Failure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"count\": 1, \"status\": 500 }"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          }
+        },
+        {
+          "name": "8.4 Streaming Chat Completion - Failover Produces Translated OpenAI SSE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"stream\": true,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello, stream this\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"failed over to anthropic\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});",
+                  "pm.test(\"content-type is text/event-stream\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"text/event-stream\");",
+                  "});",
+                  "pm.test(\"Anthropic SSE translated into OpenAI chat.completion.chunk events\", function () {",
+                  "    var text = pm.response.text();",
+                  "    pm.expect(text).to.include(\"chat.completion.chunk\");",
+                  "    pm.expect(text).to.include(\"mock-anthropic-\");",
+                  "    pm.expect(text).to.include(\"[DONE]\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8. Configurable statusCodes",
+      "item": [
+        {
+          "name": "8.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "8.2 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "8.3 Arm OpenAI 429",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 429}"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"armed\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "8.4 statusCodes=[429] proxy - 429 DOES trigger failover",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-statuscodes/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200 (client never sees the primary's 429)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"served by anthropic (fallback) because statusCodes includes 429\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "8.5 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "8.6 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "8.7 Arm OpenAI 429 Again",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 429}"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"armed\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "8.8 default proxy (no statusCodes, 5xx only) - 429 does NOT trigger failover",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-default/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 429 (the primary's own response, unmodified)\", function () { pm.response.to.have.status(429); });",
+                  "pm.test(\"served by openai (never failed over — 429 is not a default trigger)\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. upstreamDefinition Overrides Dial Target",
+      "item": [
+        {
+          "name": "9.0 Reset Mock Anthropic Mirror",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicMirrorBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "9.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "9.2 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "9.3 Arm OpenAI 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"armed\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "9.4 Chat Completion - dials the mirror upstream with the anthropic-upstream credential",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-upstreamdef/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200 (client never sees the primary's 500)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"credential identity stayed anthropic-upstream's, decoupled from the dial target\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Auth\")).to.eql(pm.collectionVariables.get(\"anthropicApiKey\"));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "9.5 Verify mock-anthropic's real cluster was never touched",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-anthropic's own call count is 0 — the real anthropic-upstream cluster was bypassed entirely\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "9.6 Verify mock-anthropic-mirror's call count is 1 (dial target really was the mirror)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockAnthropicMirrorBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-anthropic-mirror's call count is 1 - upstreamDefinition genuinely redirected the dial target\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. Same-Provider Fallback (Model Only)",
+      "item": [
+        {
+          "name": "10.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "10.2 Arm OpenAI 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"armed\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10.3 Chat Completion - retries the identical primary cluster/credential with a cheaper model",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-samemodel/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200 (client never sees the primary's 500)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"still served by openai - same provider, same physical cluster\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});",
+                  "pm.test(\"credential identity is unchanged - still the primary's own\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Auth\")).to.eql(\"Bearer \" + pm.collectionVariables.get(\"primaryApiKey\"));",
+                  "});",
+                  "pm.test(\"model was rewritten to the fallback's cheaper model on retry\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Model\")).to.eql(\"gpt-4o-mini\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10.4 Verify mock-openai's call count is 2 (attempt 1 failed, attempt 2 succeeded, same cluster both times)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-openai's call count is 2 - both attempts landed on the same physical cluster\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11. Same-Provider upstreamDefinition (Backup Region)",
+      "item": [
+        {
+          "name": "11.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "11.2 Reset Mock OpenAI Backup",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBackupBaseUrl}}/control/reset"
+          }
+        },
+        {
+          "name": "11.3 Arm OpenAI 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            },
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"armed\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11.4 Chat Completion - dials the backup-region upstream with the primary's own credential",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-sameprovider-upstreamdef/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200 (client never sees the primary's 500)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"credential identity stayed the primary's own, decoupled from the dial target\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Auth\")).to.eql(\"Bearer \" + pm.collectionVariables.get(\"primaryApiKey\"));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11.5 Verify mock-openai's (primary) call count is 1 - only the failing attempt landed there",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-openai's call count is 1 - the retry did not land back on the primary\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11.6 Verify mock-openai-backup's call count is 1 - upstreamDefinition genuinely redirected the dial target",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBackupBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"mock-openai-backup's call count is 1 - the backup region genuinely received the retry\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

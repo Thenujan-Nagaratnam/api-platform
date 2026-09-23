@@ -191,6 +191,7 @@ func ConvertAPIPolicyToModel(p api.Policy, attachedTo policyv1alpha.Level, resol
 		Version:            resolvedVersion,
 		Enabled:            true,
 		ExecutionCondition: p.ExecutionCondition,
+		Upstream:           p.Upstream != nil && *p.Upstream,
 		Parameters:         paramsMap,
 	}
 }

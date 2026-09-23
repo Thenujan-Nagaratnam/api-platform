@@ -62,6 +62,45 @@ func NewTestRequestContextWithHeaders(headers map[string][]string) *policy.Reque
 	}
 }
 
+// NewTestUpstreamAttemptRequestContext creates a *policy.RequestContext as
+// the kernel would for one upstream attempt's request phase — Downstream is
+// nil (the signal distinguishing this from a genuine downstream invocation),
+// and Upstream identifies a backend named "test-backend".
+func NewTestUpstreamAttemptRequestContext(originalRaw []byte) *policy.RequestContext {
+	return &policy.RequestContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Headers:       policy.NewHeaders(map[string][]string{"content-type": {"application/json"}}),
+		Body:          &policy.Body{Content: originalRaw, EndOfStream: true, Present: len(originalRaw) > 0},
+		Path:          "/v1/test",
+		Method:        "POST",
+		Upstream: &policy.UpstreamRequestContext{
+			Name:     "test-backend",
+			URL:      "https://backend.example.com",
+			BasePath: "/v1",
+		},
+	}
+}
+
+// NewTestUpstreamAttemptResponseContext is
+// NewTestUpstreamAttemptRequestContext's response-phase counterpart.
+// originalRequestRaw is the client's original request body (see
+// RequestContext's own doc comment on the upstream-attempt invocation);
+// responseBody is this attempt's upstream response body.
+func NewTestUpstreamAttemptResponseContext(originalRequestRaw, responseBody []byte) *policy.ResponseContext {
+	return &policy.ResponseContext{
+		SharedContext:   &policy.SharedContext{Metadata: map[string]interface{}{}},
+		RequestBody:     &policy.Body{Content: originalRequestRaw, EndOfStream: true, Present: len(originalRequestRaw) > 0},
+		ResponseHeaders: policy.NewHeaders(map[string][]string{"content-type": {"application/json"}}),
+		ResponseBody:    &policy.Body{Content: responseBody, EndOfStream: true, Present: len(responseBody) > 0},
+		ResponseStatus:  200,
+		Upstream: &policy.UpstreamResponseContext{
+			Name:     "test-backend",
+			URL:      "https://backend.example.com",
+			BasePath: "/v1",
+		},
+	}
+}
+
 // NewTestResponseContext creates a ResponseContext with default test values.
 func NewTestResponseContext() *policy.ResponseContext {
 	reqCtx := NewTestRequestContext()

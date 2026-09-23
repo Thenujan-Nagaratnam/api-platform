@@ -101,20 +101,20 @@ type RouteMetadataDump struct {
 
 // RouteMetadataEntry contains metadata for a single route
 type RouteMetadataEntry struct {
-	RouteKey                string            `json:"route_key"`
-	APIId                   string            `json:"api_id"`
-	APIName                 string            `json:"api_name"`
-	APIVersion              string            `json:"api_version"`
-	Context                 string            `json:"context"`
-	OperationPath           string            `json:"operation_path"`
-	Vhost                   string            `json:"vhost"`
-	APIKind                 string            `json:"api_kind"`
-	TemplateHandle          string            `json:"template_handle,omitempty"`
-	ProviderName            string            `json:"provider_name,omitempty"`
-	ProjectID               string            `json:"project_id,omitempty"`
-	DefaultUpstreamCluster  string            `json:"default_upstream_cluster"`
-	UpstreamBasePath        string            `json:"upstream_base_path"`
-	UpstreamDefinitionPaths map[string]string `json:"upstream_definition_paths"`
+	RouteKey                string                                 `json:"route_key"`
+	APIId                   string                                 `json:"api_id"`
+	APIName                 string                                 `json:"api_name"`
+	APIVersion              string                                 `json:"api_version"`
+	Context                 string                                 `json:"context"`
+	OperationPath           string                                 `json:"operation_path"`
+	Vhost                   string                                 `json:"vhost"`
+	APIKind                 string                                 `json:"api_kind"`
+	TemplateHandle          string                                 `json:"template_handle,omitempty"`
+	ProviderName            string                                 `json:"provider_name,omitempty"`
+	ProjectID               string                                 `json:"project_id,omitempty"`
+	DefaultUpstreamCluster  string                                 `json:"default_upstream_cluster"`
+	UpstreamBasePath        string                                 `json:"upstream_base_path"`
+	UpstreamDefinitionPaths map[string]policyenginev1.UpstreamInfo `json:"upstream_definition_paths"`
 
 	// DefaultUpstream is this route's own compiled-in upstream (whichever slot it
 	// belongs to).

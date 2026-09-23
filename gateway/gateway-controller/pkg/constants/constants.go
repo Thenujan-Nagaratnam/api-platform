@@ -71,12 +71,12 @@ const (
 	// Configuration Validation Constants
 	MaxReasonableTimeoutMs       = uint32(3600000) // 1 hour in milliseconds
 	MaxReasonablePolicyTimeoutMs = uint32(60000)   // 60 seconds in milliseconds
-	
-	// MaxReasonableBufferLimitBytes caps the downstream per-connection buffer limit in bytes, 
+
+	// MaxReasonableBufferLimitBytes caps the downstream per-connection buffer limit in bytes,
 	// preventing unreasonably large values that could lead to resource exhaustion or performance degradation.
 	MaxReasonableBufferLimitBytes = uint32(104857600) // 100 MiB
 
-	// MaxReasonableConnectionTimeoutMs caps connection-level timeouts (request, request-headers,etc.), 
+	// MaxReasonableConnectionTimeoutMs caps connection-level timeouts (request, request-headers,etc.),
 	// allowing higher values than MaxReasonableTimeoutMs to support long-lived idle connections.
 	MaxReasonableConnectionTimeoutMs = uint32(86400000) // 24 hours in milliseconds
 
@@ -102,9 +102,66 @@ const (
 	ExtProcHeaderModeSkip            = "SKIP"
 	ExtProcRequestAttributeRouteName = "xds.route_name"
 
+	// ExtProcRequestAttributeClusterName lets the upstream (per-cluster)
+	// ext_proc filter learn which backend cluster this specific attempt is
+	// for — necessary because a single upstream-policy-engine cluster can be
+	// shared across many backend clusters' filter attachments (see
+	// clusterNeedsUpstreamPolicyFilter), so the server cannot know its
+	// backend from construction alone.
+	ExtProcRequestAttributeClusterName = "xds.cluster_name"
+
+	// ExtProcRequestAttributeUpstreamHostMetadata lets the upstream
+	// (per-cluster) ext_proc filter learn the REAL member cluster Envoy
+	// actually dialed for an aggregate-routed attempt — xds.cluster_name
+	// reports only the aggregate's own name on every attempt against it
+	// (confirmed live), never the real member. Delivered by Envoy as a
+	// string containing the textproto serialization of the dialed host's
+	// own core.Metadata (not a structured CEL value) — see
+	// extractMemberClusterName in gateway-runtime's upstream_extproc.go.
+	ExtProcRequestAttributeUpstreamHostMetadata = "xds.upstream_host_metadata"
+
+	// MemberClusterIdentityMetadataNamespace/Key are the LbEndpoint.Metadata
+	// filter_metadata entry every real cluster referenced by a model-failover
+	// chain is stamped with (applyMemberClusterIdentityMetadata,
+	// pkg/xds/member_cluster_identity.go) — the cluster's own name, so an
+	// upstream-attempt policy can identify which real member it's on by
+	// reading ExtProcRequestAttributeUpstreamHostMetadata, independent of
+	// x-envoy-attempt-count (which is not attempt-position-accurate once
+	// outlier_detection can make Envoy's load balancer skip a priority
+	// silently — see the model-failover design's chain-position-resolution
+	// discussion).
+	MemberClusterIdentityMetadataNamespace = "gateway.wso2.com/model-failover"
+	MemberClusterIdentityMetadataKey       = "cluster_name"
+
+	// UpstreamExtProcFilterName is the per-cluster (upstream) ext_proc filter
+	// attached via a backend Cluster's TypedExtensionProtocolOptions, distinct
+	// from ExtProcFilterName which is attached at the listener (downstream)
+	// level. Invoked fresh on every upstream attempt, including retries to a
+	// different backend — see the model-failover upstream-policy design.
+	UpstreamExtProcFilterName = "api_platform.policy_engine.upstream.envoy.filters.http.ext_proc"
+
+	// HttpProtocolOptionsTypedConfigKey is the well-known map key Envoy expects
+	// on Cluster.TypedExtensionProtocolOptions for per-cluster HTTP filter
+	// chains — the fully-qualified proto message name of HttpProtocolOptions,
+	// not an arbitrary label.
+	HttpProtocolOptionsTypedConfigKey = "envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
+
+	// UpstreamCodecFilterName is Envoy's built-in terminal filter every
+	// non-empty upstream HTTP filter chain must end with, or Envoy rejects the
+	// cluster config at warming time.
+	UpstreamCodecFilterName = "envoy.filters.http.upstream_codec"
+
 	// Policy Engine
 	PolicyEngineClusterName       = "api-platform/policy-engine"
 	DefaultPolicyEngineSocketPath = "/var/run/api-platform/policy-engine.sock"
+
+	// Upstream (per-cluster) Policy Engine — a genuinely separate socket/
+	// service from the downstream one above, so Envoy's per-cluster upstream
+	// filter attachment and the listener-level downstream attachment are
+	// unambiguous, distinct gRPC connections rather than sharing one stream
+	// type the server would have no way to tell apart.
+	UpstreamPolicyEngineClusterName       = "api-platform/policy-engine-upstream"
+	DefaultUpstreamPolicyEngineSocketPath = "/var/run/api-platform/policy-engine-upstream.sock"
 
 	// GatewayHealthPathPrefix is reserved for the gateway's own readiness/liveness
 	// direct-response routes (see GatewayReadyPath/GatewayHealthyPath). No API,

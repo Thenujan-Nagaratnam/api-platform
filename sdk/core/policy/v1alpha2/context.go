@@ -56,6 +56,30 @@ type UpstreamRequestContext struct {
 	Name     string
 	URL      string
 	BasePath string
+
+	// RouteCluster is the raw xds.cluster_name Envoy reported for this
+	// attempt, before any kernel-side member-cluster resolution. For an
+	// attempt routed through an envoy.clusters.aggregate cluster (e.g. a
+	// model-failover chain), this is the aggregate cluster's own name,
+	// stable across every attempt against it — Name above is the resolved
+	// real member cluster instead. Empty for a route with no
+	// aggregate/failover involvement. Only ever populated for an
+	// upstream-attempt invocation (Downstream == nil on the enclosing
+	// context); always empty for a genuine downstream invocation.
+	RouteCluster string
+
+	// MemberClusterName is the REAL cluster Envoy actually dialed for this
+	// attempt, read from the dialed host's own declared metadata (Envoy's
+	// xds.upstream_host_metadata attribute) rather than inferred. For an
+	// attempt routed through an envoy.clusters.aggregate cluster,
+	// RouteCluster only ever reports the aggregate's own name — this is the
+	// one field that reveals which real member is live, independent of
+	// which priority Envoy's load balancer actually picked (which
+	// x-envoy-attempt-count does not reliably reflect once a priority can be
+	// skipped due to host health, e.g. outlier_detection). Empty when the
+	// dialed host carries no such metadata — not every real cluster is a
+	// model-failover chain member.
+	MemberClusterName string
 }
 
 // UpstreamResponseContext identifies the route's resolved upstream target during
@@ -64,6 +88,22 @@ type UpstreamResponseContext struct {
 	Name     string
 	URL      string
 	BasePath string
+
+	// RouteCluster is the raw xds.cluster_name Envoy reported for this
+	// attempt, before any kernel-side member-cluster resolution. For an
+	// attempt routed through an envoy.clusters.aggregate cluster (e.g. a
+	// model-failover chain), this is the aggregate cluster's own name,
+	// stable across every attempt against it — Name above is the resolved
+	// real member cluster instead. Empty for a route with no
+	// aggregate/failover involvement. Only ever populated for an
+	// upstream-attempt invocation (Downstream == nil on the enclosing
+	// context); always empty for a genuine downstream invocation.
+	RouteCluster string
+
+	// MemberClusterName mirrors UpstreamRequestContext.MemberClusterName —
+	// see its doc comment.
+	MemberClusterName string
+
 	Response *UpstreamResponse
 }
 
@@ -168,11 +208,22 @@ type RequestHeaderContext struct {
 	Vhost     string
 
 	// Downstream holds the snapshot of the client request headers, captured
-	// before any policy mutation.
+	// before any policy mutation. Nil when this method is instead being
+	// invoked for a specific upstream attempt (this policy is attached via
+	// upstreamPolicies: — see the LlmProvider/LlmProxy schema) —
+	// the one signal distinguishing the two invocations, since both use this
+	// same context type and interface. In that case Authority/Scheme/Vhost are
+	// zero-valued, Path/Method are the attempt's resolved outbound request
+	// line (already combined with the backend's base path — no separate
+	// APIContext prefix to strip, unlike the downstream invocation), Headers
+	// starts fresh per attempt (not the client's real headers), and Upstream
+	// identifies the specific backend this attempt is dialing rather than the
+	// route's static default.
 	Downstream *DownstreamContext
 
 	// Upstream identifies the route's resolved upstream target for this
-	// request.
+	// request — or, for an upstream-attempt invocation (Downstream == nil),
+	// the specific backend this attempt is dialing.
 	Upstream *UpstreamRequestContext
 }
 
@@ -194,16 +245,30 @@ type RequestContext struct {
 
 	// Deprecated: UpstreamInfo exposes the internal Envoy cluster name and its
 	// resolved-upstream shape was incorrect. Use Upstream (*UpstreamRequestContext)
-	// instead, which exposes Name rather than the internal cluster name.
+	// instead, which exposes Name rather than the internal cluster name. Also
+	// never populated for an upstream-attempt invocation (see Downstream) —
+	// use Upstream there too.
 	// Retained for backward compatibility; will be removed in a future release.
 	UpstreamInfo *policyenginev1.UpstreamInfo
 
 	// Downstream holds the snapshot of the client request headers, captured
-	// before any policy mutation.
+	// before any policy mutation. Nil when this method is instead being
+	// invoked for a specific upstream attempt (this policy is attached via
+	// upstreamPolicies: — see the LlmProvider/LlmProxy schema) —
+	// the one signal distinguishing the two invocations, since both use this
+	// same context type and interface. In that case Authority/Scheme/Vhost are
+	// zero-valued, Path/Method are the attempt's resolved outbound request
+	// line (already combined with the backend's base path — no separate
+	// APIContext prefix to strip, unlike the downstream invocation), Headers
+	// starts fresh per attempt (not the client's real headers) and is seeded
+	// from the client's original request body (replayed unchanged into every
+	// attempt), and Upstream identifies the specific backend this attempt is
+	// dialing rather than the route's static default.
 	Downstream *DownstreamContext
 
 	// Upstream identifies the route's resolved upstream target for this
-	// request.
+	// request — or, for an upstream-attempt invocation (Downstream == nil),
+	// the specific backend this attempt is dialing.
 	Upstream *UpstreamRequestContext
 }
 
@@ -227,12 +292,21 @@ type ResponseHeaderContext struct {
 	ResponseStatus int
 
 	// Downstream holds the snapshot of the client request headers, captured
-	// before any policy mutation.
+	// before any policy mutation. Nil when this method is instead being
+	// invoked for a specific upstream attempt's response (this policy is
+	// attached via upstreamPolicies: — see the LlmProvider/LlmProxy schema) —
+	// the one signal distinguishing
+	// the two invocations. In that case RequestBody is the client's original
+	// request body (replayed unchanged into every attempt, never a previous
+	// attempt's already-mutated output), and Upstream identifies the specific
+	// backend that produced this attempt's response rather than the route's
+	// static default.
 	Downstream *DownstreamContext
 
 	// Upstream identifies the route's resolved upstream target and carries the
 	// snapshot of the upstream response headers, captured before any policy
-	// mutation.
+	// mutation — or, for an upstream-attempt invocation (Downstream == nil),
+	// the specific backend that produced this attempt's response.
 	Upstream *UpstreamResponseContext
 }
 
@@ -260,12 +334,21 @@ type ResponseContext struct {
 	ResponseStatus int
 
 	// Downstream holds the snapshot of the client request headers, captured
-	// before any policy mutation.
+	// before any policy mutation. Nil when this method is instead being
+	// invoked for a specific upstream attempt's response (this policy is
+	// attached via upstreamPolicies: — see the LlmProvider/LlmProxy schema) —
+	// the one signal distinguishing
+	// the two invocations. In that case RequestBody is the client's original
+	// request body (replayed unchanged into every attempt, never a previous
+	// attempt's already-mutated output), and Upstream identifies the specific
+	// backend that produced this attempt's response rather than the route's
+	// static default.
 	Downstream *DownstreamContext
 
 	// Upstream identifies the route's resolved upstream target and carries the
 	// snapshot of the upstream response headers, captured before any policy
-	// mutation.
+	// mutation — or, for an upstream-attempt invocation (Downstream == nil),
+	// the specific backend that produced this attempt's response.
 	Upstream *UpstreamResponseContext
 }
 

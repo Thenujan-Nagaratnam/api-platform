@@ -52,7 +52,7 @@ policies:
       version: v1.0.4
       gomodule: github.com/wso2/gateway-controllers/policies/json-xml-mediator@v1
     - name: jwt-auth
-      version: v1.3.0
+      version: v1.3.1
       gomodule: github.com/wso2/gateway-controllers/policies/jwt-auth@v1
     - name: llm-cost
       version: v1.1.0
@@ -81,6 +81,9 @@ policies:
     - name: mcp-rewrite
       version: v1.0.3
       gomodule: github.com/wso2/gateway-controllers/policies/mcp-rewrite@v1
+    - name: model-failover
+      version: v0.1.0
+      filePath: ./dev-policies/model-failover
     - name: model-round-robin
       version: v1.1.1
       gomodule: github.com/wso2/gateway-controllers/policies/model-round-robin@v1

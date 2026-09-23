@@ -102,9 +102,11 @@ type PolicyExecutionContext struct {
 	// Used for computing path transformations when UpstreamName changes the upstream.
 	apiContext string
 
-	// Maps upstream definition names to their URL paths.
-	// Used when UpstreamName is set to compute the correct path transformation.
-	upstreamDefinitionPaths map[string]string
+	// Name-addressable upstream registry: every name a policy may set as
+	// UpstreamName, mapped to that target's base path (used to compute the path
+	// transformation) and, when it isn't derivable from the shared naming
+	// convention, its real Envoy cluster name. See RouteMetadata.UpstreamDefinitionPaths.
+	upstreamDefinitionPaths map[string]policyenginev1.UpstreamInfo
 
 	// defaultUpstream is this route's own compiled-in upstream (cluster name, URL, base
 	// path) — whichever slot it belongs to. Always present; surfaced to policies via the
@@ -120,6 +122,16 @@ type PolicyExecutionContext struct {
 	// The body is decompressed before being passed to policies, and re-compressed using this value
 	// before being sent back to the downstream client.
 	responseContentEncoding string
+
+	// hasResolvedFailoverProviderHeader is true when this response carried
+	// kernel.ResolvedFailoverProviderHeader — set by the model-failover
+	// policy's upstream-attempt response phase only when this request
+	// actually escalated past the chain's primary member. buildResponseContexts
+	// consumes the header into sharedCtx.Metadata for the analytics
+	// attribution fix and records its presence here so
+	// processResponseHeaders can strip it before the response reaches the
+	// client — it is purely an internal, cross-ext_proc-hop signal.
+	hasResolvedFailoverProviderHeader bool
 
 	// isStreamingRequest is set when SupportsRequestStreaming is true and the client
 	// sends a streaming body — the request body will be processed chunk-by-chunk.
@@ -1001,7 +1013,8 @@ func (ec *PolicyExecutionContext) processResponseHeaders(
 	// For bodyless responses Envoy skips the ResponseBody ext_proc phase entirely.
 	// Execute body policies inline now so they run on every response, receiving a nil body.
 	if !execResult.ShortCircuited && ec.policyChain.RequiresResponseBody && ec.responseHasNoBody() {
-		return ec.processResponseBodyForEmptyResponse(ctx, execResult)
+		resp, err := ec.processResponseBodyForEmptyResponse(ctx, execResult)
+		return ec.stripResolvedFailoverProviderHeader(resp), err
 	}
 
 	resp, err := TranslateResponseHeaderActions(execResult, ec)
@@ -1009,7 +1022,30 @@ func (ec *PolicyExecutionContext) processResponseHeaders(
 		return nil, err
 	}
 
-	return resp, nil
+	return ec.stripResolvedFailoverProviderHeader(resp), nil
+}
+
+// stripResolvedFailoverProviderHeader removes kernel.ResolvedFailoverProviderHeader
+// from resp's own header mutation when buildResponseContexts consumed one off the
+// inbound response — a no-op otherwise. It is purely an internal, cross-ext_proc-hop
+// signal (see the header's own doc comment) and must never reach the client.
+func (ec *PolicyExecutionContext) stripResolvedFailoverProviderHeader(resp *extprocv3.ProcessingResponse) *extprocv3.ProcessingResponse {
+	if resp == nil || !ec.hasResolvedFailoverProviderHeader {
+		return resp
+	}
+	headersResp, ok := resp.Response.(*extprocv3.ProcessingResponse_ResponseHeaders)
+	if !ok || headersResp.ResponseHeaders == nil {
+		return resp
+	}
+	if headersResp.ResponseHeaders.Response == nil {
+		headersResp.ResponseHeaders.Response = &extprocv3.CommonResponse{}
+	}
+	if headersResp.ResponseHeaders.Response.HeaderMutation == nil {
+		headersResp.ResponseHeaders.Response.HeaderMutation = &extprocv3.HeaderMutation{}
+	}
+	headersResp.ResponseHeaders.Response.HeaderMutation.RemoveHeaders = append(
+		headersResp.ResponseHeaders.Response.HeaderMutation.RemoveHeaders, ResolvedFailoverProviderHeader)
+	return resp
 }
 
 // processResponseBody processes response body phase
@@ -1427,6 +1463,19 @@ func (ec *PolicyExecutionContext) buildResponseContexts(headers *extprocv3.HttpH
 		for _, header := range headers.Headers.GetHeaders() {
 			key := header.Key
 			value := string(header.RawValue)
+
+			// Internal cross-ext_proc-hop signal, never a real response
+			// header — consumed here (see the field's own doc comment) and
+			// excluded from responseHeadersMap so no policy sees it as if it
+			// were a genuine upstream header.
+			if key == ResolvedFailoverProviderHeader {
+				if value != "" {
+					ec.sharedCtx.Metadata["resolved_failover_provider"] = value
+					ec.hasResolvedFailoverProviderHeader = true
+				}
+				continue
+			}
+
 			responseHeadersMap[key] = append(responseHeadersMap[key], value)
 
 			switch key {

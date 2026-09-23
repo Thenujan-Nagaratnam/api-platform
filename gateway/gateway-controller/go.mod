@@ -22,8 +22,8 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/stretchr/testify v1.11.1
 	github.com/wso2/api-platform/common v0.0.0
-	github.com/wso2/api-platform/sdk/core v0.2.18
 	github.com/wso2/api-platform/httpkit v0.0.0-local
+	github.com/wso2/api-platform/sdk/core v0.2.18
 	github.com/xeipuuv/gojsonschema v1.2.0
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
@@ -91,3 +91,13 @@ require (
 replace github.com/wso2/api-platform/common => ../../common
 
 replace github.com/wso2/api-platform/httpkit => ../../httpkit
+
+// Local dev-branch sdk/core: PolicyInstance.Upstream (and RouteCluster on
+// UpstreamRequestContext/UpstreamResponseContext) are new fields this
+// session added directly to sdk/core, not yet in any published release —
+// go.work silently masks the need for this locally (every module in the
+// workspace resolves sdk/core to this same local copy regardless of what
+// go.mod/go.sum say), but an isolated build (Docker, CI) uses go.mod/go.sum
+// literally and needs this replace to see them. Remove once sdk/core is
+// tagged with these fields and the require above is bumped to that version.
+replace github.com/wso2/api-platform/sdk/core => ../../sdk/core

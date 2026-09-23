@@ -275,6 +275,8 @@ func (e *Engine) ExecuteResponseBodyPolicies(
 func (e *Engine) buildPolicyChain(routeKey string, config *policyengine.PolicyChain) (*registry.PolicyChain, error) {
 	var policyList []policy.Policy
 	var policySpecs []policy.PolicySpec
+	var upstreamPolicyList []policy.Policy
+	var upstreamPolicySpecs []policy.PolicySpec
 
 	requiresRequestBody := false
 	requiresResponseBody := false
@@ -308,6 +310,14 @@ func (e *Engine) buildPolicyChain(routeKey string, config *policyengine.PolicyCh
 
 		if pc.ExecutionCondition != nil && *pc.ExecutionCondition != "" {
 			hasExecutionConditions = true
+		}
+
+		if pc.Upstream {
+			// Attached via upstreamPolicies: — runs only in the upstream-attempt
+			// phase, never downstream.
+			upstreamPolicyList = append(upstreamPolicyList, impl)
+			upstreamPolicySpecs = append(upstreamPolicySpecs, spec)
+			continue
 		}
 
 		policyList = append(policyList, impl)

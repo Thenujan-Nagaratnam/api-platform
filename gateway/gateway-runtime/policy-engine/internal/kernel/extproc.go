@@ -822,20 +822,30 @@ func (s *ExternalProcessorServer) skipAllProcessing(routeMetadata RouteMetadata)
 
 // RouteMetadata contains metadata about the route
 type RouteMetadata struct {
-	RouteName               string
-	APIId                   string
-	APIName                 string
-	APIVersion              string
-	Context                 string
-	OperationPath           string
-	Vhost                   string
-	APIKind                 string
-	TemplateHandle          string
-	ProviderName            string
-	ProjectID               string
-	DefaultUpstreamCluster  string            // Default cluster for dynamic cluster routing
-	UpstreamBasePath        string            // Base path for the upstream (e.g., /anything)
-	UpstreamDefinitionPaths map[string]string // Maps upstream definition names to their URL base paths
+	RouteName              string
+	APIId                  string
+	APIName                string
+	APIVersion             string
+	Context                string
+	OperationPath          string
+	Vhost                  string
+	APIKind                string
+	TemplateHandle         string
+	ProviderName           string
+	ProjectID              string
+	DefaultUpstreamCluster string // Default cluster for dynamic cluster routing
+	UpstreamBasePath       string // Base path for the upstream (e.g., /anything)
+
+	// UpstreamDefinitionPaths is the name-addressable upstream registry: every
+	// name a policy may put in UpstreamRequestModifications.UpstreamName, mapped
+	// to that target's base path and — only when it isn't derivable — its real
+	// Envoy cluster name. An ordinary upstream definition leaves ClusterName
+	// empty, because its cluster name follows the shared
+	// upstream_<kind>_<apiId>_<name> convention resolveUpstreamRedirect derives.
+	// A target whose cluster name follows no convention (e.g. a failover
+	// aggregate cluster, named by gateway-controller's pkg/xds) carries it
+	// explicitly and it is used verbatim.
+	UpstreamDefinitionPaths map[string]policyenginev1.UpstreamInfo
 
 	// DefaultUpstream is this route's own compiled-in upstream (cluster name, URL, base
 	// path) — whichever slot it belongs to (main or sandbox). Always present; surfaced

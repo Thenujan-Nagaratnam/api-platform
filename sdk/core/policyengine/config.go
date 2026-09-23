@@ -48,6 +48,11 @@ type PolicyInstance struct {
 	// If non-nil, policy only executes when expression evaluates to true
 	ExecutionCondition *string `json:"executionCondition,omitempty" yaml:"executionCondition,omitempty"`
 
+	// Upstream marks a policy attached via upstreamPolicies: the policy engine
+	// runs its (single, ordinary) RequestPolicy/ResponsePolicy implementation in
+	// the upstream-attempt phase instead of the downstream phase.
+	Upstream bool `json:"upstream,omitempty" yaml:"upstream,omitempty"`
+
 	// Parameters contains configuration parameters for the policy
 	// Structure depends on the specific policy's schema
 	Parameters map[string]interface{} `json:"parameters" yaml:"parameters"`

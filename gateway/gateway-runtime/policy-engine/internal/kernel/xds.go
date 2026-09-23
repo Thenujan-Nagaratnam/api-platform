@@ -121,6 +121,8 @@ func (cl *ConfigLoader) validateConfig(config *policyenginev1.PolicyChain) error
 func (cl *ConfigLoader) buildPolicyChain(routeKey string, config *policyenginev1.PolicyChain, apiMetadata policyenginev1.Metadata) (*registry.PolicyChain, error) {
 	var policyList []policy.Policy
 	var policySpecs []policy.PolicySpec
+	var upstreamPolicyList []policy.Policy
+	var upstreamPolicySpecs []policy.PolicySpec
 
 	requiresRequestBody := false
 	requiresResponseBody := false
@@ -163,6 +165,14 @@ func (cl *ConfigLoader) buildPolicyChain(routeKey string, config *policyenginev1
 
 		if policyConfig.ExecutionCondition != nil && *policyConfig.ExecutionCondition != "" {
 			hasExecutionConditions = true
+		}
+
+		if policyConfig.Upstream {
+			// Attached via upstreamPolicies: — runs only in the upstream-attempt
+			// phase, never downstream.
+			upstreamPolicyList = append(upstreamPolicyList, impl)
+			upstreamPolicySpecs = append(upstreamPolicySpecs, spec)
+			continue
 		}
 
 		policyList = append(policyList, impl)
@@ -234,6 +244,8 @@ func (cl *ConfigLoader) buildPolicyChain(routeKey string, config *policyenginev1
 		supportsResponseStreaming = false
 	}
 
+	requiresUpstreamRequest, requiresUpstreamResponse := registry.ComputeUpstreamRequirements(upstreamPolicyList)
+
 	chain := &registry.PolicyChain{
 		Policies:                  policyList,
 		PolicySpecs:               policySpecs,
@@ -244,6 +256,10 @@ func (cl *ConfigLoader) buildPolicyChain(routeKey string, config *policyenginev1
 		RequiresResponseHeader:    requiresResponseHeader,
 		SupportsRequestStreaming:  supportsRequestStreaming,
 		SupportsResponseStreaming: supportsResponseStreaming,
+		UpstreamPolicies:          upstreamPolicyList,
+		UpstreamPolicySpecs:       upstreamPolicySpecs,
+		RequiresUpstreamRequest:   requiresUpstreamRequest,
+		RequiresUpstreamResponse:  requiresUpstreamResponse,
 	}
 
 	return chain, nil
