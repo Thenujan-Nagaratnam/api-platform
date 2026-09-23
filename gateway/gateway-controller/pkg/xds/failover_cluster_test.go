@@ -12,7 +12,6 @@ package xds
 
 import (
 	"testing"
-	"time"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -28,9 +27,8 @@ import (
 
 func TestBuildFailoverCompositeClusters_IsolatesEveryMember(t *testing.T) {
 	rf := &models.RouteFailover{
-		SuspendDurationSeconds:    5,
-		MaxSuspendDurationSeconds: 40,
-		RetriableStatusCodes:      []int{429, 503},
+		SuspendDurationSeconds: 5,
+		RetriableStatusCodes:   []int{429, 503},
 		Targets: []models.RouteFailoverTarget{{
 			Model:  "gpt-4o",
 			Target: models.RouteFailoverEntry{ClusterKey: "provider-a"},
@@ -47,22 +45,23 @@ func TestBuildFailoverCompositeClusters_IsolatesEveryMember(t *testing.T) {
 
 	clusters, err := buildFailoverCompositeClusters(rf, "POST|/chat/completions|main", sources)
 	require.NoError(t, err)
-	require.Len(t, clusters, 4, "three isolated leaves plus one composite")
+	require.Len(t, clusters, 6, "three isolated leaves, one full-chain composite, and two suffix composites (one per fallback position)")
 
 	for i := 0; i < 3; i++ {
 		leaf := clusters[i]
 		assert.Equal(t, FailoverLeafClusterName("POST|/chat/completions|main", 0, i), leaf.Name)
-		require.NotNil(t, leaf.OutlierDetection)
-		assert.Equal(t, uint32(1), leaf.OutlierDetection.GetConsecutive_5Xx().GetValue())
-		assert.Equal(t, uint32(100), leaf.OutlierDetection.GetMaxEjectionPercent().GetValue())
-		assert.True(t, leaf.OutlierDetection.GetAlwaysEjectOneHost().GetValue())
-		assert.Equal(t, 5*time.Second, leaf.OutlierDetection.GetBaseEjectionTime().AsDuration())
-		assert.Equal(t, 40*time.Second, leaf.OutlierDetection.GetMaxEjectionTime().AsDuration())
-		assert.Equal(t, float64(0), leaf.GetCommonLbConfig().GetHealthyPanicThreshold().GetValue())
-
-		var opts httpv3.HttpProtocolOptions
-		require.NoError(t, leaf.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey].UnmarshalTo(&opts))
-		require.NotNil(t, opts.GetOutlierDetection().GetErrorMatcher(), "configured statuses must drive passive health")
+		// Leaves carry no outlier_detection/CommonLbConfig panic override: live
+		// verification against a real Envoy showed ejecting a leaf breaks
+		// failover instead of helping it — see
+		// configureFailoverLeafCircuitBreaker's doc comment. Cross-request
+		// suspension is policy-side again (model-failover's isSuspended).
+		assert.Nil(t, leaf.OutlierDetection)
+		assert.Nil(t, leaf.CommonLbConfig)
+		if protocolAny, ok := leaf.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey]; ok {
+			var opts httpv3.HttpProtocolOptions
+			require.NoError(t, protocolAny.UnmarshalTo(&opts))
+			assert.Nil(t, opts.GetOutlierDetection(), "RetriableStatusCodes no longer drives a leaf-level outlier error matcher")
+		}
 	}
 	assert.NotEqual(t, clusters[0].Name, clusters[1].Name, "same physical provider members still need isolated health")
 
@@ -74,15 +73,34 @@ func TestBuildFailoverCompositeClusters_IsolatesEveryMember(t *testing.T) {
 	for i, entry := range cfg.Clusters {
 		assert.Equal(t, clusters[i].Name, entry.Name)
 	}
+
+	// Suffix composites: one per fallback position, each covering that
+	// position through the end of the chain — the downstream policy's
+	// suspended-primary bypass dispatches at these instead of a bare leaf so
+	// a failure of the bypassed-to member can still retry within the request
+	// (see SuffixCompositeClusterName's doc comment).
+	suffixFrom1 := clusters[4]
+	assert.Equal(t, SuffixCompositeClusterName("POST|/chat/completions|main", 0, 1), suffixFrom1.Name)
+	var suffixFrom1Cfg compositev3.ClusterConfig
+	require.NoError(t, suffixFrom1.GetClusterType().GetTypedConfig().UnmarshalTo(&suffixFrom1Cfg))
+	require.Len(t, suffixFrom1Cfg.Clusters, 2, "covers positions 1 and 2")
+	assert.Equal(t, clusters[1].Name, suffixFrom1Cfg.Clusters[0].Name)
+	assert.Equal(t, clusters[2].Name, suffixFrom1Cfg.Clusters[1].Name)
+
+	suffixFrom2 := clusters[5]
+	assert.Equal(t, SuffixCompositeClusterName("POST|/chat/completions|main", 0, 2), suffixFrom2.Name)
+	var suffixFrom2Cfg compositev3.ClusterConfig
+	require.NoError(t, suffixFrom2.GetClusterType().GetTypedConfig().UnmarshalTo(&suffixFrom2Cfg))
+	require.Len(t, suffixFrom2Cfg.Clusters, 1, "covers only position 2")
+	assert.Equal(t, clusters[2].Name, suffixFrom2Cfg.Clusters[0].Name)
 }
 
-// TestBuildFailoverCompositeClusters_MaxConcurrentRetriesSetsLeafCircuitBreaker
-// pins design §9.3's retry resource protection: each leaf cluster's own
-// concurrent-retry ceiling, not a route-level mechanism, since retries fan
-// out across whichever leaf the composite cluster selects next.
-func TestBuildFailoverCompositeClusters_MaxConcurrentRetriesSetsLeafCircuitBreaker(t *testing.T) {
+// TestBuildFailoverCompositeClusters_LeavesRaiseEnvoysRetryCeiling pins
+// design §9.3: every leaf lifts Envoy's default max_retries (3) to
+// failoverLeafMaxRetries, so an outage fails over every in-flight request
+// rather than just the first three.
+func TestBuildFailoverCompositeClusters_LeavesRaiseEnvoysRetryCeiling(t *testing.T) {
 	rf := &models.RouteFailover{
-		MaxConcurrentRetries: 10,
 		Targets: []models.RouteFailoverTarget{{
 			Model:     "gpt-4o",
 			Target:    models.RouteFailoverEntry{ClusterKey: "provider-a"},
@@ -99,34 +117,9 @@ func TestBuildFailoverCompositeClusters_MaxConcurrentRetriesSetsLeafCircuitBreak
 
 	for i := 0; i < 2; i++ {
 		leaf := clusters[i]
-		require.NotNil(t, leaf.CircuitBreakers, "leaf %q must bound concurrent retries", leaf.Name)
+		require.NotNil(t, leaf.CircuitBreakers, "leaf %q must set its own retry ceiling", leaf.Name)
 		require.Len(t, leaf.CircuitBreakers.Thresholds, 1)
-		require.NotNil(t, leaf.CircuitBreakers.Thresholds[0].MaxRetries)
-		assert.Equal(t, uint32(10), leaf.CircuitBreakers.Thresholds[0].MaxRetries.GetValue())
-	}
-}
-
-// Unconfigured (0) must leave CircuitBreakers nil so Envoy's own default
-// (max_retries: 3) applies exactly as it would with no failover involved —
-// never an explicit 0, which would mean "no retries allowed at all".
-func TestBuildFailoverCompositeClusters_MaxConcurrentRetriesUnsetLeavesCircuitBreakersNil(t *testing.T) {
-	rf := &models.RouteFailover{
-		Targets: []models.RouteFailoverTarget{{
-			Model:     "gpt-4o",
-			Target:    models.RouteFailoverEntry{ClusterKey: "provider-a"},
-			Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "provider-b"}},
-		}},
-	}
-	sources := map[string]*cluster.Cluster{
-		"provider-a": testFailoverSourceCluster(t, "provider-a", "a.example", 443),
-		"provider-b": testFailoverSourceCluster(t, "provider-b", "b.example", 443),
-	}
-
-	clusters, err := buildFailoverCompositeClusters(rf, "POST|/chat/completions|main", sources)
-	require.NoError(t, err)
-
-	for i := 0; i < 2; i++ {
-		assert.Nil(t, clusters[i].CircuitBreakers)
+		assert.Equal(t, uint32(failoverLeafMaxRetries), leaf.CircuitBreakers.Thresholds[0].GetMaxRetries().GetValue())
 	}
 }
 

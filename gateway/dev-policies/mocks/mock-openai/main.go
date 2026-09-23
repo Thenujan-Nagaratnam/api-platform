@@ -19,6 +19,8 @@ var (
 	mu                sync.Mutex
 	failuresRemaining int
 	failStatus        int
+	delaysRemaining   int
+	delay             time.Duration
 	history           []requestRecord
 	callCount         int
 )
@@ -42,6 +44,7 @@ func main() {
 	})
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
 	mux.HandleFunc("/control/arm-failure", handleArmFailure)
+	mux.HandleFunc("/control/arm-delay", handleArmDelay)
 	mux.HandleFunc("/control/reset", handleReset)
 	mux.HandleFunc("/control/history", handleHistory)
 
@@ -70,10 +73,19 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		failuresRemaining--
 		status = failStatus
 	}
+	var wait time.Duration
+	if delaysRemaining > 0 {
+		delaysRemaining--
+		wait = delay
+	}
 	history = append(history, requestRecord{
 		Time: time.Now().Format(time.RFC3339Nano), Model: model, Auth: auth, Body: string(body), RespCode: status,
 	})
 	mu.Unlock()
+
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 
 	w.Header().Set("X-Mock-Backend", "openai")
 	w.Header().Set("X-Mock-Received-Auth", auth)
@@ -124,10 +136,32 @@ func handleArmFailure(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleArmDelay makes the next N calls to /v1/chat/completions wait before
+// responding, to simulate a slow (not hung) upstream. Body:
+// {"count": 2, "delayMs": 500}. Combines with arm-failure: a delayed call
+// still returns whatever status arm-failure dictates.
+func handleArmDelay(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Count   int `json:"count"`
+		DelayMs int `json:"delayMs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	mu.Lock()
+	delaysRemaining = req.Count
+	delay = time.Duration(req.DelayMs) * time.Millisecond
+	mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func handleReset(w http.ResponseWriter, _ *http.Request) {
 	mu.Lock()
 	failuresRemaining = 0
 	failStatus = 0
+	delaysRemaining = 0
+	delay = 0
 	history = nil
 	callCount = 0
 	mu.Unlock()

@@ -394,6 +394,176 @@
               }
             }
           ]
+        },
+        {
+          "name": "0.12 Register Proxy - failover-circuit-rate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-rate\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Failure Rate\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-rate\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 30,\n              \"suspendAfterFailures\": 100,\n              \"failureRateThresholdPercent\": 50\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.13 Register Proxy - failover-circuit-latency",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-latency\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Latency\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-latency\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 30,\n              \"suspendAfterFailures\": 100,\n              \"latencyThresholdMs\": 300\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.14 Register Proxy - failover-circuit-halfopen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-halfopen\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Half-Open\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-halfopen\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.15 Register Proxy - failover-circuit-probes",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-probes\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Probe Concurrency\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-probes\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.16 Register Proxy - failover-circuit-chain3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-chain3\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Three-Member Chain\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-chain3\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    },\n                    {\n                      \"model\": \"gpt-4o-mini\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 10\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", function () {",
+                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -848,7 +1018,31 @@
             "method": "POST",
             "header": [],
             "url": "{{mockOpenaiBaseUrl}}/control/reset"
-          }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Section 5 (Both Providers Fail) suspends BOTH openai and anthropic on",
+                  "// failover-default (suspendDuration 5s, set in 0.5). Sections 6-9 reuse this",
+                  "// same proxy/chain for unrelated scenarios that assume a clean, un-suspended",
+                  "// chain. Every-member-suspended now short-circuits with an immediate 503",
+                  "// instead of silently falling through to a real dispatch (the old behavior",
+                  "// these later sections were unknowingly relying on to mask stale suspension",
+                  "// state) — so this wait must actually run out the window first, same pattern",
+                  "// as 4.1 — but 11s, not 6s: recordOutcome's backoff-streak stays \"hot\" for",
+                  "// duration+base after a suspension (5s+5s=10s here), and section 7 right",
+                  "// after this deliberately fails openai again — if that lands inside the hot",
+                  "// window it doubles to a 10s suspension instead of a fresh 5s one, so this",
+                  "// wait must clear the FULL hot window, not just the suspension itself.",
+                  "var start = Date.now();",
+                  "while (Date.now() - start < 11000) { /* wait for section 5's suspension AND its hot-streak window to expire */ }"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "6.2 Reset Both Mocks (Anthropic)",
@@ -1074,7 +1268,24 @@
             "method": "POST",
             "header": [],
             "url": "{{mockOpenaiBaseUrl}}/control/reset"
-          }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Section 7's own streaming test deliberately fails openai on",
+                  "// failover-default (a fresh 5s suspension — the earlier 6.1 wait already",
+                  "// cleared section 5's hot-streak window, so this one isn't doubled). 8.8",
+                  "// below needs openai NOT suspended (it asserts the primary's own 429 is",
+                  "// returned unmodified), so wait it out first, same pattern as 6.1/4.1.",
+                  "var start = Date.now();",
+                  "while (Date.now() - start < 6000) { /* wait for section 7's suspension of openai to expire */ }"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "8.6 Reset Mock Anthropic",
@@ -1488,6 +1699,2203 @@
                 "exec": [
                   "pm.test(\"mock-openai-backup's call count is 1 - the backup region genuinely received the retry\", function () {",
                   "    pm.expect(pm.response.json().callCount).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "12. Circuit - Rolling Failure Rate",
+      "item": [
+        {
+          "name": "12.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.2 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.3 Arm OpenAI 20x 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 20, \"status\": 500}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.4 Failing Primary - Sample 1 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.5 Failing Primary - Sample 2 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.6 Failing Primary - Sample 3 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.7 Failing Primary - Sample 4 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.8 Failing Primary - Sample 5 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.9 Failing Primary - Sample 6 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.10 Failing Primary - Sample 7 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.11 Failing Primary - Sample 8 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.12 Failing Primary - Sample 9 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.13 Failing Primary - Sample 10 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.14 Failing Primary - Sample 11 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.15 Failing Primary - Sample 12 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.16 Failing Primary - Sample 13 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.17 Failing Primary - Sample 14 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.18 Failing Primary - Sample 15 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.19 Failing Primary - Sample 16 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.20 Failing Primary - Sample 17 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.21 Failing Primary - Sample 18 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.22 Failing Primary - Sample 19 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.23 Failing Primary - Sample 20 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.24 Verify OpenAI Call Count Is 20",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"primary was dialed for all 20 samples: the rate rule waits for 20 attempts, and suspendAfterFailures=100 never fires\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(20);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.25 Next Request Skips The Primary",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-rate/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"a 100% failure rate over 20 attempts crossed failureRateThresholdPercent=50, so the primary is suspended\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12.26 Verify OpenAI Call Count Is 20",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"primary was NOT dialed for the last request (suspended by the rate rule, not by consecutive failures)\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(20);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "13. Circuit - Latency Percentile",
+      "item": [
+        {
+          "name": "13.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.2 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.3 Arm OpenAI 20x 400ms Delay",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-delay",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 20, \"delayMs\": 400}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.4 Slow Primary - Sample 1 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.5 Slow Primary - Sample 2 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.6 Slow Primary - Sample 3 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.7 Slow Primary - Sample 4 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.8 Slow Primary - Sample 5 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.9 Slow Primary - Sample 6 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.10 Slow Primary - Sample 7 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.11 Slow Primary - Sample 8 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.12 Slow Primary - Sample 9 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.13 Slow Primary - Sample 10 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.14 Slow Primary - Sample 11 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.15 Slow Primary - Sample 12 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.16 Slow Primary - Sample 13 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.17 Slow Primary - Sample 14 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.18 Slow Primary - Sample 15 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.19 Slow Primary - Sample 16 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.20 Slow Primary - Sample 17 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.21 Slow Primary - Sample 18 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.22 Slow Primary - Sample 19 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.23 Slow Primary - Sample 20 Of 20",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"slow but successful, still served by the primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.24 Next Request Skips The Slow Primary",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-latency/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"p95 latency over the window crossed latencyThresholdMs=300, so the primary is suspended\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13.25 Verify OpenAI Call Count Is 20",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"primary was NOT dialed for the last request (suspended for latency, having never returned an error)\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(20);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "14. Circuit - Half-Open Reopen And Close",
+      "item": [
+        {
+          "name": "14.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.2 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.3 Arm OpenAI 1x 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.4 Primary Fails - Opens For 3s",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-halfopen/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary failed, served by fallback\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.5 While Open - Primary Skipped",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-halfopen/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"suspended primary is bypassed\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.6 Verify OpenAI Call Count Is 1",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"primary was not dialed while open\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.7 Arm OpenAI 1x 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// run out the 3s suspension so the next request is a half-open probe",
+                  "var start = Date.now();",
+                  "while (Date.now() - start < 3500) { /* wait */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.8 Half-Open Probe Fails - Reopens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-halfopen/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"the probe hit the primary, failed, and the fallback served it within the same request\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.9 Reopened - Primary Skipped Again",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-halfopen/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"a failed probe reopened the circuit\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.10 Verify OpenAI Call Count Is 2",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"exactly one probe reached the primary (14.8); 14.9 was blocked by the reopened circuit\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.11 Half-Open Probe Succeeds - Closes",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-halfopen/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// the reopen doubled the window to 6s (the failed probe landed inside the hot streak), so wait past it",
+                  "var start = Date.now();",
+                  "while (Date.now() - start < 6500) { /* wait */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"the probe reached the recovered primary\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.12 Closed - Primary Serves Normally",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-halfopen/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"one successful probe closed the circuit\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14.13 Verify OpenAI Call Count Is 4",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the probe and the request after it both reached the primary\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(4);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "15. Circuit - Three-Member Chain And Exhaustion",
+      "item": [
+        {
+          "name": "15.1 Reset Mock OpenAI",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.2 Reset Mock Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.3 Arm OpenAI 1x 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.4 Primary Fails - Served By Member 2 (Anthropic)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-chain3/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"gpt-4o failed, the chain's second member served it\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"anthropic\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.5 Arm Anthropic 1x 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockAnthropicBaseUrl}}/control/arm-failure",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.6 Bypass Enters At Member 2, Retries Past It To Member 3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-chain3/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"primary is suspended, so the request entered at the anthropic suffix; anthropic failed and the retry reached gpt-4o-mini\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});",
+                  "pm.test(\"the replayed body carried the third member's model (gpt-4o-mini)\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Received-Model\")).to.eql(\"gpt-4o-mini\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.7 Verify OpenAI Call Count Is 2",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the suspended primary was not dialed for 15.6 - only gpt-4o-mini landed on openai\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.8 Arm OpenAI 1x 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{mockOpenaiBaseUrl}}/control/arm-failure",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"count\": 1, \"status\": 500}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"control call accepted\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.9 Only Member 3 Left - Its Failure Reaches The Client",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-chain3/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 500 - the last live member has no retries left\", function () { pm.response.to.have.status(500); });",
+                  "pm.test(\"the failing attempt was gpt-4o-mini on openai\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.10 Every Member Suspended - failover_exhausted",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }]\n}"
+            },
+            "url": "{{runtimeBaseUrl}}/failover-circuit-chain3/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 503\", function () { pm.response.to.have.status(503); });",
+                  "pm.test(\"the policy answered locally with failover_exhausted\", function () {",
+                  "    pm.expect(pm.response.json().error.code).to.eql(\"failover_exhausted\");",
+                  "});",
+                  "pm.test(\"no backend was dialed\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.11 Verify OpenAI Call Count Is 3",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockOpenaiBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"15.10 never reached openai (gpt-4o in 15.4, gpt-4o-mini in 15.6 and 15.9)\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(3);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15.12 Verify Anthropic Call Count Is 2",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockAnthropicBaseUrl}}/control/history"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"15.9 and 15.10 never reached anthropic (served 15.4, failed 15.6)\", function () {",
+                  "    pm.expect(pm.response.json().callCount).to.eql(2);",
                   "});"
                 ]
               }

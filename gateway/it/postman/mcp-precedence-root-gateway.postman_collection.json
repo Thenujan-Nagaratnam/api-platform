@@ -1,0 +1,480 @@
+{
+	"info": {
+		"name": "MCP gatewayUrl Precedence - Root Gateway",
+		"description": "Proves gatewayUrl wins over BOTH gatewayHost and vhost for mcp-auth's 401 AND mcp-authz's 403 responses, run directly against the root docker-compose.yaml gateway (localhost:8443/9090) instead of the isolated IT stack.\n\nPrerequisites:\n1. Root gateway stack up (docker compose up -d from gateway/)\n2. configs/config.toml's policy_configurations.mcpauth_v1 has BOTH gatewayhost and gatewayurl set to distinct fake domains (see the comment added alongside this test)\n3. gateway-runtime restarted after that config change\n4. The mcp-precedence-root-test MCP proxy deployed (vhost-scoped, mcp-auth + mcp-authz with a scope-gated 'add' tool rule) against the real bijira-mcp-everything Choreo upstream\n5. An M2M application in your local WSO2 IS authorized for the mcp:tools:invoke scope (the 'mcp-authz-test' app used earlier this session) \u2014 supply its client id/secret via --env-var, never hardcode them in this file",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "rootControllerBaseUrl",
+			"value": "http://localhost:9090/api/management/v1"
+		},
+		{
+			"key": "rootRouterBaseUrl",
+			"value": "https://localhost:8443"
+		},
+		{
+			"key": "isTokenUrl",
+			"value": "https://localhost:9443/oauth2/token"
+		},
+		{
+			"key": "precedenceRootProxyId",
+			"value": "mcp-precedence-root-test"
+		},
+		{
+			"key": "precedenceRootContext",
+			"value": "/mcpprecedenceroot"
+		},
+		{
+			"key": "precedenceRootVhost",
+			"value": "mcp-precedence-root.example.com"
+		},
+		{
+			"key": "configuredGatewayUrl",
+			"value": "https://mcp1.example.com"
+		},
+		{
+			"key": "configuredGatewayHost",
+			"value": "should-not-appear.example.com"
+		},
+		{
+			"key": "requiredScope",
+			"value": "mcp:tools:invoke"
+		},
+		{
+			"key": "m2mClientId",
+			"value": ""
+		},
+		{
+			"key": "m2mClientSecret",
+			"value": ""
+		},
+		{
+			"key": "unscopedToken",
+			"value": ""
+		},
+		{
+			"key": "scopedToken",
+			"value": ""
+		},
+		{
+			"key": "rootSessionId",
+			"value": ""
+		}
+	],
+	"item": [
+		{
+			"name": "1. Get unscoped M2M token from local IS",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/x-www-form-urlencoded"
+					}
+				],
+				"url": {
+					"raw": "{{isTokenUrl}}",
+					"host": [
+						"{{isTokenUrl}}"
+					]
+				},
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "username",
+							"value": "{{m2mClientId}}",
+							"type": "string"
+						},
+						{
+							"key": "password",
+							"value": "{{m2mClientSecret}}",
+							"type": "string"
+						}
+					]
+				},
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "grant_type",
+							"value": "client_credentials"
+						}
+					]
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+							"var json = pm.response.json();",
+							"pm.collectionVariables.set('unscopedToken', json.access_token);"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "2. Initialize - No Token via vhost (expect 401, mcp-auth WWW-Authenticate uses gatewayUrl)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "Accept",
+						"value": "application/json, text/event-stream"
+					},
+					{
+						"key": "Host",
+						"value": "{{precedenceRootVhost}}"
+					}
+				],
+				"url": {
+					"raw": "{{rootRouterBaseUrl}}{{precedenceRootContext}}/mcp",
+					"host": [
+						"{{rootRouterBaseUrl}}{{precedenceRootContext}}/mcp"
+					]
+				},
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": { \"roots\": { \"listChanged\": true } },\n    \"clientInfo\": { \"name\": \"postman-mcp-client\", \"version\": \"1.0.0\" }\n  }\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Status code is 401', function () { pm.response.to.have.status(401); });",
+							"pm.test('WWW-Authenticate uses gatewayUrl verbatim, not vhost or gatewayHost', function () {",
+							"    var header = pm.response.headers.get('WWW-Authenticate');",
+							"    var expected = 'resource_metadata=\"' + pm.collectionVariables.get('configuredGatewayUrl') + pm.collectionVariables.get('precedenceRootContext') + '/.well-known/oauth-protected-resource\"';",
+							"    pm.expect(header).to.include(expected);",
+							"    pm.expect(header).to.not.include(pm.collectionVariables.get('precedenceRootVhost'));",
+							"    pm.expect(header).to.not.include(pm.collectionVariables.get('configuredGatewayHost'));",
+							"});"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "3. Get Protected Resource Metadata via vhost (expect gatewayUrl in resource field)",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Host",
+						"value": "{{precedenceRootVhost}}"
+					}
+				],
+				"url": {
+					"raw": "{{rootRouterBaseUrl}}{{precedenceRootContext}}/.well-known/oauth-protected-resource",
+					"host": [
+						"{{rootRouterBaseUrl}}{{precedenceRootContext}}/.well-known/oauth-protected-resource"
+					]
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+							"pm.test('resource is exactly gatewayUrl + context + /mcp', function () {",
+							"    var json = pm.response.json();",
+							"    var expected = pm.collectionVariables.get('configuredGatewayUrl') + pm.collectionVariables.get('precedenceRootContext') + '/mcp';",
+							"    pm.expect(json.resource).to.eql(expected);",
+							"});"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "4. Initialize via vhost WITH unscoped token (expect 200 \u2014 mcp-authz doesn't gate initialize)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "Accept",
+						"value": "application/json, text/event-stream"
+					},
+					{
+						"key": "Authorization",
+						"value": "Bearer {{unscopedToken}}"
+					},
+					{
+						"key": "Host",
+						"value": "{{precedenceRootVhost}}"
+					}
+				],
+				"url": {
+					"raw": "{{rootRouterBaseUrl}}{{precedenceRootContext}}/mcp",
+					"host": [
+						"{{rootRouterBaseUrl}}{{precedenceRootContext}}/mcp"
+					]
+				},
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": { \"roots\": { \"listChanged\": true } },\n    \"clientInfo\": { \"name\": \"postman-mcp-client\", \"version\": \"1.0.0\" }\n  }\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+							"var sessionId = pm.response.headers.get('Mcp-Session-Id');",
+							"if (sessionId) { pm.collectionVariables.set('rootSessionId', sessionId); }"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "5. tools/call add WITHOUT scope via vhost (expect 403, mcp-authz WWW-Authenticate uses gatewayUrl)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "Accept",
+						"value": "application/json, text/event-stream"
+					},
+					{
+						"key": "Authorization",
+						"value": "Bearer {{unscopedToken}}"
+					},
+					{
+						"key": "Mcp-Session-Id",
+						"value": "{{rootSessionId}}"
+					},
+					{
+						"key": "Host",
+						"value": "{{precedenceRootVhost}}"
+					}
+				],
+				"url": {
+					"raw": "{{rootRouterBaseUrl}}{{precedenceRootContext}}/mcp",
+					"host": [
+						"{{rootRouterBaseUrl}}{{precedenceRootContext}}/mcp"
+					]
+				},
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"add\",\n    \"arguments\": { \"a\": 1, \"b\": 2 }\n  }\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Status code is 403', function () { pm.response.to.have.status(403); });",
+							"pm.test('mcp-authz WWW-Authenticate uses gatewayUrl verbatim, not vhost or gatewayHost', function () {",
+							"    var header = pm.response.headers.get('WWW-Authenticate');",
+							"    var expected = 'resource_metadata=\"' + pm.collectionVariables.get('configuredGatewayUrl') + pm.collectionVariables.get('precedenceRootContext') + '/.well-known/oauth-protected-resource\"';",
+							"    pm.expect(header).to.include(expected);",
+							"    pm.expect(header).to.include('insufficient_scope');",
+							"    pm.expect(header).to.not.include(pm.collectionVariables.get('precedenceRootVhost'));",
+							"    pm.expect(header).to.not.include(pm.collectionVariables.get('configuredGatewayHost'));",
+							"});"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "6. Get scoped M2M token from local IS",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/x-www-form-urlencoded"
+					}
+				],
+				"url": {
+					"raw": "{{isTokenUrl}}",
+					"host": [
+						"{{isTokenUrl}}"
+					]
+				},
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "username",
+							"value": "{{m2mClientId}}",
+							"type": "string"
+						},
+						{
+							"key": "password",
+							"value": "{{m2mClientSecret}}",
+							"type": "string"
+						}
+					]
+				},
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "grant_type",
+							"value": "client_credentials"
+						},
+						{
+							"key": "scope",
+							"value": "{{requiredScope}}"
+						}
+					]
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+							"var json = pm.response.json();",
+							"pm.collectionVariables.set('scopedToken', json.access_token);",
+							"pm.test('scope claim present', function () { pm.expect(json.scope).to.eql(pm.collectionVariables.get('requiredScope')); });"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "7. tools/call add WITH scope via vhost (expect 200, bonus confirmation)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "Accept",
+						"value": "application/json, text/event-stream"
+					},
+					{
+						"key": "Authorization",
+						"value": "Bearer {{scopedToken}}"
+					},
+					{
+						"key": "Mcp-Session-Id",
+						"value": "{{rootSessionId}}"
+					},
+					{
+						"key": "Host",
+						"value": "{{precedenceRootVhost}}"
+					}
+				],
+				"url": {
+					"raw": "{{rootRouterBaseUrl}}{{precedenceRootContext}}/mcp",
+					"host": [
+						"{{rootRouterBaseUrl}}{{precedenceRootContext}}/mcp"
+					]
+				},
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"add\",\n    \"arguments\": { \"a\": 1, \"b\": 2 }\n  }\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Status code is 200', function () { pm.response.to.have.status(200); });"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "8. Cleanup - Delete MCP Proxy",
+			"request": {
+				"method": "DELETE",
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "username",
+							"value": "admin",
+							"type": "string"
+						},
+						{
+							"key": "password",
+							"value": "admin",
+							"type": "string"
+						}
+					]
+				},
+				"header": [],
+				"url": {
+					"raw": "{{rootControllerBaseUrl}}/mcp-proxies/{{precedenceRootProxyId}}",
+					"host": [
+						"{{rootControllerBaseUrl}}"
+					],
+					"path": [
+						"mcp-proxies",
+						"{{precedenceRootProxyId}}"
+					]
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test('Deleted (200 or 204)', function () { pm.expect([200, 204]).to.include(pm.response.code); });"
+						]
+					}
+				}
+			]
+		}
+	]
+}

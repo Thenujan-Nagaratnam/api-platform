@@ -438,21 +438,12 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 			}
 			retryPolicy.RetriableStatusCodes = codes
 		}
-		// design §9.2/§9: both left nil (Envoy's own defaults apply) unless
-		// the operator explicitly configured them — parseModelFailoverParams
-		// already validated PerTryTimeoutMs/RetryBackoff{Base,Max}Ms are
-		// non-negative and Max >= Base.
+		// design §9.2: left nil (the route's overall timeout applies) unless
+		// the operator configured it; retry backoff stays at Envoy's default
+		// (25ms base) — failover moves to a different target, so there is no
+		// reason to wait longer between attempts.
 		if rdcRoute.Upstream.Failover.PerTryTimeoutMs > 0 {
 			retryPolicy.PerTryTimeout = durationpb.New(time.Duration(rdcRoute.Upstream.Failover.PerTryTimeoutMs) * time.Millisecond)
-		}
-		if rdcRoute.Upstream.Failover.RetryBackoffBaseMs > 0 {
-			backoff := &route.RetryPolicy_RetryBackOff{
-				BaseInterval: durationpb.New(time.Duration(rdcRoute.Upstream.Failover.RetryBackoffBaseMs) * time.Millisecond),
-			}
-			if rdcRoute.Upstream.Failover.RetryBackoffMaxMs > 0 {
-				backoff.MaxInterval = durationpb.New(time.Duration(rdcRoute.Upstream.Failover.RetryBackoffMaxMs) * time.Millisecond)
-			}
-			retryPolicy.RetryBackOff = backoff
 		}
 		routeAction.Route.RetryPolicy = retryPolicy
 	}
@@ -3357,6 +3348,17 @@ func (t *Translator) createExtProcFilter() (*hcm.HttpFilter, error) {
 		MutationRules: &mutationrules.HeaderMutationRules{
 			DisallowSystem:  wrapperspb.Bool(false),
 			DisallowIsError: wrapperspb.Bool(true),
+			// AllowEnvoy defaults to false in Envoy, which rejects ANY mutation
+			// of an x-envoy-* header from ext_proc ("Header x-envoy-max-retries
+			// may not be modified") — this silently breaks model-failover's
+			// OnRequestBody, which must set x-envoy-max-retries per request to
+			// correct the route's shared, deepest-target-sized NumRetries
+			// ceiling down to the selected chain's own fallback count (see
+			// modelfailover.go). This is safe to allow here because it only
+			// permits OUR OWN trusted ext_proc (the policy engine) to set these
+			// headers server-side; a client-forged copy is independently
+			// stripped at ingress (see envoyClientOverridableHeaders below).
+			AllowEnvoy: wrapperspb.Bool(true),
 		},
 		MetadataOptions: &extproc.MetadataOptions{
 			ReceivingNamespaces: &extproc.MetadataOptions_MetadataNamespaces{

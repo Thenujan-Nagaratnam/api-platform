@@ -334,28 +334,26 @@ func TestBuildRouteFailoverFromPolicy_StatusCodesReplaceDefaultRetryOn(t *testin
 
 // ─── parseModelFailoverParams: statusCodes validation ────────────────────────
 
-// ─── buildRouteFailoverFromPolicy: perTryTimeout / backoff / circuit breaker ─
+// ─── buildRouteFailoverFromPolicy: perTryTimeout and circuit thresholds ─────
 
-func TestBuildRouteFailoverFromPolicy_CarriesPerTryTimeoutBackoffAndCircuitBreakerIntoRouteFailover(t *testing.T) {
+func TestBuildRouteFailoverFromPolicy_CarriesPerTryTimeoutAndCircuitThresholds(t *testing.T) {
 	rdc, route := failoverTestRDC()
 	params := &modelFailoverParams{
 		Targets: []modelFailoverTargetEntry{{
 			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
 			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 		}},
-		PerTryTimeoutMs:      5000,
-		RetryBackoffBaseMs:   25,
-		RetryBackoffMaxMs:    250,
-		MaxConcurrentRetries: 10,
+		PerTryTimeoutMs:             5000,
+		FailureRateThresholdPercent: 50,
+		LatencyThresholdMs:          2000,
 	}
 
-	rf, _, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+	rf, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
 
 	require.NoError(t, err)
 	assert.Equal(t, 5000, rf.PerTryTimeoutMs)
-	assert.Equal(t, 25, rf.RetryBackoffBaseMs)
-	assert.Equal(t, 250, rf.RetryBackoffMaxMs)
-	assert.Equal(t, 10, rf.MaxConcurrentRetries)
+	assert.Equal(t, 50, expanded.FailureRateThresholdPercent, "passed through to the runtime policy")
+	assert.Equal(t, 2000, expanded.LatencyThresholdMs, "passed through to the runtime policy")
 }
 
 // TestBuildRouteFailoverFromPolicy_RejectsUnreachableFallbacksGivenExplicitOverallTimeout
@@ -406,6 +404,42 @@ func TestParseModelFailoverParams_RejectsOutOfRangeStatusCode(t *testing.T) {
 
 	_, err := parseModelFailoverParams(raw, nil, "openai-primary")
 	require.Error(t, err)
+}
+
+func TestParseModelFailoverParams_ValidatesCircuitFields(t *testing.T) {
+	base := func(extra map[string]interface{}) map[string]interface{} {
+		raw := map[string]interface{}{
+			"targets": []interface{}{map[string]interface{}{
+				"model":     "gpt-4o",
+				"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+			}},
+		}
+		for k, v := range extra {
+			raw[k] = v
+		}
+		return raw
+	}
+	rejected := map[string]map[string]interface{}{
+		"rate threshold above 100":   {"failureRateThresholdPercent": float64(101)},
+		"negative rate threshold":    {"failureRateThresholdPercent": float64(-1)},
+		"negative latency threshold": {"latencyThresholdMs": float64(-1)},
+	}
+	for name, extra := range rejected {
+		t.Run("rejects "+name, func(t *testing.T) {
+			_, err := parseModelFailoverParams(base(extra), []string{"anthropic-upstream"}, "openai-primary")
+			assert.Error(t, err)
+		})
+	}
+
+	t.Run("accepts both thresholds on their own", func(t *testing.T) {
+		params, err := parseModelFailoverParams(base(map[string]interface{}{
+			"failureRateThresholdPercent": float64(50),
+			"latencyThresholdMs":          float64(2000),
+		}), []string{"anthropic-upstream"}, "openai-primary")
+		require.NoError(t, err)
+		assert.Equal(t, 50, params.FailureRateThresholdPercent)
+		assert.Equal(t, 2000, params.LatencyThresholdMs)
+	})
 }
 
 func TestParseModelFailoverParams_AcceptsValidStatusCodes(t *testing.T) {
@@ -504,25 +538,19 @@ func TestParseModelFailoverParams_RejectsChainExceedingMaxLength(t *testing.T) {
 
 // ─── perTryTimeout / retry backoff / retry circuit breaker ───────────────────
 
-func TestParseModelFailoverParams_ParsesPerTryTimeoutBackoffAndCircuitBreaker(t *testing.T) {
+func TestParseModelFailoverParams_ParsesPerTryTimeout(t *testing.T) {
 	raw := map[string]interface{}{
 		"targets": []interface{}{map[string]interface{}{
 			"model":     "gpt-4o",
 			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
 		}},
-		"perTryTimeoutMs":      float64(5000),
-		"retryBackoffBaseMs":   float64(25),
-		"retryBackoffMaxMs":    float64(250),
-		"maxConcurrentRetries": float64(10),
+		"perTryTimeoutMs": float64(5000),
 	}
 
 	params, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
 
 	require.NoError(t, err)
 	assert.Equal(t, 5000, params.PerTryTimeoutMs)
-	assert.Equal(t, 25, params.RetryBackoffBaseMs)
-	assert.Equal(t, 250, params.RetryBackoffMaxMs)
-	assert.Equal(t, 10, params.MaxConcurrentRetries)
 }
 
 func TestParseModelFailoverParams_RejectsNegativePerTryTimeoutMs(t *testing.T) {
@@ -532,46 +560,6 @@ func TestParseModelFailoverParams_RejectsNegativePerTryTimeoutMs(t *testing.T) {
 			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
 		}},
 		"perTryTimeoutMs": float64(-1),
-	}
-
-	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
-	require.Error(t, err)
-}
-
-func TestParseModelFailoverParams_RejectsRetryBackoffMaxLessThanBase(t *testing.T) {
-	raw := map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model":     "gpt-4o",
-			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
-		}},
-		"retryBackoffBaseMs": float64(250),
-		"retryBackoffMaxMs":  float64(25),
-	}
-
-	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
-	require.Error(t, err)
-}
-
-func TestParseModelFailoverParams_RejectsRetryBackoffMaxWithoutBase(t *testing.T) {
-	raw := map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model":     "gpt-4o",
-			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
-		}},
-		"retryBackoffMaxMs": float64(250),
-	}
-
-	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
-	require.Error(t, err, "retryBackoffMaxMs alone is a no-op at the xDS layer (Envoy requires base_interval); reject rather than silently ignore")
-}
-
-func TestParseModelFailoverParams_RejectsNegativeMaxConcurrentRetries(t *testing.T) {
-	raw := map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model":     "gpt-4o",
-			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
-		}},
-		"maxConcurrentRetries": float64(-1),
 	}
 
 	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")

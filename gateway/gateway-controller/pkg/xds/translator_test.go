@@ -32,6 +32,7 @@ import (
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	tracev3 "github.com/envoyproxy/go-control-plane/envoy/config/trace/v3"
+	extproc "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
@@ -1713,6 +1714,25 @@ func TestTranslator_CreateExtProcFilter(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, filter)
 		assert.Equal(t, constants.ExtProcFilterName, filter.Name)
+	})
+
+	// Without AllowEnvoy, Envoy rejects the policy engine's own
+	// x-envoy-max-retries mutation — model-failover sets it on every chain
+	// request, so every such request fails with a 500.
+	t.Run("Allows the policy engine to set x-envoy-* headers", func(t *testing.T) {
+		routerCfg := testRouterConfig()
+		cfg := testConfig()
+		cfg.Router = *routerCfg
+		translator := NewTranslator(logger, routerCfg, nil, cfg)
+
+		filter, err := translator.createExtProcFilter()
+		require.NoError(t, err)
+
+		var extProcConfig extproc.ExternalProcessor
+		require.NoError(t, filter.GetTypedConfig().UnmarshalTo(&extProcConfig))
+		rules := extProcConfig.GetMutationRules()
+		require.NotNil(t, rules)
+		assert.True(t, rules.GetAllowEnvoy().GetValue())
 	})
 }
 

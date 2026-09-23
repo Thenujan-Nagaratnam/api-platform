@@ -1,0 +1,1771 @@
+{
+	"info": {
+		"_postman_id": "7e3b6d2a-9c4f-4f2a-8d1a-mcp-auth-manual-test",
+		"name": "MCP Auth Policy - Manual Test",
+		"description": "Manual end-to-end test for the `mcp-auth`/`mcp-authz` gateway policies: the gatewayHost/gatewayUrl port-handling and precedence fixes, plus a policy-params `additionalProperties` validation check (denied vs allowed unknown params).\n\nPrerequisites for folders 1-2 (see gateway/it/docker-compose.test.yaml):\n1. `cd gateway/it`\n2. `docker compose -f docker-compose.test.yaml -p gateway-it up -d gateway-controller gateway-runtime mcp-server-backend mock-jwks mock-platform-api`\n3. Make sure nothing else is already bound to ports 9090 (controller) or 8080 (router).\n\nFolder 3 needs a DIFFERENT stack (root docker-compose.yaml, real ngrok/Asgardeo) \u2014 see its own description before running it; do not run folder 3 against the plain folder-1/2 stack. Folder 4 runs on the SAME default IT stack as folders 1/2/5/6 (gatewayhost/gatewayurl are permanently configured in test-config.toml).\n\nRun folder \"1 - MCP Auth Functional Test\" top to bottom to exercise the full auth flow. Run folder \"2 - Policy Params Validation (additionalProperties)\" to see an unknown param rejected by mcp-acl-list (additionalProperties: false) vs silently accepted by cors AND mcp-auth (additionalProperties unset/true \u2014 mcp-auth and mcp-authz were both changed from false to true) at deploy time. Run folder \"3 - Real-World ngrok + Asgardeo Test\" against a gateway started from the root docker-compose.yaml with an ngrok tunnel and a real Asgardeo tenant configured \u2014 see wso2-enterprise/wso2-apim-internal#19345. Run folder \"4 - gatewayUrl Precedence (E2E)\" (same default IT stack) to prove gatewayUrl wins over both gatewayHost and a REAL, actually-routing vhost, through the live config.toml resolution pipeline. Run folder \"5 - MCP Authz Functional Test\" (same default IT stack as folder 1) to exercise mcp-authz's scope-based tool authorization end-to-end. Run folder \"6 - MCP Authz Policy Params Validation (additionalProperties)\" (same stack) to confirm mcp-authz also now silently accepts an unknown param.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "controllerBaseUrl",
+			"value": "http://localhost:9090/api/management/v1",
+			"type": "string"
+		},
+		{
+			"key": "routerBaseUrl",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "jwksBaseUrl",
+			"value": "http://localhost:8082",
+			"type": "string"
+		},
+		{
+			"key": "adminUser",
+			"value": "admin",
+			"type": "string"
+		},
+		{
+			"key": "adminPass",
+			"value": "admin",
+			"type": "string"
+		},
+		{
+			"key": "mockJwksIssuer",
+			"value": "http://mock-jwks:8080/token",
+			"type": "string"
+		},
+		{
+			"key": "mcpAuthContext",
+			"value": "/mcpauth",
+			"type": "string"
+		},
+		{
+			"key": "mcpAuthProxyId",
+			"value": "mcp-auth-postman-test",
+			"type": "string"
+		},
+		{
+			"key": "jwtToken",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "addPropsDeniedProxyId",
+			"value": "mcp-addprops-denied",
+			"type": "string"
+		},
+		{
+			"key": "addPropsAllowedProxyId",
+			"value": "mcp-addprops-allowed",
+			"type": "string"
+		},
+		{
+			"key": "mcpAuthAllowedProxyId",
+			"value": "mcp-auth-addprops-now-allowed",
+			"type": "string"
+		},
+		{
+			"key": "realControllerBaseUrl",
+			"value": "http://localhost:9090/api/management/v1",
+			"type": "string"
+		},
+		{
+			"key": "ngrokHost",
+			"value": "shriek-prescribe-pleading.ngrok-free.dev",
+			"type": "string"
+		},
+		{
+			"key": "asgardeoTenant",
+			"value": "thenujann",
+			"type": "string"
+		},
+		{
+			"key": "realMcpProxyId",
+			"value": "orderstatusmcpserver",
+			"type": "string"
+		},
+		{
+			"key": "realMcpProxyContext",
+			"value": "/orderstatusmcpserver",
+			"type": "string"
+		},
+		{
+			"key": "realMcpUpstreamUrl",
+			"value": "https://b51050bd-6f0e-466b-9a5a-a1de3d2c35d9-dev.e1-us-east-azure.choreoapis.dev/default/orderstatusmcp/v1.0/mcp",
+			"type": "string"
+		},
+		{
+			"key": "realAdminUser",
+			"value": "admin",
+			"type": "string"
+		},
+		{
+			"key": "realAdminPass",
+			"value": "REPLACE_WITH_YOUR_SETUP_SH_PASSWORD",
+			"type": "string"
+		},
+		{
+			"key": "precedenceProxyId",
+			"value": "mcp-gatewayurl-precedence-test",
+			"type": "string"
+		},
+		{
+			"key": "precedenceProxyContext",
+			"value": "/gatewayurlprecedence",
+			"type": "string"
+		},
+		{
+			"key": "precedenceVhost",
+			"value": "mcp1.example.com",
+			"type": "string"
+		},
+		{
+			"key": "configuredGatewayUrl",
+			"value": "https://mcp-e2e-gatewayurl.example.com:7777",
+			"type": "string"
+		},
+		{
+			"key": "configuredGatewayHost",
+			"value": "mcp-e2e-gatewayhost.example.com:9443",
+			"type": "string"
+		},
+		{
+			"key": "mcpAuthzProxyId",
+			"value": "mcp-authz-postman-test",
+			"type": "string"
+		},
+		{
+			"key": "mcpAuthzContext",
+			"value": "/mcpauthz",
+			"type": "string"
+		},
+		{
+			"key": "mcpAuthzRequiredScope",
+			"value": "mcp:tools:invoke",
+			"type": "string"
+		},
+		{
+			"key": "mcpAuthzAllowedProxyId",
+			"value": "mcp-authz-addprops-now-allowed",
+			"type": "string"
+		},
+		{
+			"key": "mcpAuthzSessionId",
+			"value": ""
+		},
+		{
+			"key": "precedenceSessionId",
+			"value": ""
+		}
+	],
+	"item": [
+		{
+			"name": "1 - MCP Auth Functional Test",
+			"item": [
+				{
+					"name": "1.1 Deploy MCP Proxy (mcp-auth policy)",
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: {{mcpAuthProxyId}}\nspec:\n  displayName: MCP Auth Postman Test\n  version: v1.0\n  context: {{mcpAuthContext}}\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: http://mcp-server-backend:3001/mcp\n  policies:\n    - name: mcp-auth\n      version: v1\n      params:\n        issuers:\n          - mock-jwks\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies"
+							]
+						},
+						"description": "Deploys an Mcp proxy fronting mcp-server-backend, protected by mcp-auth with issuer 'mock-jwks' (already registered as a key manager in it/test-config.toml)."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"pm.test('Deploy reported success', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status.state).to.eql('deployed');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "1.2 Initialize - No Token (expect 401)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json, text/event-stream"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": { \"roots\": { \"listChanged\": true } },\n    \"clientInfo\": { \"name\": \"postman-mcp-client\", \"version\": \"1.0.0\" }\n  }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{routerBaseUrl}}{{mcpAuthContext}}/mcp",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{mcpAuthContext}}",
+								"mcp"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 401', function () {",
+									"    pm.response.to.have.status(401);",
+									"});",
+									"pm.test('WWW-Authenticate points at protected-resource metadata', function () {",
+									"    var header = pm.response.headers.get('WWW-Authenticate');",
+									"    pm.expect(header).to.not.be.null;",
+									"    pm.expect(header).to.include('.well-known/oauth-protected-resource');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "1.3 Get Protected Resource Metadata",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{routerBaseUrl}}{{mcpAuthContext}}/.well-known/oauth-protected-resource",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{mcpAuthContext}}",
+								".well-known",
+								"oauth-protected-resource"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('authorization_servers lists the mock-jwks issuer', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.authorization_servers).to.include(pm.collectionVariables.get('mockJwksIssuer'));",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "1.4 Get JWT Token from Mock JWKS",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{jwksBaseUrl}}/token?issuer={{mockJwksIssuer}}",
+							"host": [
+								"{{jwksBaseUrl}}"
+							],
+							"path": [
+								"token"
+							],
+							"query": [
+								{
+									"key": "issuer",
+									"value": "{{mockJwksIssuer}}"
+								}
+							]
+						},
+						"description": "mock-jwks also accepts &scope=... and &claim_<name>=<value> query params if you want to exercise requiredScopes/claim-based scenarios."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Token body looks non-trivial', function () {",
+									"    pm.expect(pm.response.text().length).to.be.above(10);",
+									"});",
+									"pm.collectionVariables.set('jwtToken', pm.response.text().trim());"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "1.5 Initialize - With Token (expect 200)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json, text/event-stream"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwtToken}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": { \"roots\": { \"listChanged\": true } },\n    \"clientInfo\": { \"name\": \"postman-mcp-client\", \"version\": \"1.0.0\" }\n  }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{routerBaseUrl}}{{mcpAuthContext}}/mcp",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{mcpAuthContext}}",
+								"mcp"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 with a valid token', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "1.6 Cleanup - Delete MCP Proxy",
+					"request": {
+						"method": "DELETE",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [],
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies/{{mcpAuthProxyId}}",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies",
+								"{{mcpAuthProxyId}}"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Deleted (200 or 204)', function () {",
+									"    pm.expect([200, 204]).to.include(pm.response.code);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "2 - Policy Params Validation (additionalProperties)",
+			"description": "Confirms that whether an unknown/extra policyParam is rejected at deploy time depends entirely on the individual policy's own JSON schema setting `additionalProperties: false` \u2014 it is not enforced platform-wide, and it can change: mcp-auth and mcp-authz were BOTH switched from `false` to `true` (now silently accept unknown params, same as cors) \u2014 see 2.3. mcp-acl-list still sets `false` and is used here as the current denied-case example instead. See gateway-controller/pkg/config/policy_validator.go's validatePolicyParams (gojsonschema.Validate).",
+			"item": [
+				{
+					"name": "2.1 [Denied] mcp-acl-list rejects unknown param (additionalProperties: false)",
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: {{addPropsDeniedProxyId}}\nspec:\n  displayName: AdditionalProperties Denied Test\n  version: v1.0\n  context: /addpropsdenied\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: http://mcp-server-backend:3001/mcp\n  policies:\n    - name: mcp-acl-list\n      version: v1\n      params:\n        tools:\n          mode: allow\n        unknownExtraParam: \"should-be-rejected\"\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies"
+							]
+						},
+						"description": "mcp-acl-list's policy-definition.yaml sets `additionalProperties: false` at the top level of `parameters` (mcp-auth and mcp-authz used to as well, but were both switched to `true` \u2014 see 2.3), so 'unknownExtraParam' should fail gojsonschema validation and the deploy should be rejected before it is ever persisted. No cleanup needed \u2014 nothing gets created."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 400 (rejected)', function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"pm.test('Error response reports failure', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status).to.eql('error');",
+									"});",
+									"pm.test('Error mentions the unrecognized property', function () {",
+									"    var body = pm.response.text().toLowerCase();",
+									"    pm.expect(body).to.satisfy(function (t) {",
+									"        return t.includes('additional') || t.includes('not allowed') || t.includes('unknownextraparam');",
+									"    });",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "2.2 [Allowed] cors silently accepts unknown param (additionalProperties unset)",
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: {{addPropsAllowedProxyId}}\nspec:\n  displayName: AdditionalProperties Allowed Test\n  version: v1.0\n  context: /addpropsallowed\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: http://mcp-server-backend:3001/mcp\n  policies:\n    - name: cors\n      version: v1\n      params:\n        allowedOrigins:\n          - \"http://example.com\"\n        unknownExtraParam: \"silently-accepted\"\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies"
+							]
+						},
+						"description": "cors's policy-definition.yaml never sets `additionalProperties` on its top-level `parameters` object, so it defaults to true (allowed) per JSON Schema semantics. 'unknownExtraParam' passes validation and the deploy succeeds despite being unrecognized by the policy."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201 (accepted despite unknown param)', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"pm.test('Deploy reported success', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status.state).to.eql('deployed');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "2.3 [Allowed] mcp-auth now silently accepts unknown param (additionalProperties changed to true)",
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: {{mcpAuthAllowedProxyId}}\nspec:\n  displayName: MCP Auth AdditionalProperties Now Allowed Test\n  version: v1.0\n  context: /mcpauthallowed\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: http://mcp-server-backend:3001/mcp\n  policies:\n    - name: mcp-auth\n      version: v1\n      params:\n        issuers:\n          - mock-jwks\n        unknownExtraParam: \"silently-accepted\"\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies"
+							]
+						},
+						"description": "mcp-auth's top-level `parameters.additionalProperties` was changed from `false` to `true` (see gateway-controllers commit 44610a1 / 7079679 on the mcp branch), so it now behaves like cors: an unrecognized param no longer blocks deploy. This test locks in that intentional behavior change so a future revert is caught."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201 (accepted despite unknown param)', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"pm.test('Deploy reported success', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status.state).to.eql('deployed');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "2.4 Cleanup - Delete cors test proxy",
+					"request": {
+						"method": "DELETE",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [],
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies/{{addPropsAllowedProxyId}}",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies",
+								"{{addPropsAllowedProxyId}}"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Deleted (200 or 204)', function () {",
+									"    pm.expect([200, 204]).to.include(pm.response.code);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "2.5 Cleanup - Delete mcp-auth allowed test proxy",
+					"request": {
+						"method": "DELETE",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [],
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies/{{mcpAuthAllowedProxyId}}",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies",
+								"{{mcpAuthAllowedProxyId}}"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Deleted (200 or 204)', function () {",
+									"    pm.expect([200, 204]).to.include(pm.response.code);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "3 - Real-World ngrok + Asgardeo Test",
+			"description": "Validates the mcp-auth port-handling fixes against a real ngrok tunnel + real Asgardeo tenant + real (Choreo-hosted) MCP server \u2014 the exact scenario from wso2-enterprise/wso2-apim-internal#19345, where gatewayHost was set to an ngrok domain (no port) and the gateway generated a wrong protected-resource-metadata URL (localhost, then a spurious :8443) instead of the real ngrok host with no port at all.\n\nPrerequisites:\n1. Start the gateway from the root docker-compose.yaml (NOT the IT stack): `docker compose up -d gateway-controller gateway-runtime`, from a build that includes the dev-policies/mcp-auth fix.\n2. `configs/config.toml` must have `policy_configurations.mcpauth_v1.gatewayhost` (lowercase!) set to your ngrok domain, and `policy_configurations.jwtauth_v1.keymanagers` pointing at your real Asgardeo tenant.\n3. `ngrok http https://localhost:8443` running, with `ngrokHost` below matching its printed domain.\n4. Set `realAdminPass` to the password scripts/setup.sh printed for your local gateway-controller.\n\nRun 3.1 then 3.2 to prove the fix; run 3.3 to clean up. Connecting an actual MCP client (e.g. Claude) to `https://{{ngrokHost}}{{realMcpProxyContext}}/mcp` is the final step, done outside Postman.",
+			"item": [
+				{
+					"name": "3.1 Deploy MCP Proxy (real Choreo upstream, real Asgardeo issuer)",
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{realAdminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{realAdminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: {{realMcpProxyId}}\nspec:\n  displayName: Order Status MCP Server\n  version: v1.0\n  context: {{realMcpProxyContext}}\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: {{realMcpUpstreamUrl}}\n  policies:\n    - name: mcp-auth\n      version: v1\n      params:\n        issuers:\n          - PrimaryIDP\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{realControllerBaseUrl}}/mcp-proxies",
+							"host": [
+								"{{realControllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies"
+							]
+						},
+						"description": "Deploys against the LOCAL controller (localhost:9090) \u2014 the gateway itself isn't exposed via ngrok for management, only its data-plane router (8443) is."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"pm.test('Deploy reported success', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status.state).to.eql('deployed');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "3.2 Get Protected Resource Metadata via ngrok (no port, real Asgardeo issuer)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "https://{{ngrokHost}}{{realMcpProxyContext}}/.well-known/oauth-protected-resource",
+							"protocol": "https",
+							"host": [
+								"{{ngrokHost}}"
+							],
+							"path": [
+								"{{realMcpProxyContext}}",
+								".well-known",
+								"oauth-protected-resource"
+							]
+						},
+						"description": "The fixes under test: (1) gatewayhost (lowercase) is actually picked up from config.toml instead of silently falling back to 'localhost'; (2) an Authority with no port (ngrok's public side is always implicit standard HTTPS/443) maps to the scheme's real standard port, not the gateway's internal 8443 \u2014 so no port is appended at all."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('resource is the ngrok host with NO port', function () {",
+									"    var json = pm.response.json();",
+									"    var expected = 'https://' + pm.collectionVariables.get('ngrokHost') + pm.collectionVariables.get('realMcpProxyContext') + '/mcp';",
+									"    pm.expect(json.resource).to.eql(expected);",
+									"});",
+									"pm.test('authorization_servers points at the real Asgardeo tenant, not the gateway', function () {",
+									"    var json = pm.response.json();",
+									"    var expectedIssuer = 'https://api.asgardeo.io/t/' + pm.collectionVariables.get('asgardeoTenant') + '/oauth2/token';",
+									"    pm.expect(json.authorization_servers).to.include(expectedIssuer);",
+									"    pm.expect(json.authorization_servers.join(',')).to.not.include('localhost');",
+									"    pm.expect(json.authorization_servers.join(',')).to.not.include(pm.collectionVariables.get('ngrokHost'));",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "3.3 Cleanup - Delete MCP Proxy",
+					"request": {
+						"method": "DELETE",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{realAdminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{realAdminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [],
+						"url": {
+							"raw": "{{realControllerBaseUrl}}/mcp-proxies/{{realMcpProxyId}}",
+							"host": [
+								"{{realControllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies",
+								"{{realMcpProxyId}}"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Deleted (200 or 204)', function () {",
+									"    pm.expect([200, 204]).to.include(pm.response.code);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "4 - gatewayUrl Precedence (E2E)",
+			"description": "Proves gatewayUrl's precedence over BOTH gatewayHost and vhost against a REAL config.toml resolution pipeline (config.toml -> ConfigResolver -> materialized systemParameters), not just the unit tests that construct params maps directly and can't catch a real TOML-parsing/casing mistake \u2014 see gateway-controllers commit 44610a1 and mcp_policies.feature's gatewayurl precedence scenarios.\n\nRuns on the SAME default IT stack as folders 1/2/5/6 \u2014 test-config.toml permanently sets BOTH `policy_configurations.mcpauth_v1.gatewayhost = \"mcp-e2e-gatewayhost.example.com:9443\"` AND `.gatewayurl = \"https://mcp-e2e-gatewayurl.example.com:7777\"` at once, so no special override compose/config is needed anymore.\n\nRun 4.1 -> 4.2 -> 4.3 to prove gatewayUrl wins over both the vhost the proxy is deployed with AND the gatewayHost also configured for mcp-auth's own 401. Run 4.4 -> 4.5 -> 4.6 to prove the SAME precedence holds for mcp-authz's 403 insufficient_scope response, not just mcp-auth's 401 \u2014 mcp-authz independently reads gatewayUrl via shared metadata and builds its own WWW-Authenticate header. Run 4.7 to clean up.",
+			"item": [
+				{
+					"name": "4.1 Deploy MCP Proxy (vhost set, mcp-auth, no gatewayUrl override in params)",
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: {{precedenceProxyId}}\nspec:\n  displayName: GatewayUrl Precedence Test\n  version: v1.0\n  context: {{precedenceProxyContext}}\n  vhost: {{precedenceVhost}}\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: http://mcp-server-backend:3001/mcp\n  policies:\n    - name: mcp-auth\n      version: v1\n      params:\n        issuers:\n          - mock-jwks\n    - name: mcp-authz\n      version: v1\n      params:\n        tools:\n          - name: add\n            scopes:\n              anyOf:\n                - {{mcpAuthzRequiredScope}}\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies"
+							]
+						},
+						"description": "vhost is deliberately set (and must route real traffic, verified separately with `Host: {{precedenceVhost}}`) so 4.2/4.3 prove gatewayUrl wins over an ACTUALLY-ROUTING vhost, not just an unused config field. gatewayUrl/gatewayHost are deliberately NOT set in params here \u2014 they come entirely from config.toml's systemParameters, which is the whole point: this proves the live resolution pipeline, not a hand-built params map. mcp-authz is also attached (scope-gated on the \"add\" tool) so 4.6 can prove mcp-authz's own WWW-Authenticate generation also honors gatewayUrl precedence, not just mcp-auth's."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"pm.test('Deploy reported success', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status.state).to.eql('deployed');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4.2 Initialize - No Token via vhost (expect gatewayUrl in WWW-Authenticate, not vhost or gatewayHost)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json, text/event-stream"
+							},
+							{
+								"key": "Host",
+								"value": "{{precedenceVhost}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": { \"roots\": { \"listChanged\": true } },\n    \"clientInfo\": { \"name\": \"postman-mcp-client\", \"version\": \"1.0.0\" }\n  }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{routerBaseUrl}}{{precedenceProxyContext}}/mcp",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{precedenceProxyContext}}",
+								"mcp"
+							]
+						},
+						"description": "The explicit Host header is what makes Envoy match this request to the {{precedenceVhost}}-scoped route at all \u2014 without it (plain routerBaseUrl with its default Host: localhost) this 404s, proving the vhost route is real and gatewayUrl genuinely overrides live routing, not just an unused config value."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 401', function () {",
+									"    pm.response.to.have.status(401);",
+									"});",
+									"pm.test('WWW-Authenticate uses gatewayUrl verbatim, not vhost or gatewayHost', function () {",
+									"    var header = pm.response.headers.get('WWW-Authenticate');",
+									"    var expected = 'resource_metadata=\"' + pm.collectionVariables.get('configuredGatewayUrl') + pm.collectionVariables.get('precedenceProxyContext') + '/.well-known/oauth-protected-resource\"';",
+									"    pm.expect(header).to.include(expected);",
+									"    pm.expect(header).to.not.include(pm.collectionVariables.get('precedenceVhost'));",
+									"    pm.expect(header).to.not.include(pm.collectionVariables.get('configuredGatewayHost'));",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4.3 Get Protected Resource Metadata via vhost (expect gatewayUrl in resource field)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Host",
+								"value": "{{precedenceVhost}}"
+							}
+						],
+						"url": {
+							"raw": "{{routerBaseUrl}}{{precedenceProxyContext}}/.well-known/oauth-protected-resource",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{precedenceProxyContext}}",
+								".well-known",
+								"oauth-protected-resource"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('resource is exactly gatewayUrl + context + /mcp', function () {",
+									"    var json = pm.response.json();",
+									"    var expected = pm.collectionVariables.get('configuredGatewayUrl') + pm.collectionVariables.get('precedenceProxyContext') + '/mcp';",
+									"    pm.expect(json.resource).to.eql(expected);",
+									"});",
+									"pm.test('authorization_servers is unaffected \u2014 still the mock-jwks issuer', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.authorization_servers).to.include(pm.collectionVariables.get('mockJwksIssuer'));",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4.4 Get JWT Token (no scope) from Mock JWKS",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{jwksBaseUrl}}/token?issuer={{mockJwksIssuer}}",
+							"host": [
+								"{{jwksBaseUrl}}"
+							],
+							"path": [
+								"token"
+							],
+							"query": [
+								{
+									"key": "issuer",
+									"value": "{{mockJwksIssuer}}"
+								}
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.collectionVariables.set('jwtToken', pm.response.text().trim());"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4.5 Initialize via vhost WITH token (expect 200 \u2014 mcp-authz doesn't gate initialize)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json, text/event-stream"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwtToken}}"
+							},
+							{
+								"key": "Host",
+								"value": "{{precedenceVhost}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": { \"roots\": { \"listChanged\": true } },\n    \"clientInfo\": { \"name\": \"postman-mcp-client\", \"version\": \"1.0.0\" }\n  }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{routerBaseUrl}}{{precedenceProxyContext}}/mcp",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{precedenceProxyContext}}",
+								"mcp"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const sessionId = pm.response.headers.get('Mcp-Session-Id');",
+									"if (sessionId) {",
+									"    pm.collectionVariables.set('precedenceSessionId', sessionId);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4.6 tools/call add WITHOUT scope via vhost (expect 403, WWW-Authenticate uses gatewayUrl \u2014 proves mcp-authz's own header generation, not just mcp-auth's)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json, text/event-stream"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwtToken}}"
+							},
+							{
+								"key": "Mcp-Session-Id",
+								"value": "{{precedenceSessionId}}"
+							},
+							{
+								"key": "Host",
+								"value": "{{precedenceVhost}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"add\",\n    \"arguments\": { \"a\": 1, \"b\": 2 }\n  }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{routerBaseUrl}}{{precedenceProxyContext}}/mcp",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{precedenceProxyContext}}",
+								"mcp"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 403', function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"pm.test('mcp-authz WWW-Authenticate uses gatewayUrl verbatim, not vhost or gatewayHost', function () {",
+									"    var header = pm.response.headers.get('WWW-Authenticate');",
+									"    var expected = 'resource_metadata=\"' + pm.collectionVariables.get('configuredGatewayUrl') + pm.collectionVariables.get('precedenceProxyContext') + '/.well-known/oauth-protected-resource\"';",
+									"    pm.expect(header).to.include(expected);",
+									"    pm.expect(header).to.include('insufficient_scope');",
+									"    pm.expect(header).to.not.include(pm.collectionVariables.get('precedenceVhost'));",
+									"    pm.expect(header).to.not.include(pm.collectionVariables.get('configuredGatewayHost'));",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4.7 Cleanup - Delete MCP Proxy",
+					"request": {
+						"method": "DELETE",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [],
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies/{{precedenceProxyId}}",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies",
+								"{{precedenceProxyId}}"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Deleted (200 or 204)', function () {",
+									"    pm.expect([200, 204]).to.include(pm.response.code);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "5 - MCP Authz Functional Test",
+			"description": "End-to-end test for the `mcp-authz` policy, which runs after `mcp-auth` in the chain and authorizes individual MCP tools/resources/prompts/methods by required scope/claim. Uses the `scopes` (allOf/anyOf) form, not the deprecated `requiredScopes`. Requires the same default IT stack as folder 1.",
+			"item": [
+				{
+					"name": "5.1 Deploy MCP Proxy (mcp-auth + mcp-authz)",
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: {{mcpAuthzProxyId}}\nspec:\n  displayName: MCP Authz Postman Test\n  version: v1.0\n  context: {{mcpAuthzContext}}\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: http://mcp-server-backend:3001/mcp\n  policies:\n    - name: mcp-auth\n      version: v1\n      params:\n        issuers:\n          - mock-jwks\n    - name: mcp-authz\n      version: v1\n      params:\n        tools:\n          - name: \"add\"\n            scopes:\n              anyOf:\n                - \"{{mcpAuthzRequiredScope}}\"\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies"
+							]
+						},
+						"description": "mcp-authz must come after mcp-auth in the policy chain \u2014 it reads the AuthContext mcp-auth already populated rather than authenticating on its own. Only the 'add' tool is gated; other tools/resources/prompts/methods are ungoverned (no rule matches them)."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"pm.test('Deploy reported success', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status.state).to.eql('deployed');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5.2 Get JWT Token (no scope) from Mock JWKS",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{jwksBaseUrl}}/token?issuer={{mockJwksIssuer}}",
+							"host": [
+								"{{jwksBaseUrl}}"
+							],
+							"path": [
+								"token"
+							],
+							"query": [
+								{
+									"key": "issuer",
+									"value": "{{mockJwksIssuer}}"
+								}
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.collectionVariables.set('jwtToken', pm.response.text().trim());"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5.3 Initialize with unscoped token (expect 200 \u2014 mcp-authz doesn't gate initialize)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json, text/event-stream"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwtToken}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": { \"roots\": { \"listChanged\": true } },\n    \"clientInfo\": { \"name\": \"postman-mcp-client\", \"version\": \"1.0.0\" }\n  }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{routerBaseUrl}}{{mcpAuthzContext}}/mcp",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{mcpAuthzContext}}",
+								"mcp"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const sessionId = pm.response.headers.get('Mcp-Session-Id');",
+									"if (sessionId) {",
+									"    pm.collectionVariables.set('mcpAuthzSessionId', sessionId);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5.4 tools/call add WITHOUT required scope (expect 403)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json, text/event-stream"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwtToken}}"
+							},
+							{
+								"key": "Mcp-Session-Id",
+								"value": "{{mcpAuthzSessionId}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"add\",\n    \"arguments\": { \"a\": 40, \"b\": 60 }\n  }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{routerBaseUrl}}{{mcpAuthzContext}}/mcp",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{mcpAuthzContext}}",
+								"mcp"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 403 (Forbidden)', function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"pm.test('WWW-Authenticate names the missing scope', function () {",
+									"    var header = pm.response.headers.get('WWW-Authenticate');",
+									"    pm.expect(header).to.not.be.null;",
+									"    pm.expect(header).to.include(pm.collectionVariables.get('mcpAuthzRequiredScope'));",
+									"    pm.expect(header).to.include('insufficient_scope');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5.5 Get JWT Token WITH required scope",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{jwksBaseUrl}}/token?issuer={{mockJwksIssuer}}&scope={{mcpAuthzRequiredScope}}",
+							"host": [
+								"{{jwksBaseUrl}}"
+							],
+							"path": [
+								"token"
+							],
+							"query": [
+								{
+									"key": "issuer",
+									"value": "{{mockJwksIssuer}}"
+								},
+								{
+									"key": "scope",
+									"value": "{{mcpAuthzRequiredScope}}"
+								}
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.collectionVariables.set('jwtToken', pm.response.text().trim());"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5.6 tools/call add WITH required scope (expect 200)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json, text/event-stream"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwtToken}}"
+							},
+							{
+								"key": "Mcp-Session-Id",
+								"value": "{{mcpAuthzSessionId}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"add\",\n    \"arguments\": { \"a\": 40, \"b\": 60 }\n  }\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{routerBaseUrl}}{{mcpAuthzContext}}/mcp",
+							"host": [
+								"{{routerBaseUrl}}"
+							],
+							"path": [
+								"{{mcpAuthzContext}}",
+								"mcp"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 with the required scope', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5.7 Cleanup - Delete MCP Proxy",
+					"request": {
+						"method": "DELETE",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [],
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies/{{mcpAuthzProxyId}}",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies",
+								"{{mcpAuthzProxyId}}"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Deleted (200 or 204)', function () {",
+									"    pm.expect([200, 204]).to.include(pm.response.code);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "6 - MCP Authz Policy Params Validation (additionalProperties)",
+			"description": "mcp-authz's top-level `parameters.additionalProperties` was also switched from `false` to `true` (see gateway-controllers commit 7079679 on the mcp branch), same as mcp-auth in folder 2.3. This locks in that intentional behavior change for mcp-authz specifically.",
+			"item": [
+				{
+					"name": "6.1 [Allowed] mcp-authz silently accepts unknown param (additionalProperties changed to true)",
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/yaml"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: Mcp\nmetadata:\n  name: {{mcpAuthzAllowedProxyId}}\nspec:\n  displayName: MCP Authz AdditionalProperties Now Allowed Test\n  version: v1.0\n  context: /mcpauthzallowed\n  specVersion: \"2025-06-18\"\n  upstream:\n    url: http://mcp-server-backend:3001/mcp\n  policies:\n    - name: mcp-auth\n      version: v1\n      params:\n        issuers:\n          - mock-jwks\n    - name: mcp-authz\n      version: v1\n      params:\n        tools:\n          - name: \"*\"\n            scopes:\n              anyOf:\n                - \"mcp:tools:invoke\"\n        unknownExtraParam: \"silently-accepted\"\n  tools: []\n  resources: []\n  prompts: []\n",
+							"options": {
+								"raw": {
+									"language": "yaml"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies"
+							]
+						},
+						"description": "mcp-authz requires at least one of tools/resources/prompts/methods to be present (anyOf), so a valid minimal rule set is included alongside the unrecognized top-level param."
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201 (accepted despite unknown param)', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"pm.test('Deploy reported success', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status.state).to.eql('deployed');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "6.2 Cleanup - Delete mcp-authz allowed test proxy",
+					"request": {
+						"method": "DELETE",
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{adminUser}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{adminPass}}",
+									"type": "string"
+								}
+							]
+						},
+						"header": [],
+						"url": {
+							"raw": "{{controllerBaseUrl}}/mcp-proxies/{{mcpAuthzAllowedProxyId}}",
+							"host": [
+								"{{controllerBaseUrl}}"
+							],
+							"path": [
+								"mcp-proxies",
+								"{{mcpAuthzAllowedProxyId}}"
+							]
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Deleted (200 or 204)', function () {",
+									"    pm.expect([200, 204]).to.include(pm.response.code);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}

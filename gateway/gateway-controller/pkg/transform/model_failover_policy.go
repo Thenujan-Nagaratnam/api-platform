@@ -62,14 +62,18 @@ type modelFailoverTarget struct {
 	// loopback route from another's. Any author-supplied value is overwritten
 	// by buildRouteFailoverFromPolicy.
 	BasePath string `json:"basePath,omitempty"`
-	// ClusterName is injected by the controller (never authored): the real
-	// Envoy cluster this member dials. It is what the policy compares
-	// UpstreamRequestContext.RouteCluster against when an attempt did NOT come
-	// through the chain's aggregate — the suspended-primary bypass dispatches
-	// straight onto a fallback's own cluster, so Envoy reports that cluster's
-	// name and the aggregate-name match finds nothing. Any author-supplied
-	// value is overwritten by buildRouteFailoverFromPolicy.
+	// ClusterName is injected by the controller (never authored): this
+	// member's own leaf cluster. The policy matches the leaf Envoy actually
+	// dialed (UpstreamRequestContext.MemberClusterName) against it to tell
+	// which member an attempt is; it is never a dispatch target. Any
+	// author-supplied value is overwritten by buildRouteFailoverFromPolicy.
 	ClusterName string `json:"clusterName,omitempty"`
+	// SuffixCluster is injected by the controller (never authored), for
+	// fallback members only: the name of a composite cluster covering this
+	// member and every member after it (xds.SuffixCompositeClusterName). The
+	// suspended-prefix bypass dispatches here, so a failure of THIS member can
+	// still retry into the remaining chain within the same request.
+	SuffixCluster string `json:"suffixCluster,omitempty"`
 }
 
 // modelFailoverTargetEntry embeds modelFailoverTarget (not nested under a
@@ -108,25 +112,35 @@ type modelFailoverParams struct {
 	// eject/avoid a host on its own timeline, fighting the policy's suspend/
 	// resume decisions rather than reflecting them. Omitted/<=0 means 1.
 	SuspendAfterFailures int `json:"suspendAfterFailures,omitempty"`
-	// MaxSuspendDuration caps the policy's own exponential backoff (each
-	// consecutive suspend-then-immediately-refail cycle for the same target
-	// doubles the suspend window), in seconds. Omitted/<=0 defaults to 8x
-	// SuspendDuration.
-	MaxSuspendDuration int `json:"maxSuspendDuration,omitempty"`
 	// PerTryTimeoutMs bounds each individual chain-member attempt (design
 	// §9.2), in milliseconds. Omitted/0 leaves Envoy's own default (the
 	// route's overall timeout) in effect. Pure xDS config — never round-
 	// tripped to the runtime policy's own wire params.
 	PerTryTimeoutMs int `json:"perTryTimeoutMs,omitempty"`
-	// RetryBackoffBaseMs/RetryBackoffMaxMs configure Envoy's exponential retry
-	// backoff between attempts (design §9), in milliseconds. Both omitted/0
-	// leaves Envoy's own defaults (25ms base, 10x base max).
-	RetryBackoffBaseMs int `json:"retryBackoffBaseMs,omitempty"`
-	RetryBackoffMaxMs  int `json:"retryBackoffMaxMs,omitempty"`
-	// MaxConcurrentRetries bounds concurrent retry traffic per leaf cluster
-	// (design §9.3 retry resource protection). Omitted/0 leaves Envoy's own
-	// default (3).
-	MaxConcurrentRetries int `json:"maxConcurrentRetries,omitempty"`
+
+	// FailureRateThresholdPercent (1-100) also suspends a target once that
+	// share of its attempts over the policy's fixed 60s rolling window failed.
+	// Omitted/0 disables the rule. LatencyThresholdMs likewise suspends once
+	// the window's p95 response time reaches it. Both are passed through to
+	// the runtime policy, which owns the window, sample minimum and half-open
+	// recovery as fixed internal defaults rather than author-facing knobs.
+	FailureRateThresholdPercent int `json:"failureRateThresholdPercent,omitempty"`
+	LatencyThresholdMs          int `json:"latencyThresholdMs,omitempty"`
+
+	// Note: this struct deliberately has NO requestModel field. requestModel
+	// (where the model lives in the request — payload JSONPath, header,
+	// queryParam, or pathParam) is never author-configured on this policy —
+	// like every other LLM-aware policy (e.g. model-round-robin), it's
+	// extracted from the LLM provider template and merged into this policy's
+	// raw params automatically by llm_transformer.go's buildTemplateParams/
+	// mergeParams, BEFORE parseModelFailoverParams ever sees `raw` — the same
+	// place primaryProvider/operationPath are injected rather than authored.
+	// It round-trips untouched: parseModelFailoverParams doesn't declare the
+	// field so json.Unmarshal silently ignores it in `raw`, and
+	// applyModelFailoverPolicyToRoutes's key-wise instance.Params merge never
+	// overwrites a key `expandedParams` doesn't carry. The runtime policy
+	// (gateway/dev-policies/model-failover) is what actually parses and uses
+	// it from its own raw params map.
 }
 
 // parseModelFailoverParams parses raw policy params and validates that every
@@ -234,31 +248,14 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 	if params.SuspendAfterFailures < 0 {
 		return nil, fmt.Errorf("model-failover: suspendAfterFailures must not be negative")
 	}
-	if params.SuspendAfterFailures > 1 {
-		return nil, fmt.Errorf("model-failover: suspendAfterFailures greater than 1 is not supported with deterministic composite-chain progression")
-	}
-	if params.MaxSuspendDuration < 0 {
-		return nil, fmt.Errorf("model-failover: maxSuspendDuration must not be negative")
-	}
-
 	if params.PerTryTimeoutMs < 0 {
 		return nil, fmt.Errorf("model-failover: perTryTimeoutMs must not be negative")
 	}
-	if params.RetryBackoffBaseMs < 0 {
-		return nil, fmt.Errorf("model-failover: retryBackoffBaseMs must not be negative")
+	if params.FailureRateThresholdPercent < 0 || params.FailureRateThresholdPercent > 100 {
+		return nil, fmt.Errorf("model-failover: failureRateThresholdPercent must be between 0 and 100")
 	}
-	if params.RetryBackoffMaxMs < 0 {
-		return nil, fmt.Errorf("model-failover: retryBackoffMaxMs must not be negative")
-	}
-	if params.RetryBackoffBaseMs > 0 && params.RetryBackoffMaxMs > 0 && params.RetryBackoffMaxMs < params.RetryBackoffBaseMs {
-		return nil, fmt.Errorf("model-failover: retryBackoffMaxMs (%d) must be >= retryBackoffBaseMs (%d)",
-			params.RetryBackoffMaxMs, params.RetryBackoffBaseMs)
-	}
-	if params.RetryBackoffMaxMs > 0 && params.RetryBackoffBaseMs <= 0 {
-		return nil, fmt.Errorf("model-failover: retryBackoffMaxMs requires retryBackoffBaseMs to also be set")
-	}
-	if params.MaxConcurrentRetries < 0 {
-		return nil, fmt.Errorf("model-failover: maxConcurrentRetries must not be negative")
+	if params.LatencyThresholdMs < 0 {
+		return nil, fmt.Errorf("model-failover: latencyThresholdMs must not be negative")
 	}
 
 	return &params, nil
@@ -280,13 +277,14 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 	}
 
 	expanded := &modelFailoverParams{
-		SuspendDuration:      params.SuspendDuration,
-		StatusCodes:          params.StatusCodes,
-		PrimaryProvider:      primaryProviderID,
-		OperationPath:        r.OperationPath,
-		SuspendAfterFailures: params.SuspendAfterFailures,
-		MaxSuspendDuration:   params.MaxSuspendDuration,
-		Targets:              make([]modelFailoverTargetEntry, len(params.Targets)),
+		SuspendDuration:             params.SuspendDuration,
+		StatusCodes:                 params.StatusCodes,
+		PrimaryProvider:             primaryProviderID,
+		OperationPath:               r.OperationPath,
+		SuspendAfterFailures:        params.SuspendAfterFailures,
+		FailureRateThresholdPercent: params.FailureRateThresholdPercent,
+		LatencyThresholdMs:          params.LatencyThresholdMs,
+		Targets:                     make([]modelFailoverTargetEntry, len(params.Targets)),
 	}
 	targets := make([]models.RouteFailoverTarget, 0, len(params.Targets))
 	for i, entry := range params.Targets {
@@ -304,6 +302,7 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 			fallbacks = append(fallbacks, fbEntry)
 			fb.BasePath = fbEntry.Upstream.BasePath
 			fb.ClusterName = xds.FailoverLeafClusterName(routeKey, i, fallbackIndex+1)
+			fb.SuffixCluster = xds.SuffixCompositeClusterName(routeKey, i, fallbackIndex+1)
 			expandedFallbacks = append(expandedFallbacks, fb)
 		}
 		targets = append(targets, models.RouteFailoverTarget{
@@ -352,16 +351,12 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 	}
 
 	return &models.RouteFailover{
-		SuspendDurationSeconds:    params.SuspendDuration,
-		Targets:                   targets,
-		RetryOn:                   retryOn,
-		RetriableStatusCodes:      retriableStatusCodes,
-		SuspendAfterFailures:      params.SuspendAfterFailures,
-		MaxSuspendDurationSeconds: params.MaxSuspendDuration,
-		PerTryTimeoutMs:           params.PerTryTimeoutMs,
-		RetryBackoffBaseMs:        params.RetryBackoffBaseMs,
-		RetryBackoffMaxMs:         params.RetryBackoffMaxMs,
-		MaxConcurrentRetries:      params.MaxConcurrentRetries,
+		SuspendDurationSeconds: params.SuspendDuration,
+		Targets:                targets,
+		RetryOn:                retryOn,
+		RetriableStatusCodes:   retriableStatusCodes,
+		SuspendAfterFailures:   params.SuspendAfterFailures,
+		PerTryTimeoutMs:        params.PerTryTimeoutMs,
 	}, expanded, nil
 }
 
