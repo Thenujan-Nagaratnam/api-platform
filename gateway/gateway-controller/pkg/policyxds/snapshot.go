@@ -314,6 +314,20 @@ func (t *Translator) TranslateRuntimeConfigs(rdcs []*models.RuntimeDeployConfig)
 						ClusterName: aggName,
 						BasePath:    tgt.Target.Upstream.BasePath,
 					}
+					// The suffix composite covering [this fallback, end)
+					// needs the same explicit registration: model-failover's
+					// suspended-prefix bypass returns it as UpstreamName (see
+					// xds.SuffixCompositeClusterName). Its first attempt
+					// dials this same fallback, so it shares its BasePath.
+					// Leaf clusters are never an UpstreamName, so they are
+					// not registered.
+					for j, fb := range tgt.Fallbacks {
+						suffixName := xds.SuffixCompositeClusterName(routeKey, i, j+1)
+						upstreamDefTargets[suffixName] = policyenginev1.UpstreamInfo{
+							ClusterName: suffixName,
+							BasePath:    fb.Upstream.BasePath,
+						}
+					}
 				}
 			}
 

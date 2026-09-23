@@ -45,7 +45,11 @@ expected to pass against the released modules.
   endpoint plus a small control API:
   - `POST /control/arm-failure` `{"count": N, "status": 500}` — the next N
     calls to the completion endpoint return that status instead of 200.
-  - `POST /control/reset` — clears armed failures and call history.
+  - `POST /control/arm-delay` `{"count": N, "delayMs": 500}` (mock-openai
+    only) — the next N calls wait that long before responding, to simulate a
+    slow-but-responding upstream for the latency rule. Combines with
+    `arm-failure`.
+  - `POST /control/reset` — clears armed failures, delays and call history.
   - `GET /control/history` — `{"callCount": N, "history": [...]}`.
   - Every real response also carries `X-Mock-Backend` (`openai`/`anthropic`),
     `X-Mock-Received-Auth`, and `X-Mock-Received-Model` headers, so a live
@@ -99,7 +103,20 @@ run headless: `newman run postman/llm-failover-e2e.postman_collection.json
 `LlmProxy` this collection needs (idempotent — accepts 201 or 409 on repeat
 runs), then each numbered folder exercises one flow. Run the whole collection
 top to bottom; folder 4 (suspension expiry) has a ~6s in-script busy-wait to
-clear the 5s `suspendDuration` configured on `failover-default`.
+clear the 5s `suspendDuration` configured on `failover-default`, and 6.1
+(11s) and 8.5 (6s) wait out the suspensions folders 5 and 7 leave on that
+same proxy. Those waits matter: once every member of a chain is suspended,
+the policy now answers `503 failover_exhausted` without dialing anything, so
+stale suspension from an earlier folder fails a later one outright. 6.1 is
+11s rather than 6s because the backoff streak stays hot for window + base
+(10s here) — a failure inside it doubles the next window.
+
+Folders 12–15 each get their own proxy (`failover-circuit-rate`,
+`failover-circuit-latency`, `failover-circuit-halfopen`,
+`failover-circuit-chain3`), and
+`failover-circuit-probes` backs the concurrency check `run-failover-e2e.sh`
+runs with parallel curls after newman — Postman runs requests one at a time,
+so it can't prove probe concurrency itself.
 
 Setup registers three proxies, each isolating one concern so folders never
 share suspension state or interfere with each other's assertions:
@@ -114,6 +131,9 @@ it exists purely to give `upstreamDefinition` a physically distinguishable
 dial target that's provably *not* where `provider: anthropic-upstream` alone
 would have routed; its own auth/transformer are never attached or used.
 
+`run-failover-e2e.sh` starts the mocks, runs newman, then runs the probe
+concurrency check; it exits non-zero if either fails.
+
 ## What each folder proves
 
 | Folder | Proves |
@@ -127,6 +147,11 @@ would have routed; its own auth/transformer are never attached or used.
 | 7. Streaming | A failover-driven attempt with `"stream": true` gets a real Anthropic SSE response, translated to OpenAI `chat.completion.chunk` events |
 | 8. Configurable statusCodes | A `statusCodes: [429]`-configured proxy fails over on 429; the default (`5xx`-only) proxy does not — same primary response, different configured trigger set |
 | 9. upstreamDefinition Overrides Dial Target | A fallback with `provider: anthropic-upstream, upstreamDefinition: anthropic-mirror` dials mock-**openai**'s server (proven via `X-Mock-Backend: openai`) while still carrying `anthropic-upstream`'s own credential (`X-Mock-Received-Auth` matches `anthropicApiKey`, not the primary's) — and mock-anthropic's real cluster is never touched (`callCount: 0`) |
+| 12. Circuit - Rolling Failure Rate | With `suspendAfterFailures: 100` out of the way, the primary keeps being dialed through 19 failures (the rate rule waits for 20 attempts in its 60s window); the 20th takes the rate to 100%, over `failureRateThresholdPercent: 50`, and the next request skips the primary |
+| 13. Circuit - Latency Percentile | Twenty successful-but-400ms responses put the window's p95 over `latencyThresholdMs: 300`; the next request skips a primary that never returned an error |
+| 14. Circuit - Half-Open Reopen And Close | After the 3s window, one probe reaches the primary; it fails, the circuit reopens with a doubled 6s window and the next request is skipped; after that window one successful probe closes it |
+| 15. Circuit - Three-Member Chain And Exhaustion | Chain `gpt-4o` → Anthropic → `gpt-4o-mini`. With the primary suspended, the request enters at the Anthropic suffix; when Anthropic fails, Envoy still retries on to `gpt-4o-mini` (body rewritten to that model) and the suspended primary is not dialed. With only `gpt-4o-mini` left, its 500 reaches the client. With every member suspended, the policy answers `503 failover_exhausted` locally and neither mock is dialed |
+| Probe concurrency (script) | While half-open, 3 concurrent requests send exactly 1 to the slow, recovering primary and 2 to the fallback; once that probe closes the circuit, 3 concurrent requests all reach the primary |
 
 ## Cleanup
 

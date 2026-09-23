@@ -14,18 +14,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strconv"
-	"time"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
-	matcher "github.com/envoyproxy/go-control-plane/envoy/config/common/matcher/v3"
-	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	compositev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/composite/v3"
-	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
-	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
@@ -43,6 +36,18 @@ func AggregateClusterName(routeKey string, targetIndex int) string {
 func FailoverLeafClusterName(routeKey string, targetIndex, memberIndex int) string {
 	identity := fmt.Sprintf("%s|%d|%d", routeKey, targetIndex, memberIndex)
 	return "failover_leaf_" + shortStableID(identity)
+}
+
+// SuffixCompositeClusterName names a composite cluster covering members
+// [fromMemberIndex, end) of a failover chain — a "chain starting partway
+// through" cluster the downstream policy dispatches to when it has already
+// determined every member before fromMemberIndex is currently suspended
+// (see model-failover's OnRequestBody). fromMemberIndex must be >= 1: the
+// fromMemberIndex==0 suffix is just the chain's own AggregateClusterName,
+// which already exists and needs no separate cluster.
+func SuffixCompositeClusterName(routeKey string, targetIndex, fromMemberIndex int) string {
+	identity := fmt.Sprintf("%s|%d|suffix|%d", routeKey, targetIndex, fromMemberIndex)
+	return "failover_suffix_" + shortStableID(identity)
 }
 
 func shortStableID(value string) string {
@@ -79,114 +84,96 @@ func buildFailoverCompositeClusters(rf *models.RouteFailover, routeKey string, s
 					}
 				}
 			}
-			if err := configureFailoverOutlierDetection(leaf, rf); err != nil {
-				return nil, fmt.Errorf("configure failover leaf %q: %w", leafName, err)
-			}
+			configureFailoverLeafCircuitBreaker(leaf)
 			out = append(out, leaf)
 			compositeEntries = append(compositeEntries, &compositev3.ClusterConfig_ClusterEntry{Name: leafName})
 		}
 
-		compositeAny, err := anypb.New(&compositev3.ClusterConfig{Clusters: compositeEntries})
+		composite, err := buildCompositeCluster(AggregateClusterName(routeKey, targetIndex), compositeEntries)
 		if err != nil {
-			return nil, fmt.Errorf("marshal composite cluster config for %q target %d: %w", routeKey, targetIndex, err)
-		}
-		composite := &cluster.Cluster{
-			Name:     AggregateClusterName(routeKey, targetIndex),
-			LbPolicy: cluster.Cluster_CLUSTER_PROVIDED,
-			ClusterDiscoveryType: &cluster.Cluster_ClusterType{ClusterType: &cluster.Cluster_CustomClusterType{
-				Name:        "envoy.clusters.composite",
-				TypedConfig: compositeAny,
-			}},
-		}
-		if err := attachUpstreamPolicyFilter(composite, constants.UpstreamPolicyEngineClusterName); err != nil {
-			return nil, fmt.Errorf("attach upstream policy filter to composite cluster %q: %w", composite.Name, err)
+			return nil, fmt.Errorf("build composite cluster for %q target %d: %w", routeKey, targetIndex, err)
 		}
 		out = append(out, composite)
+
+		// One suffix composite per non-primary position, each covering
+		// [memberIndex, end) — see SuffixCompositeClusterName's doc comment.
+		// Cheap: every entry is just a reference to an already-built leaf
+		// cluster name, not a duplicated cluster definition, and the count is
+		// linear in chain length, not combinatorial in suspension state.
+		for memberIndex := 1; memberIndex < len(members); memberIndex++ {
+			suffix, err := buildCompositeCluster(SuffixCompositeClusterName(routeKey, targetIndex, memberIndex), compositeEntries[memberIndex:])
+			if err != nil {
+				return nil, fmt.Errorf("build suffix composite cluster for %q target %d from %d: %w", routeKey, targetIndex, memberIndex, err)
+			}
+			out = append(out, suffix)
+		}
 	}
 	return out, nil
 }
 
-func configureFailoverOutlierDetection(c *cluster.Cluster, rf *models.RouteFailover) error {
-	base := time.Duration(rf.SuspendDurationSeconds) * time.Second
-	if base <= 0 {
-		base = 5 * time.Second
-	}
-	max := time.Duration(rf.MaxSuspendDurationSeconds) * time.Second
-	if max <= 0 {
-		max = base * 8
-	}
-	c.OutlierDetection = &cluster.OutlierDetection{
-		Consecutive_5Xx:                        wrapperspb.UInt32(1),
-		EnforcingConsecutive_5Xx:               wrapperspb.UInt32(100),
-		SplitExternalLocalOriginErrors:         true,
-		ConsecutiveLocalOriginFailure:          wrapperspb.UInt32(1),
-		EnforcingConsecutiveLocalOriginFailure: wrapperspb.UInt32(100),
-		BaseEjectionTime:                       durationpb.New(base),
-		MaxEjectionTime:                        durationpb.New(max),
-		MaxEjectionPercent:                     wrapperspb.UInt32(100),
-		AlwaysEjectOneHost:                     wrapperspb.Bool(true),
-	}
-	c.CommonLbConfig = &cluster.Cluster_CommonLbConfig{
-		HealthyPanicThreshold: &typev3.Percent{Value: 0},
-	}
-
-	// design §9.3 retry resource protection: bound concurrent retry traffic
-	// PER LEAF, since a retry storm fans out across whichever leaf the
-	// composite cluster selects next, not the composite cluster itself
-	// (envoy.clusters.aggregate/composite cluster types have no circuit
-	// breaker config of their own). 0/unset leaves CircuitBreakers nil so
-	// Envoy's own default (max_retries: 3) applies — an explicit 0 would mean
-	// "no retries allowed", which is not what an omitted config means.
-	if rf.MaxConcurrentRetries > 0 {
-		c.CircuitBreakers = &cluster.CircuitBreakers{
-			Thresholds: []*cluster.CircuitBreakers_Thresholds{{
-				MaxRetries: wrapperspb.UInt32(uint32(rf.MaxConcurrentRetries)),
-			}},
-		}
-	}
-
-	if len(rf.RetriableStatusCodes) == 0 {
-		return nil
-	}
-	protocolAny, ok := c.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey]
-	var opts httpv3.HttpProtocolOptions
-	if ok {
-		if err := protocolAny.UnmarshalTo(&opts); err != nil {
-			return fmt.Errorf("unmarshal HTTP protocol options: %w", err)
-		}
-	} else {
-		opts.UpstreamProtocolOptions = &httpv3.HttpProtocolOptions_ExplicitHttpConfig_{
-			ExplicitHttpConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig{
-				ProtocolConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{},
-			},
-		}
-	}
-	opts.OutlierDetection = &httpv3.HttpProtocolOptions_OutlierDetection{ErrorMatcher: statusCodeErrorMatcher(rf.RetriableStatusCodes)}
-	updated, err := anypb.New(&opts)
+// buildCompositeCluster wraps clusterEntries (leaf cluster name references,
+// in order) into one envoy.clusters.composite cluster, with the upstream
+// policy filter attached exactly as every failover composite needs (per
+// composite entry point, not per leaf — see attachUpstreamPolicyFilter's own
+// call sites for why this must be on every composite, full-chain or suffix).
+func buildCompositeCluster(name string, clusterEntries []*compositev3.ClusterConfig_ClusterEntry) (*cluster.Cluster, error) {
+	compositeAny, err := anypb.New(&compositev3.ClusterConfig{Clusters: clusterEntries})
 	if err != nil {
-		return fmt.Errorf("marshal HTTP protocol options: %w", err)
+		return nil, fmt.Errorf("marshal composite cluster config: %w", err)
 	}
-	if c.TypedExtensionProtocolOptions == nil {
-		c.TypedExtensionProtocolOptions = map[string]*anypb.Any{}
+	composite := &cluster.Cluster{
+		Name:     name,
+		LbPolicy: cluster.Cluster_CLUSTER_PROVIDED,
+		ClusterDiscoveryType: &cluster.Cluster_ClusterType{ClusterType: &cluster.Cluster_CustomClusterType{
+			Name:        "envoy.clusters.composite",
+			TypedConfig: compositeAny,
+		}},
 	}
-	c.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey] = updated
-	return nil
+	if err := attachUpstreamPolicyFilter(composite, constants.UpstreamPolicyEngineClusterName); err != nil {
+		return nil, fmt.Errorf("attach upstream policy filter to composite cluster %q: %w", name, err)
+	}
+	return composite, nil
 }
 
-func statusCodeErrorMatcher(codes []int) *matcher.MatchPredicate {
-	rules := make([]*matcher.MatchPredicate, 0, len(codes))
-	for _, code := range codes {
-		rules = append(rules, &matcher.MatchPredicate{Rule: &matcher.MatchPredicate_HttpResponseHeadersMatch{
-			HttpResponseHeadersMatch: &matcher.HttpHeadersMatch{Headers: []*route.HeaderMatcher{{
-				Name:                 ":status",
-				HeaderMatchSpecifier: &route.HeaderMatcher_ExactMatch{ExactMatch: strconv.Itoa(code)},
-			}}},
-		}})
+// configureFailoverLeafCircuitBreaker bounds concurrent retry traffic PER
+// LEAF (design §9.3), since a retry storm fans out across whichever leaf the
+// composite cluster selects next, not the composite cluster itself
+// (envoy.clusters.aggregate/composite cluster types have no circuit breaker
+// config of their own). Envoy's own default (max_retries: 3) would let only
+// three requests fail over at once — during a real outage every in-flight
+// request retries, so the rest would surface the primary's error. The ceiling
+// is failoverLeafMaxRetries instead: the same 1024 Envoy already uses as its
+// default max_requests, since each retry is itself a request to that leaf.
+//
+// Leaves deliberately carry no outlier_detection. An earlier version of this
+// design ejected a leaf's single host after enough consecutive failures, but
+// live verification (gateway/dev-policies/run-outlier-threshold-proof.sh)
+// against a real Envoy showed this is actively harmful: envoy.clusters.
+// composite selects purely by retry-attempt count regardless of host health
+// (confirmed via Envoy's own doc comment on ClusterConfig — "unlike the
+// standard aggregate cluster which uses health-based selection, the
+// composite cluster uses the retry attempt count to deterministically select
+// which sub-cluster to route to"), so ejecting a leaf never helps a retry
+// skip it. Worse, when attempt 1 (always cluster[0]) lands on an
+// already-ejected leaf, cluster/host selection fails before any upstream
+// request is dispatched ("no healthy upstream", response flag UH) — and no
+// retry_on value can retry that: reset-before-request only covers a host
+// that was picked and then reset before its request was sent, and Envoy has
+// no supported way to retry when zero hosts were available to pick from at
+// all (see https://github.com/envoyproxy/envoy/issues/11307, closed
+// unresolved — a maintainer explains the load balancer's host set is fixed
+// for the life of the request's routing context). So an ejected primary
+// doesn't get skipped; it takes down every request for the whole ejection
+// window instead. Cross-request suspension of a known-bad primary is
+// policy-side again instead (model-failover's isSuspended/recordOutcome,
+// see OnRequestBody), which enters the chain at a healthy fallback's suffix
+// composite rather than relying on Envoy to skip an ejected member.
+func configureFailoverLeafCircuitBreaker(c *cluster.Cluster) {
+	c.CircuitBreakers = &cluster.CircuitBreakers{
+		Thresholds: []*cluster.CircuitBreakers_Thresholds{{
+			MaxRetries: wrapperspb.UInt32(failoverLeafMaxRetries),
+		}},
 	}
-	if len(rules) == 1 {
-		return rules[0]
-	}
-	return &matcher.MatchPredicate{Rule: &matcher.MatchPredicate_OrMatch{
-		OrMatch: &matcher.MatchPredicate_MatchSet{Rules: rules},
-	}}
 }
+
+const failoverLeafMaxRetries = 1024

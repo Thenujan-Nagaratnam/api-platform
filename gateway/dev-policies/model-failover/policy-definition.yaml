@@ -86,9 +86,11 @@ parameters:
       type: integer
       x-wso2-policy-advanced-param: true
       description: |
-        Base seconds a target is skipped for after suspending (see
-        suspendAfterFailures and maxSuspendDuration). Set to 0 to disable
-        suspension tracking entirely.
+        Seconds a failing target is skipped for. If it fails again as soon as
+        it comes back, the window doubles each time, up to 8x this value. When
+        a window ends, one request is sent to the target as a probe: success
+        restores it, failure suspends it again. Set to 0 to disable suspension
+        tracking entirely.
       minimum: 0
       default: 0
     suspendAfterFailures:
@@ -100,18 +102,43 @@ parameters:
         1 suspends on the very first qualifying failure.
       minimum: 1
       default: 1
-    maxSuspendDuration:
+    perTryTimeoutMs:
       type: integer
       x-wso2-policy-advanced-param: true
       description: |
-        Caps exponential backoff: each time a target is re-suspended
-        immediately after a previous suspension window expired with no
-        intervening success, its suspend window doubles, up to this ceiling
-        in seconds. Omitted or 0 defaults to 8x suspendDuration.
+        Bounds each individual chain-member attempt, in milliseconds, so a hung
+        target fails over instead of consuming the whole request. perTryTimeoutMs
+        x chain length must fit inside the route's overall timeout. Omitted or 0
+        leaves the route's overall timeout in effect.
       minimum: 0
-      default: 0
+    failureRateThresholdPercent:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        Also suspends a target once this percentage of its attempts in the last
+        60 seconds failed (evaluated from 20 attempts on). Catches a target that
+        fails intermittently and so never reaches suspendAfterFailures in a row.
+        Omitted or 0 disables the rule.
+      minimum: 0
+      maximum: 100
+    latencyThresholdMs:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        Also suspends a target once the p95 of its response times over the last
+        60 seconds reaches this many milliseconds (evaluated from 20 attempts
+        on), even if it never returns an error. Omitted or 0 disables the rule.
+      minimum: 0
   required:
     - targets
+
+  # Note: no requestModel property here. It is never author-configured — like
+  # every other LLM-aware policy (e.g. model-round-robin), it's extracted from
+  # the LLM provider template and merged into this policy's params
+  # automatically by gateway-controller's llm_transformer.go
+  # (buildTemplateParams/mergeParams), the same place primaryProvider/
+  # operationPath are injected rather than authored. The runtime policy
+  # (modelfailover.go) parses and defaults it from its own raw params map.
 
 systemParameters:
   type: object

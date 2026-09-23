@@ -707,4 +707,18 @@ func TestRouteConfigRegistersFailoverAggregateClusterByName(t *testing.T) {
 	require.True(t, ok, "the aggregate cluster must be registered under the exact name the policy receives")
 	assert.Equal(t, aggName, agg["cluster_name"])
 	assert.Equal(t, "/openai-provider", agg["base_path"], "the aggregate dials the PRIMARY member first")
+
+	// model-failover's suspended-prefix bypass returns a fallback's suffix
+	// composite as UpstreamName; unregistered, Envoy answers 503 NC
+	// cluster_not_found for every bypassed request.
+	suffixName := xds.SuffixCompositeClusterName(routeKey, 0, 1)
+	suffix, ok := registry[suffixName].(map[string]interface{})
+	require.True(t, ok, "the fallback's suffix composite must be registered under the exact name the policy receives")
+	assert.Equal(t, suffixName, suffix["cluster_name"])
+	assert.Equal(t, "/anthropic-provider", suffix["base_path"], "a suffix composite dials its own first member, the fallback")
+
+	for pos := 0; pos <= 1; pos++ {
+		_, registered := registry[xds.FailoverLeafClusterName(routeKey, 0, pos)]
+		assert.False(t, registered, "leaf %d is never an UpstreamName, so it must not be registered", pos)
+	}
 }

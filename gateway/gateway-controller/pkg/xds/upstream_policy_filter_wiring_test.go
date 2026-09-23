@@ -106,11 +106,10 @@ func TestTranslateRuntimeConfig_FailoverRouteGetsRetryPolicyAndHostRewrite(t *te
 	assert.True(t, isAutoRewrite, "a failover route must auto-rewrite Host, or per-attempt backend resolution can't tell attempts apart")
 }
 
-// TestTranslateRuntimeConfig_FailoverRouteAppliesPerTryTimeoutAndRetryBackoff
-// pins design §9.2's per-attempt budget and §9's retry backoff: both are pure
-// Envoy RetryPolicy fields, generated only when the operator configured them
-// (RouteFailover.PerTryTimeoutMs / RetryBackoff{Base,Max}Ms).
-func TestTranslateRuntimeConfig_FailoverRouteAppliesPerTryTimeoutAndRetryBackoff(t *testing.T) {
+// TestTranslateRuntimeConfig_FailoverRouteAppliesPerTryTimeout pins design
+// §9.2's per-attempt budget: a pure Envoy RetryPolicy field, generated only
+// when the operator configured it (RouteFailover.PerTryTimeoutMs).
+func TestTranslateRuntimeConfig_FailoverRouteAppliesPerTryTimeout(t *testing.T) {
 	rdc := &models.RuntimeDeployConfig{
 		UpstreamClusters: map[string]*models.UpstreamCluster{
 			"primary-cluster":  {BasePath: "/", Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
@@ -126,9 +125,7 @@ func TestTranslateRuntimeConfig_FailoverRouteAppliesPerTryTimeoutAndRetryBackoff
 					UseClusterHeader: true,
 					DefaultCluster:   "primary-cluster",
 					Failover: &models.RouteFailover{
-						PerTryTimeoutMs:    5000,
-						RetryBackoffBaseMs: 25,
-						RetryBackoffMaxMs:  250,
+						PerTryTimeoutMs: 5000,
 						Targets: []models.RouteFailoverTarget{{
 							Model:     "gpt-4o",
 							Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
@@ -149,11 +146,7 @@ func TestTranslateRuntimeConfig_FailoverRouteAppliesPerTryTimeoutAndRetryBackoff
 	require.NotNil(t, action.RetryPolicy)
 	require.NotNil(t, action.RetryPolicy.PerTryTimeout)
 	assert.Equal(t, 5*time.Second, action.RetryPolicy.PerTryTimeout.AsDuration())
-	require.NotNil(t, action.RetryPolicy.RetryBackOff)
-	require.NotNil(t, action.RetryPolicy.RetryBackOff.BaseInterval)
-	assert.Equal(t, 25*time.Millisecond, action.RetryPolicy.RetryBackOff.BaseInterval.AsDuration())
-	require.NotNil(t, action.RetryPolicy.RetryBackOff.MaxInterval)
-	assert.Equal(t, 250*time.Millisecond, action.RetryPolicy.RetryBackOff.MaxInterval.AsDuration())
+	assert.Nil(t, action.RetryPolicy.RetryBackOff, "backoff stays at Envoy's default")
 }
 
 // An operator who configures neither must not get Envoy-generated defaults

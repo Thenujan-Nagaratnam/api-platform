@@ -19,19 +19,16 @@
 package xds
 
 import (
+	"strings"
 	"testing"
-	"time"
 
-	matcherv3 "github.com/envoyproxy/go-control-plane/envoy/config/common/matcher/v3"
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	compositev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/composite/v3"
-	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
 	resource "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 )
 
@@ -131,10 +128,28 @@ func findFixtureRoute(t *testing.T, vh *route.VirtualHost, name string) *route.R
 // chain clusters —
 // the translated cluster list otherwise also contains the policy engine,
 // upstream policy engine, and any ALS/OTEL clusters TranslateConfigs always adds.
+// compositeClustersIn returns only the FULL-CHAIN composite clusters (one per
+// targets[] entry, named via AggregateClusterName) — NOT the suffix
+// composites buildFailoverCompositeClusters also generates per fallback
+// position (SuffixCompositeClusterName, "failover_suffix_..."). Both share
+// discovery type "envoy.clusters.composite", so filtering by name prefix is
+// what distinguishes them; see suffixCompositeClustersIn for the other set.
 func compositeClustersIn(clusters []*cluster.Cluster) []*cluster.Cluster {
 	var composites []*cluster.Cluster
 	for _, c := range clusters {
-		if c.GetClusterType().GetName() == "envoy.clusters.composite" {
+		if c.GetClusterType().GetName() == "envoy.clusters.composite" && strings.HasPrefix(c.Name, "failover_composite_") {
+			composites = append(composites, c)
+		}
+	}
+	return composites
+}
+
+// suffixCompositeClustersIn returns only the suffix composites — see
+// compositeClustersIn's doc comment for the distinction.
+func suffixCompositeClustersIn(clusters []*cluster.Cluster) []*cluster.Cluster {
+	var composites []*cluster.Cluster
+	for _, c := range clusters {
+		if c.GetClusterType().GetName() == "envoy.clusters.composite" && strings.HasPrefix(c.Name, "failover_suffix_") {
 			composites = append(composites, c)
 		}
 	}
@@ -164,46 +179,6 @@ func findClusterByName(clusters []*cluster.Cluster, name string) *cluster.Cluste
 		}
 	}
 	return nil
-}
-
-// outlierErrorMatcherStatusCodes walks a leaf cluster's HTTP outlier
-// detection error_matcher (either a single HttpResponseHeadersMatch rule, or
-// an OrMatch of several — see statusCodeErrorMatcher) and returns every
-// ":status" exact-match value it finds, so a test can assert the leaf's
-// passive-health classification carries the EXACT same status set as the
-// route's own RetryPolicy.RetriableStatusCodes — proving both were generated
-// from one normalized source rather than two that can independently drift
-// (design §7.2).
-func outlierErrorMatcherStatusCodes(t *testing.T, leaf *cluster.Cluster) []string {
-	t.Helper()
-	var opts httpv3.HttpProtocolOptions
-	protoAny, ok := leaf.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey]
-	require.True(t, ok, "leaf cluster %q must carry HTTP protocol options", leaf.Name)
-	require.NoError(t, protoAny.UnmarshalTo(&opts))
-	m := opts.GetOutlierDetection().GetErrorMatcher()
-	require.NotNil(t, m, "leaf cluster %q must carry an outlier error_matcher", leaf.Name)
-
-	var codes []string
-	var walk func(p *matcherv3.MatchPredicate)
-	walk = func(p *matcherv3.MatchPredicate) {
-		if p == nil {
-			return
-		}
-		if headersMatch := p.GetHttpResponseHeadersMatch(); headersMatch != nil {
-			for _, h := range headersMatch.GetHeaders() {
-				if h.GetName() == ":status" {
-					codes = append(codes, h.GetExactMatch())
-				}
-			}
-		}
-		if or := p.GetOrMatch(); or != nil {
-			for _, rule := range or.GetRules() {
-				walk(rule)
-			}
-		}
-	}
-	walk(m)
-	return codes
 }
 
 // TestLLMTransform_NoFailoverBlock_OutputUnchangedFromBeforeThisFeature is the
@@ -309,29 +284,18 @@ func TestLLMTransform_FailoverBlock_FullShapeEndToEnd(t *testing.T) {
 	assert.Equal(t, []string{FailoverLeafClusterName(routeKey, 0, 0), FailoverLeafClusterName(routeKey, 0, 1)}, compositeMembersOf(t, composites[0]),
 		"composite members must be isolated leaves in target/fallback order")
 
-	// Every composite member must also be a real, independently-ejectable
-	// leaf cluster in the full translated cluster list (not merely a name
-	// inside the composite's own config) — with Envoy-native outlier
-	// detection wired from RouteFailover's (here, defaulted) suspend
-	// durations. This is the end-to-end proof that TranslateConfigs, not
-	// just buildFailoverCompositeClusters in isolation, produces a
-	// single-source-of-truth health unit per chain member (design §7.4).
+	// Every composite member must also be a real leaf cluster in the full
+	// translated cluster list (not merely a name inside the composite's own
+	// config), and must carry NO outlier_detection/panic override — live
+	// verification against a real Envoy showed leaf ejection breaks failover
+	// instead of helping it (see configureFailoverLeafCircuitBreaker's doc
+	// comment). Cross-request suspension of a known-bad primary is
+	// policy-side again (model-failover's isSuspended), not Envoy-native.
 	for i, leafName := range []string{FailoverLeafClusterName(routeKey, 0, 0), FailoverLeafClusterName(routeKey, 0, 1)} {
 		leaf := findClusterByName(clusters, leafName)
 		require.NotNilf(t, leaf, "leaf cluster %q (position %d) must be present in the translated cluster list", leafName, i)
-		require.NotNil(t, leaf.OutlierDetection)
-		assert.Equal(t, uint32(1), leaf.OutlierDetection.GetConsecutive_5Xx().GetValue())
-		assert.Equal(t, uint32(1), leaf.OutlierDetection.GetConsecutiveLocalOriginFailure().GetValue())
-		assert.True(t, leaf.OutlierDetection.GetSplitExternalLocalOriginErrors())
-		assert.True(t, leaf.OutlierDetection.GetAlwaysEjectOneHost().GetValue())
-		assert.Equal(t, uint32(100), leaf.OutlierDetection.GetMaxEjectionPercent().GetValue())
-		assert.Equal(t, float64(0), leaf.GetCommonLbConfig().GetHealthyPanicThreshold().GetValue(),
-			"panic routing must be disabled so an ejected single-host leaf is never selected merely because cluster health is low")
-		// RouteFailover.SuspendDurationSeconds/MaxSuspendDurationSeconds are
-		// both left unset by this fixture — configureFailoverOutlierDetection
-		// must default them to 5s/40s rather than producing a 0s ejection.
-		assert.Equal(t, 5*time.Second, leaf.OutlierDetection.GetBaseEjectionTime().AsDuration())
-		assert.Equal(t, 40*time.Second, leaf.OutlierDetection.GetMaxEjectionTime().AsDuration())
+		assert.Nil(t, leaf.OutlierDetection)
+		assert.Nil(t, leaf.CommonLbConfig)
 	}
 
 	r := findFixtureRoute(t, vh, routeKey)
@@ -482,17 +446,12 @@ func TestLLMTransform_FailoverBlock_ConfiguredStatusCodesWireIntoRetryPolicy(t *
 	assert.Equal(t, "retriable-status-codes", action.RetryPolicy.RetryOn, "must not also carry plain 5xx")
 	assert.Equal(t, []uint32{500, 502, 429}, action.RetryPolicy.RetriableStatusCodes)
 
-	// The same statusCodes must also drive each leaf's passive-health
-	// (outlier detection) error_matcher, including 429 — a status Envoy's
-	// consecutive_5xx counter would otherwise never treat as a failure. Route
-	// retry conditions and leaf health classification must never be able to
-	// drift apart (design §7.2, §12): both are asserted here against the
-	// SAME RetriableStatusCodes value the fixture set, from the one full
-	// TranslateConfigs pass.
+	// Leaves themselves carry no outlier_detection at all now (see
+	// configureFailoverLeafCircuitBreaker's doc comment), so RetriableStatusCodes
+	// only has one consumer: the route's own RetryPolicy asserted above.
 	for _, leafName := range []string{FailoverLeafClusterName(routeKey, 0, 0), FailoverLeafClusterName(routeKey, 0, 1)} {
 		leaf := findClusterByName(clusters, leafName)
 		require.NotNilf(t, leaf, "leaf cluster %q must be present in the translated cluster list", leafName)
-		assert.ElementsMatch(t, []string{"500", "502", "429"}, outlierErrorMatcherStatusCodes(t, leaf),
-			"leaf outlier error_matcher must match the exact configured statusCodes, including 429")
+		assert.Nil(t, leaf.OutlierDetection)
 	}
 }
