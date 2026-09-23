@@ -82,7 +82,7 @@ func TestOnRequestBody_NoMatchIsNoop(t *testing.T) {
 	assert.Nil(t, mods.UpstreamName)
 }
 
-func TestOnRequestBody_SuspendedTargetSkipsToFallback(t *testing.T) {
+func TestOnRequestBody_SuspendedTargetStillSelectsCompleteChain(t *testing.T) {
 	p := &Policy{
 		params: ModelFailoverParams{
 			Targets: []FailoverTargetEntry{
@@ -104,10 +104,11 @@ func TestOnRequestBody_SuspendedTargetSkipsToFallback(t *testing.T) {
 	mods, ok := action.(policy.UpstreamRequestModifications)
 	require.True(t, ok)
 	require.NotNil(t, mods.UpstreamName)
-	assert.Equal(t, "anthropic-upstream", *mods.UpstreamName, "must bypass the aggregate and target the fallback's own upstream directly")
+	assert.Equal(t, "failover_agg_chat_0", *mods.UpstreamName, "Envoy health must skip the ejected leaf without bypassing the chain")
+	assert.Equal(t, "1", mods.HeadersToSet["x-envoy-max-retries"])
 }
 
-func TestOnRequestBody_SkipsFallbackWithEmptyProvider(t *testing.T) {
+func TestOnRequestBody_SameProviderFallbackRemainsInCompleteChain(t *testing.T) {
 	p := &Policy{
 		params: ModelFailoverParams{
 			Targets: []FailoverTargetEntry{{
@@ -126,7 +127,8 @@ func TestOnRequestBody_SkipsFallbackWithEmptyProvider(t *testing.T) {
 	mods := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
 
 	require.NotNil(t, mods.UpstreamName)
-	assert.Equal(t, "anthropic-upstream", *mods.UpstreamName)
+	assert.Equal(t, "failover_agg_chat_0", *mods.UpstreamName)
+	assert.Equal(t, "2", mods.HeadersToSet["x-envoy-max-retries"])
 }
 
 func TestOnRequestBody_OnlyEmptyProviderFallbacksRoutesToAggregate(t *testing.T) {
@@ -146,6 +148,47 @@ func TestOnRequestBody_OnlyEmptyProviderFallbacksRoutesToAggregate(t *testing.T)
 
 	require.NotNil(t, mods.UpstreamName)
 	assert.Equal(t, "failover_agg_chat_0", *mods.UpstreamName)
+	assert.Equal(t, "1", mods.HeadersToSet["x-envoy-max-retries"])
+}
+
+// TestOnRequestBody_MultipleTargetsSelectsMatchingEntryAndOwnRetryCount pins
+// that with two independently-configured targets[] entries, the requested
+// model selects the RIGHT entry's own AggregateCluster and its own
+// x-envoy-max-retries — never the other entry's chain depth, even though
+// both entries are evaluated by the same findEntry loop.
+func TestOnRequestBody_MultipleTargetsSelectsMatchingEntryAndOwnRetryCount(t *testing.T) {
+	p := &Policy{
+		params: ModelFailoverParams{
+			Targets: []FailoverTargetEntry{
+				{
+					FailoverTarget:   FailoverTarget{Model: "gpt-4o"},
+					Fallbacks:        []FailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+					AggregateCluster: "failover_agg_chat_0",
+				},
+				{
+					FailoverTarget: FailoverTarget{Model: "gpt-4o-mini"},
+					Fallbacks: []FailoverTarget{
+						{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"},
+						{Model: "command-r-plus", Provider: "cohere-upstream"},
+					},
+					AggregateCluster: "failover_agg_chat_1",
+				},
+			},
+		},
+		susp: &suspensionState{suspended: make(map[string]time.Time)},
+	}
+
+	reqCtx0 := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
+	mods0 := p.OnRequestBody(context.Background(), reqCtx0, nil).(policy.UpstreamRequestModifications)
+	require.NotNil(t, mods0.UpstreamName)
+	assert.Equal(t, "failover_agg_chat_0", *mods0.UpstreamName)
+	assert.Equal(t, "1", mods0.HeadersToSet["x-envoy-max-retries"], "entry 0 has exactly one fallback")
+
+	reqCtx1 := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o-mini"}`), Present: true}}
+	mods1 := p.OnRequestBody(context.Background(), reqCtx1, nil).(policy.UpstreamRequestModifications)
+	require.NotNil(t, mods1.UpstreamName)
+	assert.Equal(t, "failover_agg_chat_1", *mods1.UpstreamName)
+	assert.Equal(t, "2", mods1.HeadersToSet["x-envoy-max-retries"], "entry 1 has two fallbacks — must not inherit entry 0's count")
 }
 
 func TestOnRequestBody_EmptyAggregateClusterIsNoop(t *testing.T) {
@@ -338,7 +381,8 @@ func TestOnResponseHeaders_5xxSuspendsUnderResolvedKeyAndDownstreamSeesIt(t *tes
 	mods, ok := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
 	require.True(t, ok)
 	require.NotNil(t, mods.UpstreamName)
-	assert.Equal(t, "anthropic-upstream", *mods.UpstreamName, "downstream must see the primary as suspended")
+	assert.Equal(t, "failover_agg_chat_0", *mods.UpstreamName, "downstream always selects the complete chain; Envoy skips ejected leaves")
+	assert.Equal(t, "1", mods.HeadersToSet["x-envoy-max-retries"])
 }
 
 // ─── Suspension gating ───────────────────────────────────────────────────────
@@ -405,6 +449,23 @@ func TestOnRequestHeaders_FallbackRewritesStalePathToMembersBasePath(t *testing.
 	require.True(t, ok, "an escalated attempt on a different provider's base path must correct :path")
 	require.NotNil(t, mods.Path)
 	assert.Equal(t, "/anthropic-provider/chat/completions", *mods.Path)
+}
+
+// TestOnRequestHeaders_FallbackRewriteToPreservesOriginalQueryString is the
+// regression test for the design doc's "Per-attempt path reconstruction does
+// not preserve the original query string" finding: joinBasePathAndOperation
+// builds the corrected path from only basePath+operationPath (both
+// query-free), so a stale ":path" carrying "?stream=true" from an earlier
+// attempt must have that query string reattached, not dropped.
+func TestOnRequestHeaders_FallbackRewriteToPreservesOriginalQueryString(t *testing.T) {
+	reqCtx := memberReqCtxWithPath("failover_agg_chat_0", "cluster_anthropic_upstream", "/openai-provider/chat/completions?stream=true")
+
+	action := pathChainPolicy().OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	require.True(t, ok, "an escalated attempt must still correct :path when a query string is present")
+	require.NotNil(t, mods.Path)
+	assert.Equal(t, "/anthropic-provider/chat/completions?stream=true", *mods.Path)
 }
 
 func TestOnRequestHeaders_PrimaryNoPathMutationWhenAlreadyCorrect(t *testing.T) {

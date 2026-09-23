@@ -516,10 +516,9 @@ func (p *Policy) backoffDuration(streak int) time.Duration {
 }
 
 // OnRequestBody's downstream invocation parses the client-requested model,
-// matches it against the configured chain, and routes to that chain's
-// aggregate cluster — skipping straight to the first non-suspended fallback's
-// own single cluster if the primary target is currently suspended (bypassing
-// the aggregate for a known-bad primary, per the design's §4). For an
+// matches it against the configured chain, and always routes to that chain's
+// composite cluster. Envoy owns target health and skips ejected leaf clusters;
+// the downstream policy never bypasses the chain. For an
 // upstream-attempt invocation (Downstream == nil), it instead delegates to
 // onUpstreamAttemptRequestBody — this instance is also attached via
 // upstreamPolicies: (see OnRequestHeaders), and Mode()'s RequestBodyMode
@@ -550,55 +549,11 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 		return policy.UpstreamRequestModifications{}
 	}
 
-	if !p.isSuspended(entry.Model, p.resolvedProvider(entry.FailoverTarget)) {
-		cluster := entry.AggregateCluster
-		return policy.UpstreamRequestModifications{UpstreamName: &cluster}
-	}
-
-	for _, fallback := range entry.Fallbacks {
-		if fallback.Provider == "" {
-			continue // no addressable upstream for this fallback
-		}
-		if !p.isSuspended(fallback.Model, p.resolvedProvider(fallback)) {
-			// Route directly to the fallback's own upstream, bypassing the
-			// aggregate entirely — a known-bad primary is skipped, at the
-			// cost of no further in-request retry if this fallback also
-			// fails (the aggregate was never entered). See design doc's
-			// discussion of this tradeoff (inherited from the superseded
-			// design's §5.3/§10).
-			//
-			// The route's RetryPolicy (built for the aggregate's
-			// priority-based retry — see translator.go) is attached at the
-			// route level, not the cluster level, so it would otherwise
-			// still apply here and retry this single bypassed host against
-			// itself, silently masking a genuine failure as success on the
-			// retry (confirmed live). x-envoy-max-retries is Envoy's
-			// documented per-request override for the router filter's retry
-			// behavior — setting it to 0 suppresses that retry for this one
-			// bypassed attempt, restoring the "no further retry" semantics
-			// this comment already claims.
-			//
-			// Nothing about this choice is seeded into metadata here: the
-			// upstream phase gets its own fresh SharedContext, so
-			// OnRequestHeaders re-identifies this member from the cluster
-			// Envoy reports (resolveAttemptForCluster's member-cluster
-			// match) and seeds it there, exactly as for an aggregate-routed
-			// attempt. Seeding downstream instead would be both too late for
-			// the downstream header-phase credential injection and wrong for
-			// the body phase — a provider's translator would then run
-			// downstream AND again upstream, on its own output.
-			upstream := fallback.Provider
-			return policy.UpstreamRequestModifications{
-				UpstreamName: &upstream,
-				HeadersToSet: map[string]string{"x-envoy-max-retries": "0"},
-			}
-		}
-	}
-
-	// Every member suspended — fall through to the aggregate anyway (Envoy's
-	// own retry exhaustion behavior applies; nothing left to skip to).
 	cluster := entry.AggregateCluster
-	return policy.UpstreamRequestModifications{UpstreamName: &cluster}
+	return policy.UpstreamRequestModifications{
+		UpstreamName: &cluster,
+		HeadersToSet: map[string]string{"x-envoy-max-retries": strconv.Itoa(len(entry.Fallbacks))},
+	}
 }
 
 // onUpstreamAttemptRequestBody rewrites the replayed client body's "model"
@@ -871,12 +826,31 @@ func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeade
 	// (nothing to correct TO), so :path is left exactly as Envoy delivered it
 	// rather than rewritten to a guessed root-relative path.
 	if member.BasePath != "" {
-		if corrected := joinBasePathAndOperation(member.BasePath, p.params.OperationPath); corrected != "" && corrected != reqCtx.Path {
-			return policy.UpstreamRequestHeaderModifications{Path: &corrected}
+		if corrected := joinBasePathAndOperation(member.BasePath, p.params.OperationPath); corrected != "" {
+			corrected = withQueryFrom(reqCtx.Path, corrected)
+			if corrected != reqCtx.Path {
+				return policy.UpstreamRequestHeaderModifications{Path: &corrected}
+			}
 		}
 	}
 
 	return nil
+}
+
+// withQueryFrom reattaches stalePath's query string (everything from the
+// first "?" onward) onto newPath. Envoy's ":path" pseudo-header is
+// path+query as one string, and the kernel replays attempt 1's ":path"
+// verbatim on every retry — so a stale query string is still sitting in
+// reqCtx.Path when a later attempt corrects the path portion for a different
+// provider's base path. Rebuilding the path from only basePath+operationPath
+// (both static, query-free configuration values) would otherwise silently
+// drop it: "?stream=true" on the client's original request must survive
+// every attempt, not just the first.
+func withQueryFrom(stalePath, newPath string) string {
+	if _, query, ok := strings.Cut(stalePath, "?"); ok && query != "" {
+		return newPath + "?" + query
+	}
+	return newPath
 }
 
 // OnResponseHeaders records this attempt's outcome (isFailureStatus — any
@@ -897,7 +871,9 @@ func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHe
 		return nil
 	}
 	member, index := match.member, match.index
-
+	// Retained temporarily for backward-compatible diagnostics while routing
+	// suspension moves to Envoy outlier detection. Downstream selection no
+	// longer reads this state.
 	p.recordOutcome(member.Model, p.resolvedProvider(*member), p.isFailureStatus(int(respCtx.ResponseStatus)))
 
 	if index > 1 {

@@ -11,69 +11,182 @@
 package xds
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	"strings"
+	"strconv"
+	"time"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
-	aggregatev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/aggregate/v3"
+	matcher "github.com/envoyproxy/go-control-plane/envoy/config/common/matcher/v3"
+	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	compositev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/composite/v3"
+	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
+	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 )
 
-// AggregateClusterName deterministically names the aggregate cluster for the
-// targetIndex'th entry of routeKey's failover block. Stable across redeploys
-// (routeKey + index never change for the same declared target unless the
-// operator reorders the model-failover policy's targets, which is an intentional
-// config change, not a spurious xDS re-version). Exported: pkg/policyxds
-// needs this same name to know what to put on the xDS-metadata wire.
+// AggregateClusterName is retained as the wire-contract helper used by the
+// policy params, but now names an envoy.clusters.composite cluster.
 func AggregateClusterName(routeKey string, targetIndex int) string {
-	return fmt.Sprintf("failover_agg_%s_%d", sanitizeClusterNameComponent(routeKey), targetIndex)
+	return fmt.Sprintf("failover_composite_%s_%d", shortStableID(routeKey), targetIndex)
 }
 
-// sanitizeClusterNameComponent strips characters Envoy cluster names can't
-// safely contain (a route key looks like "POST|/chat/completions|main").
-func sanitizeClusterNameComponent(s string) string {
-	replacer := strings.NewReplacer("|", "_", "/", "_", "*", "_", " ", "_")
-	return replacer.Replace(s)
+// FailoverLeafClusterName names the independently healthy/ejectable cluster
+// for one member of a failover chain. Position 0 is the primary.
+func FailoverLeafClusterName(routeKey string, targetIndex, memberIndex int) string {
+	identity := fmt.Sprintf("%s|%d|%d", routeKey, targetIndex, memberIndex)
+	return "failover_leaf_" + shortStableID(identity)
 }
 
-// buildFailoverAggregateClusters builds one envoy.clusters.aggregate cluster
-// per rf.Targets entry, members in priority order (target, then fallbacks in
-// order — aggregate cluster priority is assigned by list position). The
-// upstream ext_proc filter is attached to the AGGREGATE cluster itself, not
-// its members — confirmed live this session that attaching to the real
-// members never fires when reached through an aggregate (see the corrected
-// doc comment on attachUpstreamPolicyFilter in upstream_policy_filter.go).
-func buildFailoverAggregateClusters(rf *models.RouteFailover, routeKey string) ([]*cluster.Cluster, error) {
-	clusters := make([]*cluster.Cluster, 0, len(rf.Targets))
-	for i, target := range rf.Targets {
-		memberNames := make([]string, 0, len(target.Fallbacks)+1)
-		memberNames = append(memberNames, target.Target.ClusterKey)
-		for _, fb := range target.Fallbacks {
-			memberNames = append(memberNames, fb.ClusterKey)
+func shortStableID(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:12])
+}
+
+// buildFailoverCompositeClusters creates one retry-aware composite cluster
+// per targets[] entry and a dedicated leaf cluster per member.
+func buildFailoverCompositeClusters(rf *models.RouteFailover, routeKey string, sourceClusters map[string]*cluster.Cluster) ([]*cluster.Cluster, error) {
+	var out []*cluster.Cluster
+	for targetIndex, target := range rf.Targets {
+		members := make([]models.RouteFailoverEntry, 0, len(target.Fallbacks)+1)
+		members = append(members, target.Target)
+		members = append(members, target.Fallbacks...)
+
+		compositeEntries := make([]*compositev3.ClusterConfig_ClusterEntry, 0, len(members))
+		for memberIndex, member := range members {
+			source, ok := sourceClusters[member.ClusterKey]
+			if !ok {
+				return nil, fmt.Errorf("failover member source cluster %q not found", member.ClusterKey)
+			}
+			leaf, ok := proto.Clone(source).(*cluster.Cluster)
+			if !ok {
+				return nil, fmt.Errorf("failed to clone failover member source cluster %q", member.ClusterKey)
+			}
+			leafName := FailoverLeafClusterName(routeKey, targetIndex, memberIndex)
+			leaf.Name = leafName
+			if leaf.LoadAssignment != nil {
+				leaf.LoadAssignment.ClusterName = leafName
+				for _, locality := range leaf.LoadAssignment.Endpoints {
+					for _, lbEp := range locality.LbEndpoints {
+						lbEp.Metadata = applyMemberClusterIdentityMetadata(lbEp.Metadata, leafName)
+					}
+				}
+			}
+			if err := configureFailoverOutlierDetection(leaf, rf); err != nil {
+				return nil, fmt.Errorf("configure failover leaf %q: %w", leafName, err)
+			}
+			out = append(out, leaf)
+			compositeEntries = append(compositeEntries, &compositev3.ClusterConfig_ClusterEntry{Name: leafName})
 		}
 
-		aggConfigAny, err := anypb.New(&aggregatev3.ClusterConfig{Clusters: memberNames})
+		compositeAny, err := anypb.New(&compositev3.ClusterConfig{Clusters: compositeEntries})
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal aggregate cluster config for %q target %d: %w", routeKey, i, err)
+			return nil, fmt.Errorf("marshal composite cluster config for %q target %d: %w", routeKey, targetIndex, err)
 		}
-
-		aggCluster := &cluster.Cluster{
-			Name:     AggregateClusterName(routeKey, i),
+		composite := &cluster.Cluster{
+			Name:     AggregateClusterName(routeKey, targetIndex),
 			LbPolicy: cluster.Cluster_CLUSTER_PROVIDED,
-			ClusterDiscoveryType: &cluster.Cluster_ClusterType{
-				ClusterType: &cluster.Cluster_CustomClusterType{
-					Name:        "envoy.clusters.aggregate",
-					TypedConfig: aggConfigAny,
-				},
+			ClusterDiscoveryType: &cluster.Cluster_ClusterType{ClusterType: &cluster.Cluster_CustomClusterType{
+				Name:        "envoy.clusters.composite",
+				TypedConfig: compositeAny,
+			}},
+		}
+		if err := attachUpstreamPolicyFilter(composite, constants.UpstreamPolicyEngineClusterName); err != nil {
+			return nil, fmt.Errorf("attach upstream policy filter to composite cluster %q: %w", composite.Name, err)
+		}
+		out = append(out, composite)
+	}
+	return out, nil
+}
+
+func configureFailoverOutlierDetection(c *cluster.Cluster, rf *models.RouteFailover) error {
+	base := time.Duration(rf.SuspendDurationSeconds) * time.Second
+	if base <= 0 {
+		base = 5 * time.Second
+	}
+	max := time.Duration(rf.MaxSuspendDurationSeconds) * time.Second
+	if max <= 0 {
+		max = base * 8
+	}
+	c.OutlierDetection = &cluster.OutlierDetection{
+		Consecutive_5Xx:                        wrapperspb.UInt32(1),
+		EnforcingConsecutive_5Xx:               wrapperspb.UInt32(100),
+		SplitExternalLocalOriginErrors:         true,
+		ConsecutiveLocalOriginFailure:          wrapperspb.UInt32(1),
+		EnforcingConsecutiveLocalOriginFailure: wrapperspb.UInt32(100),
+		BaseEjectionTime:                       durationpb.New(base),
+		MaxEjectionTime:                        durationpb.New(max),
+		MaxEjectionPercent:                     wrapperspb.UInt32(100),
+		AlwaysEjectOneHost:                     wrapperspb.Bool(true),
+	}
+	c.CommonLbConfig = &cluster.Cluster_CommonLbConfig{
+		HealthyPanicThreshold: &typev3.Percent{Value: 0},
+	}
+
+	// design §9.3 retry resource protection: bound concurrent retry traffic
+	// PER LEAF, since a retry storm fans out across whichever leaf the
+	// composite cluster selects next, not the composite cluster itself
+	// (envoy.clusters.aggregate/composite cluster types have no circuit
+	// breaker config of their own). 0/unset leaves CircuitBreakers nil so
+	// Envoy's own default (max_retries: 3) applies — an explicit 0 would mean
+	// "no retries allowed", which is not what an omitted config means.
+	if rf.MaxConcurrentRetries > 0 {
+		c.CircuitBreakers = &cluster.CircuitBreakers{
+			Thresholds: []*cluster.CircuitBreakers_Thresholds{{
+				MaxRetries: wrapperspb.UInt32(uint32(rf.MaxConcurrentRetries)),
+			}},
+		}
+	}
+
+	if len(rf.RetriableStatusCodes) == 0 {
+		return nil
+	}
+	protocolAny, ok := c.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey]
+	var opts httpv3.HttpProtocolOptions
+	if ok {
+		if err := protocolAny.UnmarshalTo(&opts); err != nil {
+			return fmt.Errorf("unmarshal HTTP protocol options: %w", err)
+		}
+	} else {
+		opts.UpstreamProtocolOptions = &httpv3.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{},
 			},
 		}
-		if err := attachUpstreamPolicyFilter(aggCluster, constants.UpstreamPolicyEngineClusterName); err != nil {
-			return nil, fmt.Errorf("failed to attach upstream policy filter to aggregate cluster %q: %w", aggCluster.Name, err)
-		}
-		clusters = append(clusters, aggCluster)
 	}
-	return clusters, nil
+	opts.OutlierDetection = &httpv3.HttpProtocolOptions_OutlierDetection{ErrorMatcher: statusCodeErrorMatcher(rf.RetriableStatusCodes)}
+	updated, err := anypb.New(&opts)
+	if err != nil {
+		return fmt.Errorf("marshal HTTP protocol options: %w", err)
+	}
+	if c.TypedExtensionProtocolOptions == nil {
+		c.TypedExtensionProtocolOptions = map[string]*anypb.Any{}
+	}
+	c.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey] = updated
+	return nil
+}
+
+func statusCodeErrorMatcher(codes []int) *matcher.MatchPredicate {
+	rules := make([]*matcher.MatchPredicate, 0, len(codes))
+	for _, code := range codes {
+		rules = append(rules, &matcher.MatchPredicate{Rule: &matcher.MatchPredicate_HttpResponseHeadersMatch{
+			HttpResponseHeadersMatch: &matcher.HttpHeadersMatch{Headers: []*route.HeaderMatcher{{
+				Name:                 ":status",
+				HeaderMatchSpecifier: &route.HeaderMatcher_ExactMatch{ExactMatch: strconv.Itoa(code)},
+			}}},
+		}})
+	}
+	if len(rules) == 1 {
+		return rules[0]
+	}
+	return &matcher.MatchPredicate{Rule: &matcher.MatchPredicate_OrMatch{
+		OrMatch: &matcher.MatchPredicate_MatchSet{Rules: rules},
+	}}
 }

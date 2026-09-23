@@ -181,12 +181,14 @@ type RouteFailover struct {
 
 	// SuspendAfterFailures is the author-configured suspendAfterFailures
 	// (consecutive qualifying failures required before a target is
-	// suspended), passed straight through to the model-failover policy's own
-	// params — suspension is policy-side state, never Envoy-native
-	// outlier_detection (applying both would let Envoy's own LB eject/avoid a
-	// host on its own timeline, fighting the policy's suspend/resume
-	// decisions). Defaults to 1 when unset/<=0 (suspend on the very first
-	// qualifying failure).
+	// suspended). Every leaf cluster's own outlier_detection is now the sole
+	// routing-health mechanism (see xds.configureFailoverOutlierDetection);
+	// this value is passed straight through to the model-failover policy's own
+	// params purely for its diagnostic recordOutcome bookkeeping, which no
+	// longer influences downstream routing. Defaults to 1 when unset/<=0
+	// (suspend on the very first qualifying failure) — required to be exactly
+	// 1 by parseModelFailoverParams for deterministic composite-chain
+	// progression (design §6.3).
 	SuspendAfterFailures int
 
 	// MaxSuspendDurationSeconds caps the policy's own exponential backoff
@@ -194,6 +196,25 @@ type RouteFailover struct {
 	// target doubles the suspend window). Defaults to 8x
 	// SuspendDurationSeconds when unset/<=0.
 	MaxSuspendDurationSeconds int
+
+	// PerTryTimeoutMs bounds each individual chain-member attempt (design
+	// §9.2) — Envoy RetryPolicy.per_try_timeout. 0/unset leaves Envoy's own
+	// default (the route's overall timeout) in effect, so a stuck primary can
+	// consume the whole request budget with nothing left for fallbacks; an
+	// operator wanting deterministic fallback headroom sets this explicitly.
+	PerTryTimeoutMs int
+
+	// RetryBackoffBaseMs/RetryBackoffMaxMs configure Envoy's exponential retry
+	// backoff between attempts (RetryPolicy.retry_back_off, design §9). Both
+	// 0/unset leaves Envoy's own defaults (25ms base, 10x base max).
+	RetryBackoffBaseMs int
+	RetryBackoffMaxMs  int
+
+	// MaxConcurrentRetries bounds concurrent retry traffic per leaf cluster
+	// (design §9.3 retry resource protection) — Envoy
+	// CircuitBreakers.Thresholds.max_retries. 0/unset leaves Envoy's own
+	// default (3).
+	MaxConcurrentRetries int
 }
 
 // RouteFailoverTarget is one client-requested model's own failover chain.

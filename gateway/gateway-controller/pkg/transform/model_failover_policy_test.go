@@ -20,6 +20,7 @@ package transform
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -192,8 +193,8 @@ func TestBuildRouteFailoverFromPolicy_InjectsMemberClusterNames(t *testing.T) {
 	_, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
 
 	require.NoError(t, err)
-	assert.Equal(t, "upstream_main_openai_com_443", expanded.Targets[0].ClusterName)
-	assert.Equal(t, "upstream_anthropic-upstream_anthropic_com_443", expanded.Targets[0].Fallbacks[0].ClusterName)
+	assert.Equal(t, xds.FailoverLeafClusterName("POST|/chat/completions|main", 0, 0), expanded.Targets[0].ClusterName)
+	assert.Equal(t, xds.FailoverLeafClusterName("POST|/chat/completions|main", 0, 1), expanded.Targets[0].Fallbacks[0].ClusterName)
 	assert.Empty(t, params.Targets[0].Fallbacks[0].ClusterName, "input params must not be mutated")
 }
 
@@ -212,8 +213,79 @@ func TestBuildRouteFailoverFromPolicy_OverwritesAuthoredClusterName(t *testing.T
 	_, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
 
 	require.NoError(t, err)
-	assert.Equal(t, "upstream_main_openai_com_443", expanded.Targets[0].ClusterName)
-	assert.Equal(t, "upstream_anthropic-upstream_anthropic_com_443", expanded.Targets[0].Fallbacks[0].ClusterName)
+	assert.Equal(t, xds.FailoverLeafClusterName("POST|/chat/completions|main", 0, 0), expanded.Targets[0].ClusterName)
+	assert.Equal(t, xds.FailoverLeafClusterName("POST|/chat/completions|main", 0, 1), expanded.Targets[0].Fallbacks[0].ClusterName)
+}
+
+// TestBuildRouteFailoverFromPolicy_MultipleTargetsEachWithOwnFallbacks pins
+// that two independent targets[] entries — each with its own fallback
+// chain — resolve independently: distinct composite (AggregateCluster) and
+// leaf (ClusterName) identities per entry, with no cross-entry collision,
+// even though entry 1's second fallback is (like entry 0's primary) a
+// same-provider member with an empty Provider.
+func TestBuildRouteFailoverFromPolicy_MultipleTargetsEachWithOwnFallbacks(t *testing.T) {
+	rdc, route := failoverTestRDC()
+	routeKey := "POST|/chat/completions|main"
+	params := &modelFailoverParams{
+		Targets: []modelFailoverTargetEntry{
+			{
+				modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
+				Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+			},
+			{
+				modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o-mini"},
+				Fallbacks: []modelFailoverTarget{
+					{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"},
+					{Model: "gpt-4o-mini-retry"}, // same-provider fallback, own second target
+				},
+			},
+		},
+	}
+
+	rf, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, routeKey, "openai-primary")
+
+	require.NoError(t, err)
+	require.Len(t, rf.Targets, 2)
+	assert.Equal(t, "gpt-4o", rf.Targets[0].Model)
+	require.Len(t, rf.Targets[0].Fallbacks, 1)
+	assert.Equal(t, "gpt-4o-mini", rf.Targets[1].Model)
+	require.Len(t, rf.Targets[1].Fallbacks, 2)
+
+	require.Len(t, expanded.Targets, 2)
+	assert.Equal(t, xds.AggregateClusterName(routeKey, 0), expanded.Targets[0].AggregateCluster)
+	assert.Equal(t, xds.AggregateClusterName(routeKey, 1), expanded.Targets[1].AggregateCluster)
+	assert.NotEqual(t, expanded.Targets[0].AggregateCluster, expanded.Targets[1].AggregateCluster)
+
+	assert.Equal(t, xds.FailoverLeafClusterName(routeKey, 0, 0), expanded.Targets[0].ClusterName)
+	assert.Equal(t, xds.FailoverLeafClusterName(routeKey, 0, 1), expanded.Targets[0].Fallbacks[0].ClusterName)
+	assert.Equal(t, xds.FailoverLeafClusterName(routeKey, 1, 0), expanded.Targets[1].ClusterName)
+	assert.Equal(t, xds.FailoverLeafClusterName(routeKey, 1, 1), expanded.Targets[1].Fallbacks[0].ClusterName)
+	assert.Equal(t, xds.FailoverLeafClusterName(routeKey, 1, 2), expanded.Targets[1].Fallbacks[1].ClusterName)
+	assert.NotEqual(t, expanded.Targets[0].ClusterName, expanded.Targets[1].ClusterName,
+		"both entries' primaries share the same physical cluster but must still get distinct leaves")
+}
+
+// TestParseModelFailoverParams_AllowsSameFallbackAcrossDifferentTargets pins
+// that the design §12 "same canonical member twice" rejection is scoped to
+// ONE chain — the identical (model, provider) fallback legitimately serving
+// as the fallback for two unrelated primaries must not be rejected globally.
+func TestParseModelFailoverParams_AllowsSameFallbackAcrossDifferentTargets(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":     "gpt-4o",
+				"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+			},
+			map[string]interface{}{
+				"model":     "gpt-4o-mini",
+				"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+			},
+		},
+	}
+
+	params, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+	require.NoError(t, err, "the same fallback member may legitimately appear in two independent targets[] chains")
+	require.Len(t, params.Targets, 2)
 }
 
 func TestBuildRouteFailoverFromPolicy_UnknownProviderIsAnError(t *testing.T) {
@@ -262,6 +334,70 @@ func TestBuildRouteFailoverFromPolicy_StatusCodesReplaceDefaultRetryOn(t *testin
 
 // ─── parseModelFailoverParams: statusCodes validation ────────────────────────
 
+// ─── buildRouteFailoverFromPolicy: perTryTimeout / backoff / circuit breaker ─
+
+func TestBuildRouteFailoverFromPolicy_CarriesPerTryTimeoutBackoffAndCircuitBreakerIntoRouteFailover(t *testing.T) {
+	rdc, route := failoverTestRDC()
+	params := &modelFailoverParams{
+		Targets: []modelFailoverTargetEntry{{
+			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
+			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+		}},
+		PerTryTimeoutMs:      5000,
+		RetryBackoffBaseMs:   25,
+		RetryBackoffMaxMs:    250,
+		MaxConcurrentRetries: 10,
+	}
+
+	rf, _, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.NoError(t, err)
+	assert.Equal(t, 5000, rf.PerTryTimeoutMs)
+	assert.Equal(t, 25, rf.RetryBackoffBaseMs)
+	assert.Equal(t, 250, rf.RetryBackoffMaxMs)
+	assert.Equal(t, 10, rf.MaxConcurrentRetries)
+}
+
+// TestBuildRouteFailoverFromPolicy_RejectsUnreachableFallbacksGivenExplicitOverallTimeout
+// is the design §12 "the per-attempt and overall deadlines make later
+// fallbacks unreachable" check: a 2-member chain (1 retry) at a 5s
+// perTryTimeout cannot possibly complete within an explicit 6s overall route
+// timeout — the second attempt would never get to start.
+func TestBuildRouteFailoverFromPolicy_RejectsUnreachableFallbacksGivenExplicitOverallTimeout(t *testing.T) {
+	rdc, route := failoverTestRDC()
+	sixSeconds := 6 * time.Second
+	route.Timeout = &models.RouteTimeout{Timeout: &sixSeconds}
+	params := &modelFailoverParams{
+		Targets: []modelFailoverTargetEntry{{
+			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
+			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+		}},
+		PerTryTimeoutMs: 5000,
+	}
+
+	_, _, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.Error(t, err)
+}
+
+// No explicit overall route timeout configured — buildRouteFailoverFromPolicy
+// has no default to check against (that default lives in the xDS translator,
+// a different package), so it must not reject.
+func TestBuildRouteFailoverFromPolicy_AllowsPerTryTimeoutWhenNoExplicitOverallTimeoutConfigured(t *testing.T) {
+	rdc, route := failoverTestRDC()
+	params := &modelFailoverParams{
+		Targets: []modelFailoverTargetEntry{{
+			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
+			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
+		}},
+		PerTryTimeoutMs: 5000,
+	}
+
+	_, _, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
+
+	require.NoError(t, err)
+}
+
 func TestParseModelFailoverParams_RejectsOutOfRangeStatusCode(t *testing.T) {
 	raw := map[string]interface{}{
 		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
@@ -274,11 +410,170 @@ func TestParseModelFailoverParams_RejectsOutOfRangeStatusCode(t *testing.T) {
 
 func TestParseModelFailoverParams_AcceptsValidStatusCodes(t *testing.T) {
 	raw := map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"targets": []interface{}{map[string]interface{}{
+			"model":     "gpt-4o",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+		}},
 		"statusCodes": []interface{}{float64(500), float64(429)},
 	}
 
-	params, err := parseModelFailoverParams(raw, nil, "openai-primary")
+	params, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
 	require.NoError(t, err)
 	assert.Equal(t, []int{500, 429}, params.StatusCodes)
+}
+
+func TestParseModelFailoverParams_RejectsStatusCodeBelow400(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"statusCodes": []interface{}{float64(302)},
+	}
+
+	_, err := parseModelFailoverParams(raw, nil, "openai-primary")
+	require.Error(t, err, "retrying/suspending on a 3xx makes no sense as a failure trigger")
+}
+
+func TestParseModelFailoverParams_RejectsExplicitlyEmptyStatusCodesArray(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"statusCodes": []interface{}{},
+	}
+
+	_, err := parseModelFailoverParams(raw, nil, "openai-primary")
+	require.Error(t, err, "an explicitly empty statusCodes is ambiguous with omitting the key entirely")
+}
+
+// ─── §12 validation requirements ─────────────────────────────────────────────
+
+func TestParseModelFailoverParams_RejectsTargetWithNoFallbacks(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+	}
+
+	_, err := parseModelFailoverParams(raw, nil, "openai-primary")
+	require.Error(t, err, "a chain with no fallback has nothing to fail over to")
+}
+
+func TestParseModelFailoverParams_RejectsDuplicatePrimaryModelAcrossTargets(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":     "gpt-4o",
+				"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+			},
+			map[string]interface{}{
+				"model":     "GPT-4O", // case-insensitive duplicate of the first entry
+				"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+			},
+		},
+	}
+
+	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+	require.Error(t, err)
+}
+
+func TestParseModelFailoverParams_RejectsDuplicateCanonicalMemberWithinChain(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{
+			"model": "gpt-4o",
+			"fallbacks": []interface{}{
+				map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"},
+				map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"},
+			},
+		}},
+	}
+
+	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+	require.Error(t, err, "the same (model, provider) fallback listed twice in one chain is never reachable as two distinct attempts")
+}
+
+func TestParseModelFailoverParams_RejectsChainExceedingMaxLength(t *testing.T) {
+	fallbacks := make([]interface{}, 0, maxFailoverChainLength)
+	for i := 0; i < maxFailoverChainLength; i++ {
+		fallbacks = append(fallbacks, map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"})
+	}
+	raw := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{
+			"model":     "gpt-4o",
+			"fallbacks": fallbacks,
+		}},
+	}
+
+	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+	require.Error(t, err, "1 primary + maxFailoverChainLength fallbacks exceeds the platform limit")
+}
+
+// ─── perTryTimeout / retry backoff / retry circuit breaker ───────────────────
+
+func TestParseModelFailoverParams_ParsesPerTryTimeoutBackoffAndCircuitBreaker(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{
+			"model":     "gpt-4o",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+		}},
+		"perTryTimeoutMs":      float64(5000),
+		"retryBackoffBaseMs":   float64(25),
+		"retryBackoffMaxMs":    float64(250),
+		"maxConcurrentRetries": float64(10),
+	}
+
+	params, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+
+	require.NoError(t, err)
+	assert.Equal(t, 5000, params.PerTryTimeoutMs)
+	assert.Equal(t, 25, params.RetryBackoffBaseMs)
+	assert.Equal(t, 250, params.RetryBackoffMaxMs)
+	assert.Equal(t, 10, params.MaxConcurrentRetries)
+}
+
+func TestParseModelFailoverParams_RejectsNegativePerTryTimeoutMs(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{
+			"model":     "gpt-4o",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+		}},
+		"perTryTimeoutMs": float64(-1),
+	}
+
+	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+	require.Error(t, err)
+}
+
+func TestParseModelFailoverParams_RejectsRetryBackoffMaxLessThanBase(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{
+			"model":     "gpt-4o",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+		}},
+		"retryBackoffBaseMs": float64(250),
+		"retryBackoffMaxMs":  float64(25),
+	}
+
+	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+	require.Error(t, err)
+}
+
+func TestParseModelFailoverParams_RejectsRetryBackoffMaxWithoutBase(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{
+			"model":     "gpt-4o",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+		}},
+		"retryBackoffMaxMs": float64(250),
+	}
+
+	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+	require.Error(t, err, "retryBackoffMaxMs alone is a no-op at the xDS layer (Envoy requires base_interval); reject rather than silently ignore")
+}
+
+func TestParseModelFailoverParams_RejectsNegativeMaxConcurrentRetries(t *testing.T) {
+	raw := map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{
+			"model":     "gpt-4o",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
+		}},
+		"maxConcurrentRetries": float64(-1),
+	}
+
+	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
+	require.Error(t, err)
 }

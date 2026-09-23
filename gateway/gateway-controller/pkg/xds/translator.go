@@ -53,7 +53,6 @@ import (
 	luav3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/lua/v3"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
-	previous_prioritiesv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/retry/priority/previous_priorities/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
@@ -69,7 +68,6 @@ import (
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/storage"
-	"google.golang.org/protobuf/proto"
 	anypb "google.golang.org/protobuf/types/known/anypb"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -287,54 +285,27 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		clusters = append(clusters, c)
 	}
 
-	// Build one aggregate cluster per model-failover targets[] entry,
-	// deduped by route key + entry index (multiple operations of the same
-	// LlmProxy share the identical failover block, so this avoids emitting
-	// duplicate aggregate clusters with colliding names).
-	seenAggregates := map[string]bool{}
+	// Compile every model failover chain into a retry-aware composite cluster
+	// plus one independently ejectable leaf cluster per chain member.
+	sourceClusters := make(map[string]*cluster.Cluster, len(clusters))
+	for _, c := range clusters {
+		sourceClusters[c.Name] = c
+	}
+	seenFailoverClusters := map[string]bool{}
 	for routeKey, rdcRoute := range rdc.Routes {
 		if rdcRoute.Upstream.Failover == nil {
 			continue
 		}
-		aggClusters, err := buildFailoverAggregateClusters(rdcRoute.Upstream.Failover, routeKey)
+		failoverClusters, err := buildFailoverCompositeClusters(rdcRoute.Upstream.Failover, routeKey, sourceClusters)
 		if err != nil {
 			return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
 		}
-		for _, c := range aggClusters {
-			if seenAggregates[c.Name] {
+		for _, c := range failoverClusters {
+			if seenFailoverClusters[c.Name] {
 				continue
 			}
-			seenAggregates[c.Name] = true
+			seenFailoverClusters[c.Name] = true
 			clusters = append(clusters, c)
-		}
-	}
-
-	// Stamp every real cluster a model-failover chain references with its own
-	// identity (see applyMemberClusterIdentityMetadata) — never on the
-	// aggregate cluster itself, only its real members. Suspension is handled
-	// entirely by the model-failover policy's own in-process state
-	// (modelfailover.go's suspensionState), not by Envoy-native
-	// outlier_detection: the two would independently and redundantly eject
-	// the same host on different timelines (outlier_detection's ejection
-	// duration scales with cumulative ejection_count and never resets for
-	// the cluster's lifetime), fighting the policy's own suspend/resume
-	// decisions rather than reflecting them.
-	memberClusterKeys := collectMemberClusterKeys(rdc)
-	if len(memberClusterKeys) > 0 {
-		clusterByName := make(map[string]*cluster.Cluster, len(clusters))
-		for _, c := range clusters {
-			clusterByName[c.Name] = c
-		}
-		for clusterKey := range memberClusterKeys {
-			c, ok := clusterByName[clusterKey]
-			if !ok {
-				continue // referenced cluster wasn't built this pass — nothing to stamp
-			}
-			for _, locality := range c.GetLoadAssignment().GetEndpoints() {
-				for _, lbEp := range locality.GetLbEndpoints() {
-					lbEp.Metadata = applyMemberClusterIdentityMetadata(lbEp.Metadata, clusterKey)
-				}
-			}
 		}
 	}
 
@@ -370,22 +341,6 @@ func (t *Translator) routeTimeoutOrDefault(v *time.Duration, defaultMs uint32) *
 	}
 	return durationpb.New(time.Duration(defaultMs) * time.Millisecond)
 }
-
-// mustMarshalAny marshals a fixed, compile-time-constant proto message into an anypb.Any.
-// Intended only for literals that never vary at runtime, where a marshal failure would
-// indicate a broken build rather than a request-time condition worth propagating as an error.
-func mustMarshalAny(msg proto.Message) *anypb.Any {
-	a, err := anypb.New(msg)
-	if err != nil {
-		panic(fmt.Sprintf("failed to marshal constant proto message %T: %v", msg, err))
-	}
-	return a
-}
-
-// failoverRetryPriorityConfig is the marshalled envoy.extensions.retry.priority.previous_priorities.v3.
-// PreviousPrioritiesConfig attached to every failover route's RetryPolicy. It carries no per-route
-// variability (see createRouteFromRDC), so it's marshalled once here rather than on every route.
-var failoverRetryPriorityConfig = mustMarshalAny(&previous_prioritiesv3.PreviousPrioritiesConfig{UpdateFrequency: 1})
 
 // createRouteFromRDC creates an Envoy route from a RuntimeDeployConfig Route.
 func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route, rdc *models.RuntimeDeployConfig) *route.Route {
@@ -447,11 +402,10 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		routeAction.Route.HostRewriteSpecifier = &route.RouteAction_AutoHostRewrite{
 			AutoHostRewrite: &wrapperspb.BoolValue{Value: true},
 		}
-		// NumRetries must cover the deepest fallback chain among this route's targets, not
-		// any single target's own depth — RetryPolicy is one object per ROUTE, shared by every
-		// target, so a shallower target must not cap how far a deeper target's chain can
-		// escalate. Envoy defaults num_retries to 1 when unset, which would silently strand
-		// fallbacks[1:] unreachable (previous_priorities only advances one priority per retry).
+		// The downstream model-failover policy overrides this value per request
+		// with the selected chain's exact depth. The route-level maximum is only
+		// a defensive ceiling for requests that reach this route without that
+		// override.
 		maxFallbackDepth := 0
 		for _, target := range rdcRoute.Upstream.Failover.Targets {
 			if len(target.Fallbacks) > maxFallbackDepth {
@@ -472,10 +426,6 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		retryPolicy := &route.RetryPolicy{
 			RetryOn:    strings.Join(retryOn, ","),
 			NumRetries: wrapperspb.UInt32(uint32(maxFallbackDepth)),
-			RetryPriority: &route.RetryPolicy_RetryPriority{
-				Name:       "envoy.retry_priorities.previous_priorities",
-				ConfigType: &route.RetryPolicy_RetryPriority_TypedConfig{TypedConfig: failoverRetryPriorityConfig},
-			},
 		}
 		// RetriableStatusCodes only takes effect when RetryOn includes
 		// "retriable-status-codes" (which buildRouteFailoverFromPolicy only
@@ -487,6 +437,22 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 				codes[i] = uint32(code)
 			}
 			retryPolicy.RetriableStatusCodes = codes
+		}
+		// design §9.2/§9: both left nil (Envoy's own defaults apply) unless
+		// the operator explicitly configured them — parseModelFailoverParams
+		// already validated PerTryTimeoutMs/RetryBackoff{Base,Max}Ms are
+		// non-negative and Max >= Base.
+		if rdcRoute.Upstream.Failover.PerTryTimeoutMs > 0 {
+			retryPolicy.PerTryTimeout = durationpb.New(time.Duration(rdcRoute.Upstream.Failover.PerTryTimeoutMs) * time.Millisecond)
+		}
+		if rdcRoute.Upstream.Failover.RetryBackoffBaseMs > 0 {
+			backoff := &route.RetryPolicy_RetryBackOff{
+				BaseInterval: durationpb.New(time.Duration(rdcRoute.Upstream.Failover.RetryBackoffBaseMs) * time.Millisecond),
+			}
+			if rdcRoute.Upstream.Failover.RetryBackoffMaxMs > 0 {
+				backoff.MaxInterval = durationpb.New(time.Duration(rdcRoute.Upstream.Failover.RetryBackoffMaxMs) * time.Millisecond)
+			}
+			retryPolicy.RetryBackOff = backoff
 		}
 		routeAction.Route.RetryPolicy = retryPolicy
 	}
@@ -1015,7 +981,14 @@ func (t *Translator) TranslateConfigs(
 			// documented "absent -> never suppress" fallback already treats as safe —
 			// closing the gap where a client could otherwise self-suppress its own
 			// traffic/analytics record by sending a forged x-envoy-original-path.
-			RequestHeadersToRemove: []string{envoyOriginalPathHeader},
+			//
+			// Also strip envoyClientOverridableHeaders — a client-supplied
+			// x-envoy-max-retries/x-envoy-*-timeout-ms/x-envoy-attempt-count
+			// would otherwise let a caller override retry/timeout behavior Envoy
+			// would normally only apply from server-side route config (or, for
+			// a failover route, from the model-failover policy's own per-chain
+			// override).
+			RequestHeadersToRemove: append([]string{envoyOriginalPathHeader}, envoyClientOverridableHeaders...),
 		}
 		virtualHosts = append(virtualHosts, virtualHost)
 	}
@@ -2930,6 +2903,29 @@ func buildReservedHealthPathAccessLogFilter() *accesslog.AccessLogFilter {
 // header rather than :path so that collector.ignore_path_prefixes is evaluated
 // against what the client actually called, not the rewritten backend path.
 const envoyOriginalPathHeader = "x-envoy-original-path"
+
+// envoyClientOverridableHeaders are Envoy router-filter headers the client's
+// own request can set to override server-configured behavior unless stripped
+// at ingress — retry count/conditions and request/per-try timeouts. A
+// model-failover route computes its own x-envoy-max-retries per selected
+// chain (see modelfailover.go's OnRequestBody), but Envoy honors a
+// client-supplied value on ANY route reachable through this vhost, failover
+// or not, so a forged header could force deeper retry storms against
+// downstream providers (cost/availability impact) regardless of which route
+// the request actually lands on. x-envoy-attempt-count is included too: it's
+// normally response-bound (IncludeRequestAttemptCount governs whether Envoy
+// itself sets it before dispatch), but nothing stops a client from sending
+// its own copy on the way in, so strip it defensively rather than trust it's
+// never read.
+var envoyClientOverridableHeaders = []string{
+	"x-envoy-max-retries",
+	"x-envoy-retry-on",
+	"x-envoy-retry-grpc-on",
+	"x-envoy-upstream-rq-timeout-ms",
+	"x-envoy-upstream-rq-per-try-timeout-ms",
+	"x-envoy-expected-rq-timeout-ms",
+	"x-envoy-attempt-count",
+}
 
 // buildIgnorePathsAccessLogFilter builds an Envoy AccessLogFilter that suppresses
 // the ALS access-log entry entirely for requests whose client-facing path matches

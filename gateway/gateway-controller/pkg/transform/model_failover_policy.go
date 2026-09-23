@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
@@ -29,6 +30,13 @@ import (
 )
 
 const modelFailoverPolicyName = "model-failover"
+
+// maxFailoverChainLength is the platform limit on a single chain's total
+// member count (1 primary + fallbacks) — design §12 "the chain length
+// exceeds the platform limit". An unbounded chain would also mean an
+// unbounded number of leaf clusters and provider-scoped upstream policy
+// attachments per route.
+const maxFailoverChainLength = 10
 
 // modelFailoverTarget/modelFailoverTargetEntry/modelFailoverParams mirror the
 // policy's own ModelFailoverParams/FailoverTargetEntry/FailoverTarget shape
@@ -105,6 +113,20 @@ type modelFailoverParams struct {
 	// doubles the suspend window), in seconds. Omitted/<=0 defaults to 8x
 	// SuspendDuration.
 	MaxSuspendDuration int `json:"maxSuspendDuration,omitempty"`
+	// PerTryTimeoutMs bounds each individual chain-member attempt (design
+	// §9.2), in milliseconds. Omitted/0 leaves Envoy's own default (the
+	// route's overall timeout) in effect. Pure xDS config — never round-
+	// tripped to the runtime policy's own wire params.
+	PerTryTimeoutMs int `json:"perTryTimeoutMs,omitempty"`
+	// RetryBackoffBaseMs/RetryBackoffMaxMs configure Envoy's exponential retry
+	// backoff between attempts (design §9), in milliseconds. Both omitted/0
+	// leaves Envoy's own defaults (25ms base, 10x base max).
+	RetryBackoffBaseMs int `json:"retryBackoffBaseMs,omitempty"`
+	RetryBackoffMaxMs  int `json:"retryBackoffMaxMs,omitempty"`
+	// MaxConcurrentRetries bounds concurrent retry traffic per leaf cluster
+	// (design §9.3 retry resource protection). Omitted/0 leaves Envoy's own
+	// default (3).
+	MaxConcurrentRetries int `json:"maxConcurrentRetries,omitempty"`
 }
 
 // parseModelFailoverParams parses raw policy params and validates that every
@@ -141,28 +163,102 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 		return nil
 	}
 
+	resolveProvider := func(t modelFailoverTarget) string {
+		if provider := strings.TrimSpace(t.Provider); provider != "" {
+			return provider
+		}
+		return primaryProviderID
+	}
+
+	seenPrimaryModels := make(map[string]bool, len(params.Targets))
 	for _, entry := range params.Targets {
 		if err := validateProvider(entry.modelFailoverTarget); err != nil {
 			return nil, err
 		}
+		// design §12: "a chain has no primary or no fallback" — a target with
+		// zero fallbacks has nothing to fail over to.
+		if len(entry.Fallbacks) == 0 {
+			return nil, fmt.Errorf("model-failover: target %q must declare at least one fallback", entry.Model)
+		}
+		// design §12: "a primary model appears more than once for the same
+		// operation".
+		primaryKey := strings.ToLower(strings.TrimSpace(entry.Model))
+		if seenPrimaryModels[primaryKey] {
+			return nil, fmt.Errorf("model-failover: primary model %q is declared more than once", entry.Model)
+		}
+		seenPrimaryModels[primaryKey] = true
+		// design §12: "the chain length exceeds the platform limit".
+		if chainLength := 1 + len(entry.Fallbacks); chainLength > maxFailoverChainLength {
+			return nil, fmt.Errorf("model-failover: target %q has %d chain members, exceeding the platform limit of %d",
+				entry.Model, chainLength, maxFailoverChainLength)
+		}
+
+		// design §12: "a chain contains the same canonical member twice" — a
+		// canonical member is identified by resolved provider + model +
+		// upstreamDefinition, comparing the primary against every fallback and
+		// every fallback against every other one.
+		type canonicalMember struct{ provider, model, upstreamDefinition string }
+		toCanonical := func(t modelFailoverTarget) canonicalMember {
+			return canonicalMember{provider: resolveProvider(t), model: strings.ToLower(strings.TrimSpace(t.Model)), upstreamDefinition: t.UpstreamDefinition}
+		}
+		seenMembers := map[canonicalMember]bool{toCanonical(entry.modelFailoverTarget): true}
 		for _, fb := range entry.Fallbacks {
 			if err := validateProvider(fb); err != nil {
 				return nil, err
 			}
+			canonical := toCanonical(fb)
+			if seenMembers[canonical] {
+				return nil, fmt.Errorf("model-failover: target %q's chain declares the same member (model %q, provider %q) more than once",
+					entry.Model, fb.Model, canonical.provider)
+			}
+			seenMembers[canonical] = true
 		}
 	}
 
+	// design §12: "the status list is empty or contains invalid or unsafe
+	// statuses". An explicitly empty array (as opposed to an omitted key,
+	// which decodes to a nil slice — see StatusCodes's own doc comment) is
+	// ambiguous with "use the default", so reject it rather than silently
+	// falling back. A code outside [400,599] is "unsafe": retrying/suspending
+	// on a 1xx/2xx/3xx response treats an in-flight or already-succeeded
+	// request as a failure.
+	if params.StatusCodes != nil && len(params.StatusCodes) == 0 {
+		return nil, fmt.Errorf("model-failover: statusCodes must not be an empty array — omit the key entirely to use the default")
+	}
 	for _, code := range params.StatusCodes {
-		if code < 100 || code > 599 {
-			return nil, fmt.Errorf("model-failover: statusCodes entry %d is not a valid HTTP status code", code)
+		if code < 400 || code > 599 {
+			return nil, fmt.Errorf("model-failover: statusCodes entry %d is not a valid failure-triggering HTTP status code (expected 400-599)", code)
 		}
 	}
 
 	if params.SuspendAfterFailures < 0 {
 		return nil, fmt.Errorf("model-failover: suspendAfterFailures must not be negative")
 	}
+	if params.SuspendAfterFailures > 1 {
+		return nil, fmt.Errorf("model-failover: suspendAfterFailures greater than 1 is not supported with deterministic composite-chain progression")
+	}
 	if params.MaxSuspendDuration < 0 {
 		return nil, fmt.Errorf("model-failover: maxSuspendDuration must not be negative")
+	}
+
+	if params.PerTryTimeoutMs < 0 {
+		return nil, fmt.Errorf("model-failover: perTryTimeoutMs must not be negative")
+	}
+	if params.RetryBackoffBaseMs < 0 {
+		return nil, fmt.Errorf("model-failover: retryBackoffBaseMs must not be negative")
+	}
+	if params.RetryBackoffMaxMs < 0 {
+		return nil, fmt.Errorf("model-failover: retryBackoffMaxMs must not be negative")
+	}
+	if params.RetryBackoffBaseMs > 0 && params.RetryBackoffMaxMs > 0 && params.RetryBackoffMaxMs < params.RetryBackoffBaseMs {
+		return nil, fmt.Errorf("model-failover: retryBackoffMaxMs (%d) must be >= retryBackoffBaseMs (%d)",
+			params.RetryBackoffMaxMs, params.RetryBackoffBaseMs)
+	}
+	if params.RetryBackoffMaxMs > 0 && params.RetryBackoffBaseMs <= 0 {
+		return nil, fmt.Errorf("model-failover: retryBackoffMaxMs requires retryBackoffBaseMs to also be set")
+	}
+	if params.MaxConcurrentRetries < 0 {
+		return nil, fmt.Errorf("model-failover: maxConcurrentRetries must not be negative")
 	}
 
 	return &params, nil
@@ -200,14 +296,14 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 		}
 		fallbacks := make([]models.RouteFailoverEntry, 0, len(entry.Fallbacks))
 		expandedFallbacks := make([]modelFailoverTarget, 0, len(entry.Fallbacks))
-		for _, fb := range entry.Fallbacks {
+		for fallbackIndex, fb := range entry.Fallbacks {
 			fbEntry, err := resolveFailoverEntry(rdc, r, fb, primaryProviderID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("route %q: resolving failover fallback %q: %w", routeKey, fb.Model, err)
 			}
 			fallbacks = append(fallbacks, fbEntry)
 			fb.BasePath = fbEntry.Upstream.BasePath
-			fb.ClusterName = fbEntry.Upstream.ClusterName
+			fb.ClusterName = xds.FailoverLeafClusterName(routeKey, i, fallbackIndex+1)
 			expandedFallbacks = append(expandedFallbacks, fb)
 		}
 		targets = append(targets, models.RouteFailoverTarget{
@@ -218,7 +314,7 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 
 		expandedTarget := entry.modelFailoverTarget
 		expandedTarget.BasePath = targetEntry.Upstream.BasePath
-		expandedTarget.ClusterName = targetEntry.Upstream.ClusterName
+		expandedTarget.ClusterName = xds.FailoverLeafClusterName(routeKey, i, 0)
 		expanded.Targets[i] = modelFailoverTargetEntry{
 			modelFailoverTarget: expandedTarget,
 			Fallbacks:           expandedFallbacks,
@@ -235,6 +331,26 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 		retriableStatusCodes = params.StatusCodes
 	}
 
+	// design §12: "the per-attempt and overall deadlines make later fallbacks
+	// unreachable". Only checked when the operator explicitly set an overall
+	// route timeout — the platform's own default overall timeout is resolved
+	// later, in the xDS translator (a different package, with no dependency
+	// from here), so there is nothing to compare against otherwise.
+	if params.PerTryTimeoutMs > 0 && r.Timeout != nil && r.Timeout.Timeout != nil {
+		chainLength := 1 + len(targets[len(targets)-1].Fallbacks)
+		for _, target := range targets {
+			if l := 1 + len(target.Fallbacks); l > chainLength {
+				chainLength = l
+			}
+		}
+		perTryBudget := time.Duration(params.PerTryTimeoutMs) * time.Millisecond * time.Duration(chainLength)
+		if perTryBudget > *r.Timeout.Timeout {
+			return nil, nil, fmt.Errorf(
+				"model-failover: route %q's perTryTimeoutMs (%dms) x its longest chain (%d members) = %s, which exceeds the route's overall timeout of %s — later fallbacks would never be reachable",
+				routeKey, params.PerTryTimeoutMs, chainLength, perTryBudget, *r.Timeout.Timeout)
+		}
+	}
+
 	return &models.RouteFailover{
 		SuspendDurationSeconds:    params.SuspendDuration,
 		Targets:                   targets,
@@ -242,6 +358,10 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 		RetriableStatusCodes:      retriableStatusCodes,
 		SuspendAfterFailures:      params.SuspendAfterFailures,
 		MaxSuspendDurationSeconds: params.MaxSuspendDuration,
+		PerTryTimeoutMs:           params.PerTryTimeoutMs,
+		RetryBackoffBaseMs:        params.RetryBackoffBaseMs,
+		RetryBackoffMaxMs:         params.RetryBackoffMaxMs,
+		MaxConcurrentRetries:      params.MaxConcurrentRetries,
 	}, expanded, nil
 }
 

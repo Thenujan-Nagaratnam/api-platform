@@ -20,6 +20,7 @@ package xds
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,13 +98,103 @@ func TestTranslateRuntimeConfig_FailoverRouteGetsRetryPolicyAndHostRewrite(t *te
 	require.NotNil(t, action)
 	require.NotNil(t, action.RetryPolicy)
 	assert.Equal(t, "5xx", action.RetryPolicy.RetryOn)
-	require.NotNil(t, action.RetryPolicy.RetryPriority)
-	assert.Equal(t, "envoy.retry_priorities.previous_priorities", action.RetryPolicy.RetryPriority.Name)
+	assert.Nil(t, action.RetryPolicy.RetryPriority, "composite clusters own retry progression; aggregate priority plugins are incompatible")
 	require.NotNil(t, action.RetryPolicy.NumRetries, "num_retries must be set or Envoy defaults to 1, capping escalation at priority 1 regardless of chain depth")
 	assert.Equal(t, uint32(1), action.RetryPolicy.NumRetries.GetValue())
 
 	_, isAutoRewrite := action.HostRewriteSpecifier.(*route.RouteAction_AutoHostRewrite)
 	assert.True(t, isAutoRewrite, "a failover route must auto-rewrite Host, or per-attempt backend resolution can't tell attempts apart")
+}
+
+// TestTranslateRuntimeConfig_FailoverRouteAppliesPerTryTimeoutAndRetryBackoff
+// pins design §9.2's per-attempt budget and §9's retry backoff: both are pure
+// Envoy RetryPolicy fields, generated only when the operator configured them
+// (RouteFailover.PerTryTimeoutMs / RetryBackoff{Base,Max}Ms).
+func TestTranslateRuntimeConfig_FailoverRouteAppliesPerTryTimeoutAndRetryBackoff(t *testing.T) {
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"primary-cluster":  {BasePath: "/", Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+			"fallback-cluster": {BasePath: "/", Endpoints: []models.Endpoint{{Host: "anthropic.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+		},
+		Routes: map[string]*models.Route{
+			"POST|/chat/completions|main": {
+				Method: "POST",
+				Path:   "/chat/completions",
+				Vhost:  "main",
+				Upstream: models.RouteUpstream{
+					ClusterKey:       "primary-cluster",
+					UseClusterHeader: true,
+					DefaultCluster:   "primary-cluster",
+					Failover: &models.RouteFailover{
+						PerTryTimeoutMs:    5000,
+						RetryBackoffBaseMs: 25,
+						RetryBackoffMaxMs:  250,
+						Targets: []models.RouteFailoverTarget{{
+							Model:     "gpt-4o",
+							Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+							Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	translator := createTestTranslator()
+	routes, _, err := translator.translateRuntimeConfig(rdc)
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+
+	action := routes[0].GetRoute()
+	require.NotNil(t, action.RetryPolicy)
+	require.NotNil(t, action.RetryPolicy.PerTryTimeout)
+	assert.Equal(t, 5*time.Second, action.RetryPolicy.PerTryTimeout.AsDuration())
+	require.NotNil(t, action.RetryPolicy.RetryBackOff)
+	require.NotNil(t, action.RetryPolicy.RetryBackOff.BaseInterval)
+	assert.Equal(t, 25*time.Millisecond, action.RetryPolicy.RetryBackOff.BaseInterval.AsDuration())
+	require.NotNil(t, action.RetryPolicy.RetryBackOff.MaxInterval)
+	assert.Equal(t, 250*time.Millisecond, action.RetryPolicy.RetryBackOff.MaxInterval.AsDuration())
+}
+
+// An operator who configures neither must not get Envoy-generated defaults
+// baked into the route explicitly — leaving the fields nil lets Envoy's own
+// (documented) defaults apply exactly as they would with no failover at all.
+func TestTranslateRuntimeConfig_FailoverRouteOmitsPerTryTimeoutAndBackoffWhenUnconfigured(t *testing.T) {
+	rdc := &models.RuntimeDeployConfig{
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"primary-cluster":  {BasePath: "/", Endpoints: []models.Endpoint{{Host: "openai.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+			"fallback-cluster": {BasePath: "/", Endpoints: []models.Endpoint{{Host: "anthropic.com", Port: 443}}, TLS: &models.UpstreamTLS{Enabled: true}},
+		},
+		Routes: map[string]*models.Route{
+			"POST|/chat/completions|main": {
+				Method: "POST",
+				Path:   "/chat/completions",
+				Vhost:  "main",
+				Upstream: models.RouteUpstream{
+					ClusterKey:       "primary-cluster",
+					UseClusterHeader: true,
+					DefaultCluster:   "primary-cluster",
+					Failover: &models.RouteFailover{
+						Targets: []models.RouteFailoverTarget{{
+							Model:     "gpt-4o",
+							Target:    models.RouteFailoverEntry{ClusterKey: "primary-cluster"},
+							Fallbacks: []models.RouteFailoverEntry{{ClusterKey: "fallback-cluster"}},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	translator := createTestTranslator()
+	routes, _, err := translator.translateRuntimeConfig(rdc)
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+
+	action := routes[0].GetRoute()
+	require.NotNil(t, action.RetryPolicy)
+	assert.Nil(t, action.RetryPolicy.PerTryTimeout)
+	assert.Nil(t, action.RetryPolicy.RetryBackOff)
 }
 
 func failoverTestRDC(failover *models.RouteFailover) *models.RuntimeDeployConfig {

@@ -1771,6 +1771,41 @@ func TestTranslator_TranslateConfigs_StripsClientOriginalPathHeader(t *testing.T
 	assert.True(t, found, "expected at least one virtual host in the shared route config")
 }
 
+// TestTranslator_TranslateConfigs_StripsClientOverridableEnvoyHeaders is the
+// design-doc security-invariant regression test (§13 "Remove client-supplied
+// internal routing, retry, attempt-count, and attribution headers at
+// ingress"): every virtual host must strip Envoy's client-honored retry/
+// timeout override headers, regardless of whether any deployed route on that
+// vhost uses model-failover — Envoy's router filter honors these from ANY
+// client request unless removed, so a forged x-envoy-max-retries could force
+// deeper retry storms against a downstream provider on an unrelated route.
+func TestTranslator_TranslateConfigs_StripsClientOverridableEnvoyHeaders(t *testing.T) {
+	logger := createTestLogger()
+	routerCfg := testRouterConfig()
+	cfg := testConfig()
+	translator := NewTranslator(logger, routerCfg, nil, cfg)
+
+	resources, err := translator.TranslateConfigs([]*models.StoredConfig{}, "test-correlation-id")
+	require.NoError(t, err)
+
+	routeConfigs := resources[resource.RouteType]
+	require.NotEmpty(t, routeConfigs)
+
+	found := false
+	for _, res := range routeConfigs {
+		rc, ok := res.(*route.RouteConfiguration)
+		require.True(t, ok)
+		for _, vh := range rc.VirtualHosts {
+			found = true
+			for _, h := range envoyClientOverridableHeaders {
+				assert.Contains(t, vh.RequestHeadersToRemove, h,
+					"virtual host %q must strip client-supplied %q", vh.Name, h)
+			}
+		}
+	}
+	assert.True(t, found, "expected at least one virtual host in the shared route config")
+}
+
 // The gateway's own /ready and /healthy direct-response routes must be present in
 // every virtual host — including the pre-seeded "*" wildcard vhost when zero
 // APIs/LLMProviders/LLMProxies are deployed, and every API-specific vhost once
