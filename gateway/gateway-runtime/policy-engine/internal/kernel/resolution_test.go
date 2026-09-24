@@ -1125,7 +1125,7 @@ func TestGenericResolutionFailure_StatusPerKind(t *testing.T) {
 	}
 	for kind, want := range tests {
 		t.Run(string(kind), func(t *testing.T) {
-			out := genericResolutionFailure(kind, "abc-123")
+			out := genericResolutionFailure(kind, "abc-123", false)
 			assert.Equal(t, want, out.StatusCode)
 			assert.Equal(t, "application/json", out.Headers["content-type"])
 			assert.Equal(t, "abc-123", out.Headers["x-error-id"])

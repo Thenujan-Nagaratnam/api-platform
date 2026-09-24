@@ -376,6 +376,7 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 	r.Match.Headers = buildMatchHeaders(method, rdcRoute)
 	t.setMatchPathSpecifier(r.Match, fullPath, operationPath, rdcRoute)
 	setRouteHTTPRoute(r, fullPath)
+	setRouteAPIKind(r, rdc.Metadata.Kind)
 
 	// Compute regex rewrite to strip context and prepend upstream path
 	upstreamPath := ""
@@ -726,6 +727,8 @@ func (t *Translator) TranslateConfigs(
 	// All API routes are consolidated into one virtual host to avoid wildcard domain conflicts
 	allRoutes := make([]*route.Route, 0)
 	clusterMap := make(map[string]*cluster.Cluster)
+	// LLM API contexts per vhost, for the OpenAI-format 404 catch-alls (llmNotFoundRoutes).
+	llmContextsByVHost := make(map[string]map[string]struct{})
 
 	for _, cfg := range configs {
 		// Skip undeployed APIs - they should not appear in xDS routes
@@ -771,6 +774,16 @@ func (t *Translator) TranslateConfigs(
 						slog.String("id", cfg.UUID),
 						slog.Any("error", err))
 					continue
+				}
+				if isLLMKind(rdc.Metadata.Kind) && rdc.Context != "" && rdc.Context != "/" {
+					for _, r := range routesList {
+						if parts := strings.Split(r.Name, "|"); len(parts) >= 3 {
+							if llmContextsByVHost[parts[2]] == nil {
+								llmContextsByVHost[parts[2]] = make(map[string]struct{})
+							}
+							llmContextsByVHost[parts[2]][rdc.Context] = struct{}{}
+						}
+					}
 				}
 			}
 		}
@@ -845,6 +858,14 @@ func (t *Translator) TranslateConfigs(
 		// is never ambiguous — but they still must precede the "/" prefix catch-all
 		// appended below, or Envoy's first-match routing would shadow them.
 		routes = append(append([]*route.Route{}, gatewayHealthRoutes...), routes...)
+
+		// OpenAI-format 404s for unmatched paths under an LLM API's context, after
+		// every API route and before the vhost-wide catch-all below.
+		llmNotFound, err := llmNotFoundRoutes(llmContextsByVHost[vhost])
+		if err != nil {
+			return nil, err
+		}
+		routes = append(routes, llmNotFound...)
 
 		// Append the catch-all 404 route as the last route for each vhost (lowest priority).
 		extProcDisabledAny, err := anypb.New(&extproc.ExtProcPerRoute{
@@ -1397,6 +1418,14 @@ func (t *Translator) createListener(virtualHosts []*route.VirtualHost, isHTTPS b
 		manager.AccessLog = accessLogs
 	}
 
+	// Envoy's own routing/upstream failure replies on LLM routes use the conventional
+	// OpenAI-compatible non-streaming HTTP error envelope.
+	localReplyConfig, err := createLLMLocalReplyConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+	manager.LocalReplyConfig = localReplyConfig
+
 	// Add tracing if enabled
 	tracingConfig, err := t.createTracingConfig()
 	if err != nil {
@@ -1798,6 +1827,7 @@ func (t *Translator) createRoute(apiId, apiName, apiVersion, context, method, pa
 		}
 	}
 	setRouteHTTPRoute(r, fullPath)
+	setRouteAPIKind(r, apiKind)
 
 	// Add path rewriting if upstream has a path prefix
 	// Strip the API context (with version if included) and prepend the upstream path

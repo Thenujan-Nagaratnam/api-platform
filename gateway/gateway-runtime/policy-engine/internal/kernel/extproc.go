@@ -310,7 +310,8 @@ func (s *ExternalProcessorServer) handleProcessingPhase(ctx context.Context, req
 		if outcome == bindFailed {
 			resp, failureOutcome := renderResolutionFailure(ctx, denial.resolverName, rm.RouteName, "",
 				denial.failure,
-				resolutionFailureAnalytics(extractMetadataFromRouteMetadata(*rm), nil, denial.failure))
+				resolutionFailureAnalytics(extractMetadataFromRouteMetadata(*rm), nil, denial.failure),
+				isLLMKind(rm.APIKind))
 			// Which resolver refused, in which of its phases, and why — bounded
 			// values only. Stamped on both spans because no later phase runs to do
 			// it: this response is the request's whole life.
