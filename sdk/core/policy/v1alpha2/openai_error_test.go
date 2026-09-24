@@ -56,16 +56,16 @@ func TestOpenAIErrorTypeForStatus(t *testing.T) {
 	}
 }
 
-func TestNewOpenAIErrorBody_NullsAndDerivedType(t *testing.T) {
-	body := NewOpenAIErrorBody(401, OpenAIError{Message: "Invalid or expired credentials."})
+func TestBuildOpenAIErrorResponseBody_NullsAndDerivedType(t *testing.T) {
+	body := BuildOpenAIErrorResponseBody(401, OpenAIError{Message: "Invalid or expired credentials."})
 	want := `{"error":{"message":"Invalid or expired credentials.","type":"authentication_error","param":null,"code":null}}`
 	if string(body) != want {
 		t.Fatalf("body = %s\nwant %s", body, want)
 	}
 }
 
-func TestNewOpenAIErrorBody_AllFields(t *testing.T) {
-	body := NewOpenAIErrorBody(422, OpenAIError{
+func TestBuildOpenAIErrorResponseBody_AllFields(t *testing.T) {
+	body := BuildOpenAIErrorResponseBody(422, OpenAIError{
 		Message:   "blocked",
 		Type:      "custom_type",
 		Param:     "messages",
@@ -98,8 +98,8 @@ func TestNewOpenAIErrorBody_AllFields(t *testing.T) {
 	}
 }
 
-func TestNewOpenAIErrorBody_UnencodableGuardrailKeepsEnvelope(t *testing.T) {
-	body := NewOpenAIErrorBody(500, OpenAIError{Message: "x", Guardrail: map[string]any{"bad": make(chan int)}})
+func TestBuildOpenAIErrorResponseBody_UnencodableGuardrailKeepsEnvelope(t *testing.T) {
+	body := BuildOpenAIErrorResponseBody(500, OpenAIError{Message: "x", Guardrail: map[string]any{"bad": make(chan int)}})
 	want := `{"error":{"message":"x","type":"server_error","param":null,"code":null}}`
 	if string(body) != want {
 		t.Fatalf("body = %s\nwant %s", body, want)
@@ -136,7 +136,7 @@ func TestNewGuardrailOpenAIError(t *testing.T) {
 		"actionReason":         "Violation of regular expression detected.",
 		"assessments":          "matched forbidden pattern",
 	})
-	body := NewOpenAIErrorBody(422, e)
+	body := BuildOpenAIErrorResponseBody(422, e)
 	want := `{"error":{"message":"Violation of regular expression detected.","type":"invalid_request_error","param":null,"code":"guardrail_intervened","guardrail":{"assessments":"matched forbidden pattern","direction":"REQUEST","name":"regex-guardrail"}}}`
 	if string(body) != want {
 		t.Fatalf("body = %s\nwant %s", body, want)

@@ -95,9 +95,9 @@ func OpenAIErrorTypeForStatus(status int) string {
 // OpenAI reports content-policy refusals as 400 invalid_request_error.
 const GuardrailStatusCode = http.StatusBadRequest
 
-// NewOpenAIErrorBody renders e in the conventional OpenAI-compatible
+// BuildOpenAIErrorResponseBody renders e in the conventional OpenAI-compatible
 // non-streaming HTTP error envelope.
-func NewOpenAIErrorBody(status int, e OpenAIError) []byte {
+func BuildOpenAIErrorResponseBody(status int, e OpenAIError) []byte {
 	errType := e.Type
 	if errType == "" {
 		errType = OpenAIErrorTypeForStatus(status)
@@ -163,6 +163,6 @@ func NewOpenAIErrorResponse(status int, e OpenAIError) ImmediateResponse {
 	return ImmediateResponse{
 		StatusCode: status,
 		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       NewOpenAIErrorBody(status, e),
+		Body:       BuildOpenAIErrorResponseBody(status, e),
 	}
 }
