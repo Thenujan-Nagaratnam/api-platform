@@ -646,6 +646,15 @@ func TestMCPValidator_ValidateUpstreamAuth(t *testing.T) {
 			wantError: false,
 		},
 		{
+			name: "Legacy header auth is accepted as API key auth",
+			auth: &authConfig{
+				Type:   api.MCPProxyConfigDataUpstreamAuthType("header"),
+				Header: stringPtr("X-API-Key"),
+				Value:  stringPtr("secret-key"),
+			},
+			wantError: false,
+		},
+		{
 			// "bearer" predates the shared api-key/oauth2/other/none contract -
 			// kept for MCP backward compatibility, see mcp_validator.go.
 			name: "Valid bearer auth",

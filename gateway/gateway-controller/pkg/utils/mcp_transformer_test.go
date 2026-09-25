@@ -291,6 +291,49 @@ func TestMCPTransformer_Transform_WithPoliciesAndUpstreamAuth(t *testing.T) {
 	}
 }
 
+func TestMCPTransformer_Transform_WithHeaderUpstreamAuth_BackwardCompat(t *testing.T) {
+	name := "petstore"
+	version := "1.0.0"
+	context := "/petstore"
+	url := "http://backend:8080"
+	authHeader := "X-API-Key"
+	authValue := "secret-key"
+	authType := api.MCPProxyConfigDataUpstreamAuthType("header")
+
+	upstream := api.MCPProxyConfigData_Upstream{
+		Url: &url,
+		Auth: &struct {
+			Header        *string                                `json:"header,omitempty" yaml:"header,omitempty"`
+			PolicyName    *string                                `json:"policyName,omitempty" yaml:"policyName,omitempty"`
+			PolicyParams  *map[string]interface{}                `json:"policyParams,omitempty" yaml:"policyParams,omitempty"`
+			PolicyVersion *string                                `json:"policyVersion,omitempty" yaml:"policyVersion,omitempty"`
+			Type          api.MCPProxyConfigDataUpstreamAuthType `json:"type" yaml:"type"`
+			Value         *string                                `json:"value,omitempty" yaml:"value,omitempty"`
+		}{Header: &authHeader, Type: authType, Value: &authValue},
+	}
+
+	in := &api.MCPProxyConfiguration{
+		Spec: api.MCPProxyConfigData{
+			DisplayName: name,
+			Version:     version,
+			Context:     &context,
+			Upstream:    upstream,
+		},
+	}
+
+	var out api.RestAPI
+	res, err := NewMCPTransformer(newTestPolicyVersionResolver()).Transform(in, &out)
+	if err != nil {
+		t.Fatalf("Transform returned an error: %v", err)
+	}
+	if res.Spec.Policies == nil || len(*res.Spec.Policies) != 1 {
+		t.Fatalf("Expected one upstream auth policy, got %v", res.Spec.Policies)
+	}
+	if (*res.Spec.Policies)[0].Name != constants.SET_HEADERS_POLICY_NAME {
+		t.Errorf("Expected auth policy %s, got %s", constants.SET_HEADERS_POLICY_NAME, (*res.Spec.Policies)[0].Name)
+	}
+}
+
 // "bearer" predates the shared api-key/oauth2/other/none contract - preserved
 // for MCP backward compatibility, see mcp_validator.go.
 func TestMCPTransformer_Transform_WithBearerUpstreamAuth_BackwardCompat(t *testing.T) {

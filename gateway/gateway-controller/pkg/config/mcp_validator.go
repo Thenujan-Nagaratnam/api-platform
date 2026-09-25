@@ -257,6 +257,13 @@ func (v *MCPValidator) validateUpstream(fieldPrefix string, upstream *api.MCPPro
 	if upstream.Auth != nil {
 		auth := upstream.Auth
 
+		// "header" was emitted by older AI Workspace versions for API-key auth.
+		// Keep accepting it for MCP proxies without broadening the shared contract.
+		authType := string(auth.Type)
+		if authType == "header" {
+			authType = "api-key"
+		}
+
 		// "bearer" predates the shared api-key/oauth2/other/none contract - MCP-only,
 		// kept for backward compatibility (functionally api-key plus a value-prefix
 		// check), so it's validated separately rather than via the shared validator.
@@ -297,7 +304,7 @@ func (v *MCPValidator) validateUpstream(fieldPrefix string, upstream *api.MCPPro
 		}
 
 		fields := upstreamAuthFields{
-			authType:      string(auth.Type),
+			authType:      authType,
 			header:        auth.Header,
 			value:         auth.Value,
 			policyName:    auth.PolicyName,

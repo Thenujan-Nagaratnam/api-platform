@@ -681,6 +681,14 @@ export default function ExternalServersOverview(): JSX.Element {
     // delete the old secret once the update succeeds. Mirrors MCPServerProvider.updateMCPServer.
     const isRotatingCredential = !isCredentialMasked && hasCredentialChanged;
     let upstreamPayload = server.upstream;
+    if (upstreamPayload?.main?.auth?.type === 'header') {
+      upstreamPayload = {
+        main: {
+          ...upstreamPayload.main,
+          auth: { ...upstreamPayload.main.auth, type: 'api-key' },
+        },
+      };
+    }
     // Tracks the handle created below (rotation flow only), so a subsequent failed
     // updateMCPServer call can clean it up instead of leaking an orphaned secret.
     let newlyCreatedSecretHandle: string | null = null;
@@ -704,7 +712,7 @@ export default function ExternalServersOverview(): JSX.Element {
             });
             newlyCreatedSecretHandle = secretResponse.id;
             authPayload = {
-              type: 'header',
+              type: 'api-key',
               header: trimmedHeaderName,
               value: buildSecretPlaceholder(secretResponse.id),
             };
@@ -722,7 +730,7 @@ export default function ExternalServersOverview(): JSX.Element {
         // reconstructing it) relies on the backend's preserveMCPUpstreamAuthValue to
         // keep the stored value — the same fallback the Policies-only save path
         // already depends on. Only the header name (URL-only/header-only edits) changes.
-        authPayload = { ...server.upstream?.main?.auth, type: 'header', header: trimmedHeaderName };
+        authPayload = { ...server.upstream?.main?.auth, type: 'api-key', header: trimmedHeaderName };
       } else {
         // Header name cleared — no credential to attach, so drop auth entirely.
         authPayload = undefined;
@@ -813,7 +821,7 @@ export default function ExternalServersOverview(): JSX.Element {
         request = {
           url: trimmedUrl,
           auth: {
-            type: 'header',
+            type: 'api-key',
             header: trimmedHeaderName,
             value: authHeaderValue.trim(),
           },

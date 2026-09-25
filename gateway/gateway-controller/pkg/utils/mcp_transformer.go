@@ -242,7 +242,7 @@ func (t *MCPTransformer) Transform(input any, output *api.RestAPI) (*api.RestAPI
 	if upstream.Auth != nil {
 		auth := upstream.Auth
 		switch auth.Type {
-		case api.MCPProxyConfigDataUpstreamAuthTypeApiKey:
+		case api.MCPProxyConfigDataUpstreamAuthTypeApiKey, api.MCPProxyConfigDataUpstreamAuthType("header"):
 			pol, err := buildUpstreamAuthPolicy(string(auth.Type), "upstream.auth",
 				auth.PolicyName, auth.PolicyVersion, auth.PolicyParams,
 				constants.SET_HEADERS_POLICY_NAME,
