@@ -655,6 +655,45 @@ func TestMCPValidator_ValidateUpstreamAuth(t *testing.T) {
 			wantError: false,
 		},
 		{
+			name: "Legacy header auth requires a header",
+			auth: &authConfig{
+				Type:  api.MCPProxyConfigDataUpstreamAuthType("header"),
+				Value: stringPtr("secret-key"),
+			},
+			wantError: true,
+			errField:  "spec.upstream.auth.header",
+		},
+		{
+			name: "Legacy header auth requires a value",
+			auth: &authConfig{
+				Type:   api.MCPProxyConfigDataUpstreamAuthType("header"),
+				Header: stringPtr("X-API-Key"),
+			},
+			wantError: true,
+			errField:  "spec.upstream.auth.value",
+		},
+		{
+			name: "Legacy header auth accepts policyParams",
+			auth: &authConfig{
+				Type: api.MCPProxyConfigDataUpstreamAuthType("header"),
+				PolicyParams: &map[string]interface{}{
+					"request": map[string]interface{}{"headers": []interface{}{}},
+				},
+			},
+			wantError: false,
+		},
+		{
+			name: "Legacy header auth rejects policyParams combined with header and value",
+			auth: &authConfig{
+				Type:         api.MCPProxyConfigDataUpstreamAuthType("header"),
+				Header:       stringPtr("X-API-Key"),
+				Value:        stringPtr("secret-key"),
+				PolicyParams: &map[string]interface{}{"request": map[string]interface{}{}},
+			},
+			wantError: true,
+			errField:  "spec.upstream.auth.policyParams",
+		},
+		{
 			// "bearer" predates the shared api-key/oauth2/other/none contract -
 			// kept for MCP backward compatibility, see mcp_validator.go.
 			name: "Valid bearer auth",

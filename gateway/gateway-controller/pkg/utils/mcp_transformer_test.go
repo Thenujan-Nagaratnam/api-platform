@@ -332,6 +332,10 @@ func TestMCPTransformer_Transform_WithHeaderUpstreamAuth_BackwardCompat(t *testi
 	if (*res.Spec.Policies)[0].Name != constants.SET_HEADERS_POLICY_NAME {
 		t.Errorf("Expected auth policy %s, got %s", constants.SET_HEADERS_POLICY_NAME, (*res.Spec.Policies)[0].Name)
 	}
+	expectedParams, err := GetParamsOfPolicy(constants.SET_HEADERS_POLICY_PARAMS, authHeader, authValue)
+	require.NoError(t, err)
+	require.NotNil(t, (*res.Spec.Policies)[0].Params)
+	assert.Equal(t, expectedParams, *(*res.Spec.Policies)[0].Params)
 }
 
 // "bearer" predates the shared api-key/oauth2/other/none contract - preserved

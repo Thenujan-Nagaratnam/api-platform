@@ -681,14 +681,6 @@ export default function ExternalServersOverview(): JSX.Element {
     // delete the old secret once the update succeeds. Mirrors MCPServerProvider.updateMCPServer.
     const isRotatingCredential = !isCredentialMasked && hasCredentialChanged;
     let upstreamPayload = server.upstream;
-    if (upstreamPayload?.main?.auth?.type === 'header') {
-      upstreamPayload = {
-        main: {
-          ...upstreamPayload.main,
-          auth: { ...upstreamPayload.main.auth, type: 'api-key' },
-        },
-      };
-    }
     // Tracks the handle created below (rotation flow only), so a subsequent failed
     // updateMCPServer call can clean it up instead of leaking an orphaned secret.
     let newlyCreatedSecretHandle: string | null = null;
