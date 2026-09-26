@@ -627,7 +627,21 @@ type RouterConfig struct {
 
 	// HTTPListener configuration
 	HTTPListener HTTPListenerConfig `koanf:"http_listener"`
+
+	// Failover configures routes generated for the model-failover policy.
+	Failover RouterFailoverConfig `koanf:"failover"`
 }
+
+// RouterFailoverConfig configures the Envoy retry loop behind model-failover.
+type RouterFailoverConfig struct {
+	// MaxRequestBodyBytes is the request body Envoy buffers so a failover
+	// attempt can resend it. A larger request is still served, by the first
+	// target only: Envoy disables retries for a body it could not buffer.
+	MaxRequestBodyBytes uint64 `koanf:"max_request_body_bytes"`
+}
+
+// DefaultFailoverMaxRequestBodyBytes is the default model-failover retry buffer.
+const DefaultFailoverMaxRequestBodyBytes = uint64(4 * 1024 * 1024)
 
 // RouterUpstream holds upstream-side configuration (TLS and timeouts for Envoy upstream).
 type RouterUpstream struct {
@@ -1329,6 +1343,9 @@ func defaultConfig() *Config {
 				DisablePathNormalization:      false,                          // Path normalization enabled by default
 				PathWithEscapedSlashesAction:  commonconstants.KEEP_UNCHANGED, // Leave escaped-slash paths unchanged by default
 			},
+			Failover: RouterFailoverConfig{
+				MaxRequestBodyBytes: DefaultFailoverMaxRequestBodyBytes,
+			},
 		},
 		Analytics: AnalyticsConfig{
 			Enabled:           false,
@@ -1797,6 +1814,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateHTTPListenerConfig(); err != nil {
+		return err
+	}
+
+	if err := c.validateRouterFailoverConfig(); err != nil {
 		return err
 	}
 
@@ -2425,6 +2446,21 @@ func (c *Config) validateSubscriptionsConfig() error {
 // IsAccessLogsEnabled returns true if access logs are enabled
 func (c *Config) IsAccessLogsEnabled() bool {
 	return c.Router.AccessLogs.Enabled
+}
+
+// validateRouterFailoverConfig validates router.failover. A zero buffer would
+// silently disable every model-failover retry, so it defaults rather than
+// being accepted; an oversized one is rejected.
+func (c *Config) validateRouterFailoverConfig() error {
+	fo := &c.Router.Failover
+	if fo.MaxRequestBodyBytes == 0 {
+		fo.MaxRequestBodyBytes = DefaultFailoverMaxRequestBodyBytes
+	}
+	if fo.MaxRequestBodyBytes > uint64(constants.MaxReasonableBufferLimitBytes) {
+		return fmt.Errorf("router.failover.max_request_body_bytes must not exceed %d, got: %d",
+			constants.MaxReasonableBufferLimitBytes, fo.MaxRequestBodyBytes)
+	}
+	return nil
 }
 
 // validateHTTPListenerConfig validates the HTTP listener configuration

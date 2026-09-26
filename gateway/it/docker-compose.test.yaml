@@ -329,6 +329,66 @@ services:
     networks:
       - it-gateway-runtime-network
 
+  # Scriptable LLM backend for model-failover tests (openai-a)
+  mock-llm-openai-a:
+    container_name: it-mock-llm-openai-a
+    image: ghcr.io/wso2/api-platform/mock-llm-provider:latest
+    build:
+      context: ../../tests/mock-servers/mock-llm-provider
+      dockerfile: Dockerfile
+    environment:
+      - MOCK_NAME=mock-llm-openai-a
+    ports:
+      - "8091:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "--tries=1", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - it-gateway-runtime-network
+
+  # Scriptable LLM backend for model-failover tests (openai-b)
+  mock-llm-openai-b:
+    container_name: it-mock-llm-openai-b
+    image: ghcr.io/wso2/api-platform/mock-llm-provider:latest
+    build:
+      context: ../../tests/mock-servers/mock-llm-provider
+      dockerfile: Dockerfile
+    environment:
+      - MOCK_NAME=mock-llm-openai-b
+    ports:
+      - "8092:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "--tries=1", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - it-gateway-runtime-network
+
+  # Scriptable LLM backend for model-failover tests (anthropic)
+  mock-llm-anthropic:
+    container_name: it-mock-llm-anthropic
+    image: ghcr.io/wso2/api-platform/mock-llm-provider:latest
+    build:
+      context: ../../tests/mock-servers/mock-llm-provider
+      dockerfile: Dockerfile
+    environment:
+      - MOCK_NAME=mock-llm-anthropic
+    ports:
+      - "8093:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "--tries=1", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - it-gateway-runtime-network
+
   # Redis with RediSearch for semantic cache vector storage
   redis:
     container_name: it-redis

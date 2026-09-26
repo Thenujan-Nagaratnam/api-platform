@@ -465,6 +465,12 @@ stream_idle_timeout = "5m"
 # Idle timeout for the downstream connection
 idle_timeout = "1h"
 
+# model-failover policy
+[router.failover]
+# Request body Envoy keeps so a failover attempt can resend it (default: 4194304 / 4 MiB).
+# A larger request is still served, by the first target only.
+max_request_body_bytes = 4194304
+
 [router.policy_engine]
 host = "policy-engine"
 port = 9001

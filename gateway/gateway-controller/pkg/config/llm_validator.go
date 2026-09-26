@@ -877,6 +877,8 @@ func (v *LLMValidator) validateProxyData(spec *api.LLMProxyConfigData) []Validat
 	// The deprecated `policies` list must not coexist with the new policy lists
 	errors = append(errors, v.validatePolicyListExclusivity(spec.GlobalPolicies, spec.OperationPolicies, spec.Policies)...)
 
+	errors = append(errors, validateModelFailover(spec, attachments)...)
+
 	// Validate API-level resilience (timeout / idleTimeout). LLM kinds support resilience at
 	// the API level only.
 	errors = append(errors, validateResilienceTimeouts("spec.resilience", spec.Resilience)...)

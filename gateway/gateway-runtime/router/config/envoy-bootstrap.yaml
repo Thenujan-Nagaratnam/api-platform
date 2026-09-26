@@ -27,6 +27,14 @@ node:
   cluster: gateway-cluster
   id: router-node
 
+# Envoy internal listeners. The model-failover policy's dispatch hop runs on
+# one (gateway-controller generates it only when a failover chain exists); an
+# internal listener has no socket and is reachable only from inside Envoy.
+bootstrap_extensions:
+  - name: envoy.bootstrap.internal_listener
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.bootstrap.internal_listener.v3.InternalListener
+
 dynamic_resources:
   ads_config:
     api_type: GRPC

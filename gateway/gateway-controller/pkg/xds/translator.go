@@ -456,6 +456,7 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		}
 	}
 
+	t.applyRouteFailover(r, rdcRoute)
 	return r
 }
 
@@ -808,7 +809,14 @@ func (t *Translator) TranslateConfigs(
 		"*": {},
 	}
 
+	// model-failover dispatch routes live on the internal dispatch listener,
+	// never on a client-facing virtual host.
+	var dispatchRoutes []*route.Route
 	for _, r := range allRoutes {
+		if isFailoverDispatchRoute(r) {
+			dispatchRoutes = append(dispatchRoutes, r)
+			continue
+		}
 		// Extract vhost from route name: "METHOD|PATH|VHOST" with an optional
 		// "|DISCRIMINATOR" 4th segment for header-matched routes. The vhost is always
 		// at index 2; hostnames and paths never contain "|".
@@ -928,8 +936,22 @@ func (t *Translator) TranslateConfigs(
 		log.Info("HTTPS is disabled, skipping HTTPS listener creation")
 	}
 
+	var dispatchRouteConfig *route.RouteConfiguration
+	if len(dispatchRoutes) > 0 {
+		dispatchListener, drc, dispatchCluster, err := t.createFailoverDispatchResources(dispatchRoutes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create failover dispatch resources: %w", err)
+		}
+		listeners = append(listeners, dispatchListener)
+		clusterMap[dispatchCluster.Name] = dispatchCluster
+		dispatchRouteConfig = drc
+	}
+
 	// Add route configuration for RDS
 	var routes []types.Resource
+	if dispatchRouteConfig != nil {
+		routes = append(routes, dispatchRouteConfig)
+	}
 	if sharedRouteConfig != nil {
 		routes = append(routes, sharedRouteConfig)
 		log.Info("Added shared route configuration for RDS",
@@ -1338,6 +1360,14 @@ func (t *Translator) createListener(virtualHosts []*route.VirtualHost, isHTTPS b
 	}
 	httpFilters = append(httpFilters, luaFilter)
 
+	// model-failover: take the hop secret off provider-hop requests before
+	// they are forwarded (see failoverLocalReplyConfig).
+	hopFilter, err := createFailoverHopFilter()
+	if err != nil {
+		return nil, nil, err
+	}
+	httpFilters = append(httpFilters, hopFilter)
+
 	// Add router filter (must be last)
 	httpFilters = append(httpFilters, &hcm.HttpFilter{
 		Name: wellknown.Router,
@@ -1382,6 +1412,9 @@ func (t *Translator) createListener(virtualHosts []*route.VirtualHost, isHTTPS b
 		NormalizePath:                wrapperspb.Bool(!t.routerConfig.HTTPListener.DisablePathNormalization),
 		MergeSlashes:                 !t.routerConfig.HTTPListener.DisablePathNormalization,
 		PathWithEscapedSlashesAction: convertPathWithEscapedSlashesAction(t.routerConfig.HTTPListener.PathWithEscapedSlashesAction),
+		// Scoped by the hop secret, so it only ever touches model-failover's
+		// dispatch-to-provider loopback requests.
+		LocalReplyConfig: failoverLocalReplyConfig(true),
 	}
 
 	// Add access logs if either consumer needs a sink: the operator-facing stdout
