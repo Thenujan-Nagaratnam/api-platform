@@ -142,6 +142,25 @@ type Route struct {
 	// on that route, not the memory a caller can make the gateway hold. That is bounded
 	// listener-wide by per_connection_buffer_limit_bytes.
 	MaxRequestBodyBytes int64
+
+	// Failover marks a route produced by the model-failover expansion (see
+	// package failover). Nil for every other route. It is an Envoy-side concern
+	// only: the policy engine learns the role from the chain's own params.
+	Failover *RouteFailover
+}
+
+// RouteFailover carries the Envoy settings for a model-failover route.
+type RouteFailover struct {
+	// Role is "front" (client-facing route with the Envoy retry policy) or
+	// "dispatch" (internal-listener route each attempt passes through).
+	Role string
+	// ChainID is the value of the chain header the dispatch route matches on.
+	ChainID string
+	// Front-route retry settings; zero on dispatch routes.
+	NumRetries    int
+	PerTryTimeout time.Duration
+	RouteTimeout  time.Duration
+	RetryOn       string
 }
 
 // RouteTimeout holds parsed timeout values for a route.

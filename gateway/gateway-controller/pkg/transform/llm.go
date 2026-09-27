@@ -98,6 +98,12 @@ func (t *LLMTransformer) Transform(cfg *models.StoredConfig) (*models.RuntimeDep
 	}
 
 	// Step 4: Enrich metadata with LLM-specific fields
+	if _, isProxy := cfg.SourceConfiguration.(api.LLMProxyConfiguration); isProxy {
+		if err := applyFailoverRoutes(rdc); err != nil {
+			return nil, err
+		}
+	}
+
 	rdc.Metadata.Kind = cfg.Kind // Restore original kind (LlmProvider/LlmProxy)
 	llmMeta := t.extractLLMMetadata(cfg)
 	if llmMeta != nil {

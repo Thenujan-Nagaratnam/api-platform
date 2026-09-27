@@ -232,6 +232,9 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 	// selected provider without one unreachable.
 	var defs []api.UpstreamDefinition
 	defs = append(defs, loopbackUpstreamDefinition(primary.EffectiveName(), providerContext, t.routerConfig.ListenerPort))
+	// Loopback context of every attachment, keyed by effective name, for the
+	// per-target upstreams of a model-failover chain.
+	attachmentContexts := map[string]string{primary.EffectiveName(): providerContext}
 
 	if len(attachments) > 1 {
 		seen := map[string]bool{primary.EffectiveName(): true}
@@ -269,6 +272,7 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 				normalizedAddCtx = "/" + normalizedAddCtx
 			}
 			defs = append(defs, loopbackUpstreamDefinition(name, normalizedAddCtx, t.routerConfig.ListenerPort))
+			attachmentContexts[name] = normalizedAddCtx
 		}
 	}
 
@@ -426,10 +430,43 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 		ops = append(ops, *op)
 	}
 	ops = sortOperationsBySpecificity(ops)
+
+	// Phase 3.5: model-failover. Each operation carrying it becomes a front
+	// operation (Envoy retry policy, no provider-scoped policies) plus a
+	// dispatch operation that runs once per attempt with the selected target's
+	// transformer and credential. See package failover.
+	var globalPolicies []api.Policy
+	if proxy.Spec.GlobalPolicies != nil {
+		globalPolicies = append(globalPolicies, *proxy.Spec.GlobalPolicies...)
+	}
+	globalPolicies, globalFailover, err := takeGlobalFailoverPolicy(globalPolicies)
+	if err != nil {
+		return nil, err
+	}
+	failoverAttachments := make(map[string]failoverAttachment, len(attachments))
+	for _, ap := range attachments {
+		valuePrefix := additionalValuePrefixByID[ap.Id]
+		if ap.IsPrimary {
+			valuePrefix = apiKeyAuthValuePrefix(providerConfig.Spec.GlobalPolicies)
+		}
+		fa := failoverAttachment{attachment: ap, context: attachmentContexts[ap.EffectiveName()], valuePrefix: valuePrefix}
+		failoverAttachments[ap.EffectiveName()] = fa
+		if _, taken := failoverAttachments[ap.Id]; !taken {
+			failoverAttachments[ap.Id] = fa
+		}
+	}
+	fo, err := t.buildFailover(proxy.Metadata.Name, ops, globalFailover, failoverAttachments, t.routerConfig.ListenerPort)
+	if err != nil {
+		return nil, err
+	}
+
 	// Translators must run before upstream auth so the request is rewritten into
 	// the selected provider's shape before the upstream key is added.
 	if len(transformerPolicies) > 0 {
 		for i := range ops {
+			if fo.front[i] {
+				continue
+			}
 			for _, transformerPolicy := range transformerPolicies {
 				appendOperationPolicy(&ops[i], transformerPolicy)
 			}
@@ -437,6 +474,9 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 	}
 	if len(upstreamAuthPolicies) > 0 {
 		for i := range ops {
+			if fo.front[i] {
+				continue
+			}
 			for _, upstreamAuthPolicy := range upstreamAuthPolicies {
 				appendOperationPolicy(&ops[i], upstreamAuthPolicy)
 			}
@@ -448,7 +488,29 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 		return nil, err
 	}
 	for i := range ops {
+		if fo.front[i] {
+			continue
+		}
 		appendOperationPolicy(&ops[i], *loopbackMarkerPolicy)
+	}
+	if len(fo.dispatchOps) > 0 {
+		// The provider-vhost host policy is API-level on the proxy route, but
+		// dispatch routes drop API-level policies (see pkg/transform), so it is
+		// carried onto each dispatch operation directly.
+		if spec.Policies != nil {
+			for _, p := range *spec.Policies {
+				if p.Name != constants.PROXY_HOST__HEADER_POLICY_NAME {
+					continue
+				}
+				for d := range fo.dispatchOps {
+					withHost := append([]api.Policy{p}, *fo.dispatchOps[d].Policies...)
+					fo.dispatchOps[d].Policies = &withHost
+				}
+			}
+		}
+		ops = append(ops, fo.dispatchOps...)
+		defs = append(defs, fo.upstreamDefs...)
+		spec.UpstreamDefinitions = &defs
 	}
 	// A proxy is always allow-all with no access control, so there are no deny routes:
 	// attach API-level resilience to all generated routes.
@@ -458,9 +520,9 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 	// Global (api-level) policies: route into the derived RestAPI's spec.Policies so they are
 	// applied across ALL operations as one shared scope, evaluated before operation-level policies.
 	// Append because the proxy may already hold an api-level host-header policy (see Step 3).
-	if proxy.Spec.GlobalPolicies != nil && len(*proxy.Spec.GlobalPolicies) > 0 {
-		gp := make([]api.Policy, len(*proxy.Spec.GlobalPolicies))
-		copy(gp, *proxy.Spec.GlobalPolicies)
+	if len(globalPolicies) > 0 {
+		gp := make([]api.Policy, len(globalPolicies))
+		copy(gp, globalPolicies)
 		if spec.Policies == nil {
 			spec.Policies = &gp
 		} else {

@@ -223,3 +223,14 @@ func InjectSystemPolicies(policies []policyenginev1.PolicyInstance, cfg *config.
 	// Prepend system policies to the chain (they execute first)
 	return append(systemPolicies, policies...)
 }
+
+// IsSystemPolicyName reports whether name is one of the gateway's injected
+// system policies.
+func IsSystemPolicyName(name string) bool {
+	for _, sysPol := range defaultSystemPolicies {
+		if sysPol.Name == name {
+			return true
+		}
+	}
+	return false
+}
