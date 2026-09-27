@@ -1,0 +1,45 @@
+name: retry-on-status
+version: v1.0.0
+displayName: Retry On Status
+description: |
+  Sample and test policy for the gateway's per-attempt retry hop. When the backend
+  answers with the configured status, the request is sent again, up to `attempts`
+  times in total. It shows that a policy can retry without any gateway change: all
+  the gateway needs is the `retryBehavior` block below.
+
+  Each attempt carries `x-retry-attempt: <n>` to the backend, and the response
+  carries the number of the attempt that produced it.
+
+# How this policy takes part in the gateway's retry hop.
+retryBehavior:
+  # Run again for every attempt, so each attempt's response is seen.
+  runs: onEveryAttempt
+  canRetry:
+    enabledByParam: enabled          # retrying is on only when `enabled` is true
+    maxAttemptsFromParam: attempts   # at most `attempts` sends in total
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    enabled:
+      type: boolean
+      default: true
+      description: Turns retrying on.
+    status:
+      type: integer
+      minimum: 400
+      maximum: 599
+      default: 503
+      description: The backend status that causes another attempt.
+    attempts:
+      type: integer
+      minimum: 1
+      maximum: 5
+      default: 2
+      description: The most times the request is sent, the first included.
+  required: [enabled, attempts]
+
+systemParameters:
+  type: object
+  properties: {}

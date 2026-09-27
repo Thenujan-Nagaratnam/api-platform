@@ -377,11 +377,11 @@ spec:
 	ctx.Step(`^I reset the mock LLMs$`, resetMockLLMs)
 
 	// A scenario can leave a mock scripted to fail (status:429, reset, ...).
-	// Every model-failover scenario starts from healthy mocks, so fixture
+	// Every model-failover and per-attempt-retry scenario starts from healthy mocks, so fixture
 	// readiness probes, which pass through to the primary, see the mock's
 	// normal answer rather than a previous scenario's script.
 	ctx.Before(func(c context.Context, sc *godog.Scenario) (context.Context, error) {
-		if strings.HasSuffix(sc.Uri, "model-failover.feature") {
+		if strings.HasSuffix(sc.Uri, "model-failover.feature") || strings.HasSuffix(sc.Uri, "per-attempt-retry.feature") {
 			return c, resetMockLLMs()
 		}
 		return c, nil

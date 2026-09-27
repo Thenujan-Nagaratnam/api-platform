@@ -116,6 +116,7 @@ func getFeaturePaths() []string {
 		"features/model-round-robin-multi-provider.feature",
 		"features/model-weighted-round-robin-multi-provider.feature",
 		"features/model-failover.feature",
+		"features/per-attempt-retry.feature",
 		"features/json-schema-guardrail.feature",
 		"features/llm-provider-templates.feature",
 		"features/analytics-header-filter.feature",

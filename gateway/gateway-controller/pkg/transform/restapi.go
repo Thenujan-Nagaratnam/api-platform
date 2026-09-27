@@ -350,6 +350,16 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 		}
 	}
 
+	// Split operations on which a policy can retry (after the sandbox patch,
+	// so each per-attempt route copies its front route's final upstream).
+	allVhosts := append([]string{}, mainVhosts...)
+	if hasSandbox {
+		allVhosts = append(allVhosts, effectiveSandboxVHost)
+	}
+	if err := t.applyAttemptSplits(rdc, cfg, apiData, mcpResolved, allVhosts); err != nil {
+		return nil, err
+	}
+
 	return rdc, nil
 }
 

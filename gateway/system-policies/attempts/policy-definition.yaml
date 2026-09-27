@@ -1,0 +1,24 @@
+name: wso2_apip_sys_attempts
+version: v1.0.0
+description: |
+  The gateway's per-attempt retry hop. Attached by the gateway controller, never
+  by an API author, to both routes of an operation it splits because a policy on
+  it declares `retryBehavior.canRetry`.
+
+  front (first policy on the client-facing route): starts a scope for the client
+  request, removes any attempt header the client sent, and hands the scope id to
+  every attempt. On the final response it removes the gateway's attempt tags and,
+  if a policy still wanted another attempt when none was left, answers with the
+  response that policy chose.
+
+  attempt (first policy on the per-attempt route): admits the attempt, making it
+  visible to the policies after it through the sdk/core/attempts package, and
+  rejects a request whose scope is unknown or belongs to another operation.
+
+parameters:
+  type: object
+  properties: {}
+
+systemParameters:
+  type: object
+  properties: {}

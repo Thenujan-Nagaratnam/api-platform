@@ -51,9 +51,9 @@ Feature: Model failover across an ordered chain of LLM targets
     And the mock LLM "openai-a" should have received 1 request
     And the mock LLM "openai-b" should have received 0 requests
     And the mock LLM "openai-a" last request body should contain "gpt-a"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-plan"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-hop"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-chain"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-plan"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-hop"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-chain"
     And I delete the model-failover fixture "mf-ok"
 
   Scenario: A 429 on the primary fails over to the next target with that target's own credentials
@@ -70,7 +70,7 @@ Feature: Model failover across an ordered chain of LLM targets
       """
     Then the response status code should be 200
     And the response body should contain "hello from mock-llm-openai-b"
-    And the response header "x-wso2-failover-retry" should not exist
+    And the response header "x-wso2-attempt-retry" should not exist
     And the response header "x-wso2-upstream-failure" should not exist
     And the mock LLM "openai-a" should have received 1 request
     And the mock LLM "openai-b" should have received 1 request
@@ -153,16 +153,16 @@ Feature: Model failover across an ordered chain of LLM targets
       """
     And I wait for the endpoint "http://localhost:8080/mf-spoof-proxy/chat/completions" to be ready with method "POST" and body '{"model":"client","messages":[]}'
     And I reset the mock LLMs
-    And I set header "x-wso2-failover-plan" to "00112233445566778899aabbccddeeff"
-    And I set header "x-wso2-failover-chain" to "forged"
-    And I set header "x-wso2-failover-hop" to "guess"
+    And I set header "x-wso2-attempt-plan" to "00112233445566778899aabbccddeeff"
+    And I set header "x-wso2-attempt-chain" to "forged"
+    And I set header "x-wso2-attempt-hop" to "guess"
     When I send a POST request to "http://localhost:8080/mf-spoof-proxy/chat/completions" with body:
       """
       {"model": "gpt-a", "messages": []}
       """
     Then the response status code should be 200
     And the response body should contain "hello from mock-llm-openai-a"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-hop"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-hop"
     And I clear all headers
     And I delete the model-failover fixture "mf-spoof"
 
@@ -422,7 +422,7 @@ Feature: Model failover across an ordered chain of LLM targets
       """
       {"error":{"message":"All configured model targets are currently unavailable. Please retry later.","type":"model_failover_exhausted","param":null,"code":"all_targets_unavailable"}}
       """
-    And the response header "x-wso2-failover-retry" should not exist
+    And the response header "x-wso2-attempt-retry" should not exist
     And the mock LLM "openai-a" should have received 1 request
     And the mock LLM "openai-b" should have received 1 request
     And the mock LLM "anthropic" should have received 1 request
@@ -443,13 +443,13 @@ Feature: Model failover across an ordered chain of LLM targets
       {"model": "gpt-a1", "messages": [{"role": "user", "content": "hi"}]}
       """
     Then the response status code should be 200
-    And the response header "x-wso2-failover-retry" should not exist
+    And the response header "x-wso2-attempt-retry" should not exist
     And the mock LLM "openai-a" should have received 2 requests
     And the mock LLM "openai-a" last request body should contain "gpt-a2"
     And the mock LLM "openai-a" last request header "Authorization" should be "Bearer mfp-429-key"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-hop"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-plan"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-chain"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-hop"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-plan"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-chain"
     And I send a DELETE request to the "gateway-controller" service at "/llm-providers/mfp-429"
 
   Scenario: A provider's healthy first model serves without a second attempt
@@ -575,7 +575,7 @@ Feature: Model failover across an ordered chain of LLM targets
     And the mock LLM "openai-a" should have received 2 requests
     And the mock LLM "openai-a" last request path should contain "/models/gemini-2.5-flash:generateContent"
     And the mock LLM "openai-a" last request path should contain "alt=sse"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-hop"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-hop"
     And I send a DELETE request to the "gateway-controller" service at "/llm-providers/mfp-gemini"
 
   Scenario: A provider path that fixes the model is rejected
@@ -687,11 +687,11 @@ Feature: Model failover across an ordered chain of LLM targets
       """
     Then the response status code should be 503
     And the response body should not contain "all_targets_unavailable"
-    And the response header "x-wso2-failover-retry" should not exist
+    And the response header "x-wso2-attempt-retry" should not exist
     And the mock LLM "openai-a" should have received 1 request
     And the mock LLM "openai-a" last request body should contain "gpt-4o-mini"
     And the mock LLM "openai-a" last request header "Authorization" should be "Bearer mfc-pass-openai-a-key"
-    And the mock LLM "openai-a" last request should not have header "x-wso2-failover-hop"
+    And the mock LLM "openai-a" last request should not have header "x-wso2-attempt-hop"
     And the mock LLM "openai-b" should have received 0 requests
     And I delete the model-failover fixture "mfc-pass"
 

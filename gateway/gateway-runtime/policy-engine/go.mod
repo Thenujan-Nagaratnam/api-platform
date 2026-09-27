@@ -71,3 +71,8 @@ replace github.com/wso2/api-platform/common => ../../../common
 replace github.com/wso2/api-platform/gateway/common => ../../common
 
 replace github.com/wso2/api-platform/httpkit => ../../../httpkit
+
+// sdk/core/attempts (the per-attempt retry hop) is not in a released sdk/core
+// yet. Building against the local copy makes it available to the engine and to
+// every policy compiled into it. Remove this once sdk/core is tagged with it.
+replace github.com/wso2/api-platform/sdk/core => ../../../sdk/core

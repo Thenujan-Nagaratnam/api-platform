@@ -692,8 +692,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -798,7 +798,7 @@
                   "pm.test(\"other body fields are kept\", () => pm.expect(JSON.parse(last.body).messages[0].content).to.eql(\"hello\"));",
                   "",
                   "pm.test(\"internal headers never reach the provider\", () => {",
-                  "  [\"x-wso2-failover-plan\", \"x-wso2-failover-hop\", \"x-wso2-failover-chain\", \"x-wso2-failover-retry\", \"x-target-upstream\"]",
+                  "  [\"x-wso2-attempt-plan\", \"x-wso2-attempt-hop\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-retry\", \"x-target-upstream\"]",
                   "    .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);",
                   "});"
                 ]
@@ -984,8 +984,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -1235,8 +1235,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -1486,8 +1486,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -1737,8 +1737,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -1988,8 +1988,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -2093,7 +2093,7 @@
                   "pm.test(\"fallback model is gpt-b\", () => pm.expect(JSON.parse(last.body).model).to.eql(\"gpt-b\"));",
                   "",
                   "pm.test(\"internal headers never reach the provider\", () => {",
-                  "  [\"x-wso2-failover-plan\", \"x-wso2-failover-hop\", \"x-wso2-failover-chain\", \"x-wso2-failover-retry\", \"x-target-upstream\"]",
+                  "  [\"x-wso2-attempt-plan\", \"x-wso2-attempt-hop\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-retry\", \"x-target-upstream\"]",
                   "    .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);",
                   "});"
                 ]
@@ -2278,8 +2278,8 @@
                   "pm.test(\"status is 400\", () => pm.response.to.have.status(400));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -2528,8 +2528,8 @@
                   "pm.test(\"status is 401\", () => pm.response.to.have.status(401));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -2778,8 +2778,8 @@
                   "pm.test(\"status is 403\", () => pm.response.to.have.status(403));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -3028,8 +3028,8 @@
                   "pm.test(\"status is 404\", () => pm.response.to.have.status(404));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -3278,8 +3278,8 @@
                   "pm.test(\"status is 422\", () => pm.response.to.have.status(422));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -3529,8 +3529,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -3748,8 +3748,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});",
                   "",
@@ -3938,8 +3938,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});",
                   "",
@@ -4054,19 +4054,19 @@
             "method": "POST",
             "header": [
               {
-                "key": "x-wso2-failover-plan",
+                "key": "x-wso2-attempt-plan",
                 "value": "00112233445566778899aabbccddeeff"
               },
               {
-                "key": "x-wso2-failover-chain",
+                "key": "x-wso2-attempt-chain",
                 "value": "forged"
               },
               {
-                "key": "x-wso2-failover-hop",
+                "key": "x-wso2-attempt-hop",
                 "value": "guess"
               },
               {
-                "key": "x-wso2-failover-retry",
+                "key": "x-wso2-attempt-retry",
                 "value": "status_429"
               },
               {
@@ -4109,8 +4109,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -4148,7 +4148,7 @@
                   "pm.test('a request was recorded', () => pm.expect(last).to.be.an('object'));",
                   "",
                   "pm.test(\"internal headers never reach the provider\", () => {",
-                  "  [\"x-wso2-failover-plan\", \"x-wso2-failover-hop\", \"x-wso2-failover-chain\", \"x-wso2-failover-retry\", \"x-target-upstream\"]",
+                  "  [\"x-wso2-attempt-plan\", \"x-wso2-attempt-hop\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-retry\", \"x-target-upstream\"]",
                   "    .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);",
                   "});",
                   "pm.test(\"no forged failure header\", () => pm.expect(last.headers[\"x-wso2-upstream-failure\"]).to.be.undefined);"
@@ -4333,8 +4333,8 @@
                   "pm.test(\"status is 503\", () => pm.response.to.have.status(503));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -4552,8 +4552,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -4981,8 +4981,8 @@
                   "pm.test(\"status is 503\", () => pm.response.to.have.status(503));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -5200,8 +5200,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -5387,8 +5387,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -5782,8 +5782,8 @@
                   "pm.test(\"status is 504\", () => pm.response.to.have.status(504));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});",
                   "",
@@ -6171,8 +6171,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -6452,8 +6452,8 @@
                   "pm.test(\"status is 503\", () => pm.response.to.have.status(503));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -6880,8 +6880,8 @@
                   "pm.test(\"served by mock-llm-anthropic\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-anthropic\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});",
                   "",
@@ -6933,7 +6933,7 @@
                   "pm.test(\"the target's model is requested\", () => pm.expect(JSON.parse(last.body).model).to.eql(\"claude-sonnet-4-5\"));",
                   "",
                   "pm.test(\"internal headers never reach the provider\", () => {",
-                  "  [\"x-wso2-failover-plan\", \"x-wso2-failover-hop\", \"x-wso2-failover-chain\", \"x-wso2-failover-retry\", \"x-target-upstream\"]",
+                  "  [\"x-wso2-attempt-plan\", \"x-wso2-attempt-hop\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-retry\", \"x-target-upstream\"]",
                   "    .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);",
                   "});"
                 ]
@@ -7119,8 +7119,8 @@
                   "pm.test(\"served by mock-llm-anthropic\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-anthropic\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});",
                   "",
@@ -7592,8 +7592,8 @@
                   "pm.test(\"status is 529\", () => pm.response.to.have.status(529));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -7852,8 +7852,8 @@
                   "pm.test(\"served by mock-llm-anthropic\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-anthropic\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -8396,8 +8396,8 @@
                   "pm.test(\"body is the fixed exhaustion error\", () => pm.expect(pm.response.text()).to.eql(\"{\\\"error\\\":{\\\"message\\\":\\\"All configured model targets are currently unavailable. Please retry later.\\\",\\\"type\\\":\\\"model_failover_exhausted\\\",\\\"param\\\":null,\\\"code\\\":\\\"all_targets_unavailable\\\"}}\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -8761,8 +8761,8 @@
                   "pm.test(\"body is the fixed exhaustion error\", () => pm.expect(pm.response.text()).to.eql(\"{\\\"error\\\":{\\\"message\\\":\\\"All configured model targets are currently unavailable. Please retry later.\\\",\\\"type\\\":\\\"model_failover_exhausted\\\",\\\"param\\\":null,\\\"code\\\":\\\"all_targets_unavailable\\\"}}\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -9157,8 +9157,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -9207,8 +9207,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -9385,8 +9385,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -9508,8 +9508,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -9558,8 +9558,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -9916,8 +9916,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -9966,8 +9966,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -10057,8 +10057,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -10139,8 +10139,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -10506,8 +10506,8 @@
                   "pm.test(\"body is the fixed exhaustion error\", () => pm.expect(pm.response.text()).to.eql(\"{\\\"error\\\":{\\\"message\\\":\\\"All configured model targets are currently unavailable. Please retry later.\\\",\\\"type\\\":\\\"model_failover_exhausted\\\",\\\"param\\\":null,\\\"code\\\":\\\"all_targets_unavailable\\\"}}\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -10652,8 +10652,8 @@
                   "pm.test(\"body is the fixed exhaustion error\", () => pm.expect(pm.response.text()).to.eql(\"{\\\"error\\\":{\\\"message\\\":\\\"All configured model targets are currently unavailable. Please retry later.\\\",\\\"type\\\":\\\"model_failover_exhausted\\\",\\\"param\\\":null,\\\"code\\\":\\\"all_targets_unavailable\\\"}}\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -11112,8 +11112,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -11356,8 +11356,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -12853,8 +12853,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -12926,7 +12926,7 @@
                   "pm.test(\"the provider's own credential\", () => pm.expect(last.headers.authorization).to.eql(\"Bearer mfe\" + pm.collectionVariables.get(\"run\") + \"-pmodel-key\"));",
                   "",
                   "pm.test(\"internal headers never reach the provider\", () => {",
-                  "  [\"x-wso2-failover-plan\", \"x-wso2-failover-hop\", \"x-wso2-failover-chain\", \"x-wso2-failover-retry\", \"x-target-upstream\"]",
+                  "  [\"x-wso2-attempt-plan\", \"x-wso2-attempt-hop\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-retry\", \"x-target-upstream\"]",
                   "    .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);",
                   "});"
                 ]
@@ -13112,8 +13112,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -13185,7 +13185,7 @@
                   "pm.test(\"the provider's own credential\", () => pm.expect(last.headers.authorization).to.eql(\"Bearer mfe\" + pm.collectionVariables.get(\"run\") + \"-pmodel-key\"));",
                   "",
                   "pm.test(\"internal headers never reach the provider\", () => {",
-                  "  [\"x-wso2-failover-plan\", \"x-wso2-failover-hop\", \"x-wso2-failover-chain\", \"x-wso2-failover-retry\", \"x-target-upstream\"]",
+                  "  [\"x-wso2-attempt-plan\", \"x-wso2-attempt-hop\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-retry\", \"x-target-upstream\"]",
                   "    .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);",
                   "});"
                 ]
@@ -13371,8 +13371,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -13592,8 +13592,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});",
                   "",
@@ -13781,8 +13781,8 @@
                   "pm.test(\"status is 400\", () => pm.response.to.have.status(400));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -14000,8 +14000,8 @@
                   "pm.test(\"body is the fixed exhaustion error\", () => pm.expect(pm.response.text()).to.eql(\"{\\\"error\\\":{\\\"message\\\":\\\"All configured model targets are currently unavailable. Please retry later.\\\",\\\"type\\\":\\\"model_failover_exhausted\\\",\\\"param\\\":null,\\\"code\\\":\\\"all_targets_unavailable\\\"}}\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -14422,8 +14422,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -14472,8 +14472,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -14522,8 +14522,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -14882,8 +14882,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -15240,8 +15240,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -15314,7 +15314,7 @@
                   "pm.test(\"query kept\", () => pm.expect(last.path).to.include(\"alt=sse\"));",
                   "",
                   "pm.test(\"internal headers never reach the provider\", () => {",
-                  "  [\"x-wso2-failover-plan\", \"x-wso2-failover-hop\", \"x-wso2-failover-chain\", \"x-wso2-failover-retry\", \"x-target-upstream\"]",
+                  "  [\"x-wso2-attempt-plan\", \"x-wso2-attempt-hop\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-retry\", \"x-target-upstream\"]",
                   "    .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);",
                   "});"
                 ]
@@ -15823,8 +15823,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -16140,8 +16140,8 @@
                   "pm.test(\"served by mock-llm-openai-b\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-b\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -16360,8 +16360,8 @@
                   "pm.test(\"status is 503\", () => pm.response.to.have.status(503));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});",
                   "pm.test(\"not the exhaustion body\", () => pm.expect(pm.response.text()).to.not.include(\"all_targets_unavailable\"));"
@@ -16465,7 +16465,7 @@
                   "pm.test(\"asked for gpt-4o-mini\", () => pm.expect(JSON.parse(last.body).model).to.eql(\"gpt-4o-mini\"));",
                   "",
                   "pm.test(\"internal headers never reach the provider\", () => {",
-                  "  [\"x-wso2-failover-plan\", \"x-wso2-failover-hop\", \"x-wso2-failover-chain\", \"x-wso2-failover-retry\", \"x-target-upstream\"]",
+                  "  [\"x-wso2-attempt-plan\", \"x-wso2-attempt-hop\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-retry\", \"x-target-upstream\"]",
                   "    .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);",
                   "});"
                 ]
@@ -16733,8 +16733,8 @@
                   "pm.test(\"body is the fixed exhaustion error\", () => pm.expect(pm.response.text()).to.eql(\"{\\\"error\\\":{\\\"message\\\":\\\"All configured model targets are currently unavailable. Please retry later.\\\",\\\"type\\\":\\\"model_failover_exhausted\\\",\\\"param\\\":null,\\\"code\\\":\\\"all_targets_unavailable\\\"}}\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]
@@ -17219,8 +17219,8 @@
                   "pm.test(\"served by mock-llm-openai-a\", () => pm.expect(pm.response.text()).to.include(\"hello from mock-llm-openai-a\"));",
                   "",
                   "pm.test(\"no internal failover headers reach the client\", () => {",
-                  "  [\"x-wso2-failover-retry\", \"x-wso2-failover-exhausted\", \"x-wso2-upstream-failure\",",
-                  "   \"x-wso2-failover-plan\", \"x-wso2-failover-chain\", \"x-wso2-failover-hop\"]",
+                  "  [\"x-wso2-attempt-retry\", \"x-wso2-attempt-exhausted\", \"x-wso2-upstream-failure\",",
+                  "   \"x-wso2-attempt-plan\", \"x-wso2-attempt-chain\", \"x-wso2-attempt-hop\"]",
                   "    .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);",
                   "});"
                 ]

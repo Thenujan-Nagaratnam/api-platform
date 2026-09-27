@@ -160,6 +160,10 @@ func (pl *PolicyLoader) loadPolicyFile(filePath string) (*models.PolicyDefinitio
 		slog.String("file", filePath),
 		slog.String("json", string(jsonBytes)))
 
+	if err := policyDef.RetryBehavior.Validate(); err != nil {
+		return nil, fmt.Errorf("policy %s %s: %w", policyDef.Name, policyDef.Version, err)
+	}
+
 	return &policyDef, nil
 }
 

@@ -282,8 +282,8 @@ def sleep(seconds):
 
 NO_INTERNAL_HEADERS = """
 pm.test("no internal failover headers reach the client", () => {
-  ["x-wso2-failover-retry", "x-wso2-failover-exhausted", "x-wso2-upstream-failure",
-   "x-wso2-failover-plan", "x-wso2-failover-chain", "x-wso2-failover-hop"]
+  ["x-wso2-attempt-retry", "x-wso2-attempt-exhausted", "x-wso2-upstream-failure",
+   "x-wso2-attempt-plan", "x-wso2-attempt-chain", "x-wso2-attempt-hop"]
     .forEach(h => pm.expect(pm.response.headers.has(h), h).to.be.false);
 });
 """
@@ -308,7 +308,7 @@ pm.test("body is the fixed exhaustion error", () => pm.expect(pm.response.text()
 
 HIDDEN_HEADERS = """
 pm.test("internal headers never reach the provider", () => {
-  ["x-wso2-failover-plan", "x-wso2-failover-hop", "x-wso2-failover-chain", "x-wso2-failover-retry", "x-target-upstream"]
+  ["x-wso2-attempt-plan", "x-wso2-attempt-hop", "x-wso2-attempt-chain", "x-wso2-attempt-retry", "x-target-upstream"]
     .forEach(h => pm.expect(last.headers[h], h).to.be.undefined);
 });
 """
@@ -376,9 +376,9 @@ pm.test("an OpenAI stream is returned", () => {
 """, body=CHAT_STREAM),
               *reset_mocks(),
               call("Client-supplied internal headers are ignored", name, served_by("mock-llm-openai-a"),
-                   headers={"x-wso2-failover-plan": "00112233445566778899aabbccddeeff",
-                            "x-wso2-failover-chain": "forged", "x-wso2-failover-hop": "guess",
-                            "x-wso2-failover-retry": "status_429", "x-wso2-upstream-failure": "UF"}),
+                   headers={"x-wso2-attempt-plan": "00112233445566778899aabbccddeeff",
+                            "x-wso2-attempt-chain": "forged", "x-wso2-attempt-hop": "guess",
+                            "x-wso2-attempt-retry": "status_429", "x-wso2-upstream-failure": "UF"}),
               last("a", HIDDEN_HEADERS + 'pm.test("no forged failure header", () => pm.expect(last.headers["x-wso2-upstream-failure"]).to.be.undefined);', "forged headers stripped"),
               *reset_mocks(), mode("a", "status:503"),
               call("Operations without model-failover are not failed over", name, status_is(503), path="embeddings",

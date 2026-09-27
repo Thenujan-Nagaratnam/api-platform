@@ -15,8 +15,10 @@ use (
 	./gateway/gateway-runtime/policy-engine
 	./gateway/it
 	./gateway/sample-policies/transform-payload-case
+	./gateway/sample-policies/retry-on-status
 	./gateway/system-policies/a2a
 	./gateway/system-policies/analytics
+	./gateway/system-policies/attempts
 	./httpkit
 	./kubernetes/conformance/runner
 	./kubernetes/gateway-operator

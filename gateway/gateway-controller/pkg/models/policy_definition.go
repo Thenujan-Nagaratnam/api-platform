@@ -27,4 +27,7 @@ type PolicyDefinition struct {
 	Parameters       *map[string]interface{} `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 	SystemParameters *map[string]interface{} `json:"systemParameters,omitempty" yaml:"systemParameters,omitempty"`
 	ManagedBy        string                  `json:"managedBy" yaml:"managedBy,omitempty"`
+	// RetryBehavior says how the policy takes part in the gateway's
+	// per-attempt retry hop. Nil for most policies.
+	RetryBehavior *RetryBehavior `json:"retryBehavior,omitempty" yaml:"retryBehavior,omitempty"`
 }

@@ -42,18 +42,18 @@ const PolicyName = "model-failover"
 
 // Envoy resource names.
 const (
-	InternalListenerName    = "failover_dispatch"
-	DispatchClusterName     = "failover_dispatch"
-	DispatchRouteConfigName = "failover_dispatch_routes"
+	InternalListenerName    = "attempt_dispatch"
+	DispatchClusterName     = "attempt_dispatch"
+	DispatchRouteConfigName = "attempt_dispatch_routes"
 )
 
 // Internal headers. None of them reach a client or a provider.
 const (
-	HeaderPrefix          = "x-wso2-failover-"
-	HeaderChain           = "x-wso2-failover-chain"
-	HeaderHop             = "x-wso2-failover-hop"
-	HeaderRetry           = "x-wso2-failover-retry"
-	HeaderExhausted       = "x-wso2-failover-exhausted"
+	HeaderPrefix          = "x-wso2-attempt-"
+	HeaderChain           = "x-wso2-attempt-chain"
+	HeaderHop             = "x-wso2-attempt-hop"
+	HeaderRetry           = "x-wso2-attempt-retry"
+	HeaderExhausted       = "x-wso2-attempt-exhausted"
 	HeaderUpstreamFailure = "x-wso2-upstream-failure"
 )
 
@@ -96,9 +96,9 @@ const (
 	RouteMetadataNamespace = "wso2.route"
 	// HopMetadataNamespace/HopMetadataKey hold the hop secret once the
 	// client-facing listener's hop filter has taken it off the request.
-	HopMetadataNamespace = "wso2.failover"
+	HopMetadataNamespace = "wso2.attempt"
 	HopMetadataKey       = "hop"
-	HopFilterName        = "wso2.failover.hop"
+	HopFilterName        = "wso2.attempt.hop"
 )
 
 var (
