@@ -455,7 +455,7 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 			failoverAttachments[ap.Id] = fa
 		}
 	}
-	fo, err := t.buildFailover(proxy.Metadata.Name, ops, globalFailover, failoverAttachments, t.routerConfig.ListenerPort)
+	fo, err := t.buildFailover(proxy.Metadata.Name, primary.EffectiveName(), ops, globalFailover, failoverAttachments, t.routerConfig.ListenerPort)
 	if err != nil {
 		return nil, err
 	}
@@ -881,8 +881,29 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 	}
 
 	ops = sortOperationsBySpecificity(ops)
+
+	// model-failover on a provider falls back across this provider's own
+	// models: each operation carrying it becomes a front operation (Envoy
+	// retry) and a dispatch operation that rewrites the model per attempt and
+	// carries the upstream credential. See package failover.
+	var globalPolicies []api.Policy
+	if provider.Spec.GlobalPolicies != nil {
+		globalPolicies = append(globalPolicies, *provider.Spec.GlobalPolicies...)
+	}
+	globalPolicies, globalFailover, err := takeGlobalFailoverPolicy(globalPolicies)
+	if err != nil {
+		return nil, err
+	}
+	fo, err := t.buildProviderFailover(provider.Metadata.Name, ops, globalFailover, upstreamAuthPolicy, tmpl, denyOpKeys)
+	if err != nil {
+		return nil, err
+	}
+
 	if upstreamAuthPolicy != nil {
 		for i := range ops {
+			if fo.front[i] {
+				continue
+			}
 			if ops[i].Policies == nil {
 				ops[i].Policies = &[]api.Policy{*upstreamAuthPolicy}
 			} else {
@@ -892,15 +913,16 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 			}
 		}
 	}
+	ops = append(ops, fo.dispatchOps...)
 	// Attach API-level resilience to every traffic-forwarding route, skipping the deny routes.
 	applyResilienceToTrafficRoutes(ops, provider.Spec.Resilience, denyOpKeys)
 	spec.Operations = ops
 
 	// Global (api-level) policies: route into the derived RestAPI's spec.Policies so they are
 	// applied across ALL operations as one shared scope, evaluated before operation-level policies.
-	if provider.Spec.GlobalPolicies != nil && len(*provider.Spec.GlobalPolicies) > 0 {
-		gp := make([]api.Policy, len(*provider.Spec.GlobalPolicies))
-		copy(gp, *provider.Spec.GlobalPolicies)
+	if len(globalPolicies) > 0 {
+		gp := make([]api.Policy, len(globalPolicies))
+		copy(gp, globalPolicies)
 		if spec.Policies == nil {
 			spec.Policies = &gp
 		} else {

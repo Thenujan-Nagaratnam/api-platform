@@ -71,6 +71,15 @@ func failoverRestAPI(params map[string]interface{}) *models.StoredConfig {
 	}
 }
 
+// chainOf is a chain for primary with fallbacks given as provider, model pairs.
+func chainOf(primary string, fallbacks ...string) map[string]interface{} {
+	var fl []interface{}
+	for i := 0; i+1 < len(fallbacks); i += 2 {
+		fl = append(fl, map[string]interface{}{"provider": fallbacks[i], "model": fallbacks[i+1]})
+	}
+	return map[string]interface{}{"primary": map[string]interface{}{"provider": "a", "model": primary}, "fallbacks": fl}
+}
+
 func transformFailover(t *testing.T, params map[string]interface{}) *models.RuntimeDeployConfig {
 	t.Helper()
 	defs := map[string]models.PolicyDefinition{
@@ -104,17 +113,16 @@ func failoverRoutes(t *testing.T, rdc *models.RuntimeDeployConfig) (frontKey, di
 
 func TestApplyFailoverRoutes_FrontRouteRetrySettings(t *testing.T) {
 	rdc := transformFailover(t, map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{"provider": "a", "model": "m1"},
-			map[string]interface{}{"provider": "b", "model": "m2"},
-			map[string]interface{}{"provider": "c", "model": "m3"},
+		"chains": []interface{}{
+			chainOf("m1", "b", "m2", "c", "m3"),
+			chainOf("m4", "b", "m5"),
 		},
 		"perAttemptTimeout": "5s",
 	})
 	frontKey, _ := failoverRoutes(t, rdc)
 	fo := rdc.Routes[frontKey].Failover
 	assert.Equal(t, "tok", fo.ChainID)
-	assert.Equal(t, 2, fo.NumRetries, "num_retries = targets - 1")
+	assert.Equal(t, 2, fo.NumRetries, "num_retries = longest chain - 1")
 	assert.Equal(t, 5*time.Second, fo.PerTryTimeout)
 	assert.Equal(t, 17*time.Second, fo.RouteTimeout, "3 x 5s + 2s margin")
 	assert.Equal(t, "retriable-headers,connect-failure,reset", fo.RetryOn)
@@ -122,17 +130,17 @@ func TestApplyFailoverRoutes_FrontRouteRetrySettings(t *testing.T) {
 
 func TestApplyFailoverRoutes_TimeoutDisabledDropsReset(t *testing.T) {
 	rdc := transformFailover(t, map[string]interface{}{
-		"targets":    []interface{}{map[string]interface{}{"provider": "a", "model": "m1"}},
+		"chains":     []interface{}{chainOf("m1", "b", "m2")},
 		"failoverOn": map[string]interface{}{"timeout": false},
 	})
 	frontKey, _ := failoverRoutes(t, rdc)
 	assert.Equal(t, "retriable-headers,connect-failure", rdc.Routes[frontKey].Failover.RetryOn)
-	assert.Equal(t, 0, rdc.Routes[frontKey].Failover.NumRetries)
+	assert.Equal(t, 1, rdc.Routes[frontKey].Failover.NumRetries)
 }
 
 func TestApplyFailoverRoutes_DispatchChainDropsAPILevelPolicies(t *testing.T) {
 	rdc := transformFailover(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{"provider": "a", "model": "m1"}},
+		"chains": []interface{}{chainOf("m1", "b", "m2")},
 	})
 	frontKey, dispatchKey := failoverRoutes(t, rdc)
 
@@ -150,4 +158,21 @@ func TestApplyFailoverRoutes_DispatchChainDropsAPILevelPolicies(t *testing.T) {
 	assert.Nil(t, rdc.Routes[frontKey].MatchHeaders)
 	require.Len(t, rdc.Routes[dispatchKey].MatchHeaders, 1)
 	assert.Equal(t, failover.HeaderChain, rdc.Routes[dispatchKey].MatchHeaders[0].Name)
+}
+
+func TestApplyFailoverRoutes_ProviderDispatchIsSameUpstream(t *testing.T) {
+	rdc := transformFailover(t, map[string]interface{}{
+		"chains":                    []interface{}{chainOf("m1", "p", "m2")},
+		failover.ParamRouteToTarget: false,
+	})
+	_, dispatchKey := failoverRoutes(t, rdc)
+	assert.True(t, rdc.Routes[dispatchKey].Failover.SameUpstream, "a provider-mode dispatch route forwards to the real provider")
+}
+
+func TestApplyFailoverRoutes_ProxyDispatchIsNotSameUpstream(t *testing.T) {
+	rdc := transformFailover(t, map[string]interface{}{
+		"chains": []interface{}{chainOf("m1", "p", "m2")},
+	})
+	_, dispatchKey := failoverRoutes(t, rdc)
+	assert.False(t, rdc.Routes[dispatchKey].Failover.SameUpstream)
 }

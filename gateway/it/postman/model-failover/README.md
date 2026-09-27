@@ -46,10 +46,12 @@ Every resource name carries a random run id (`mfe<run>-…`), so a failed run ne
 | 04 Connection failures | Closed port fails over; with `connectFailure: false` the 503 reaches the client |
 | 05 Cross-provider failover | Anthropic fallback: `/v1/messages`, `x-api-key` only, `anthropic-version`, target model; OpenAI-shaped answer; streamed answer converted to an OpenAI stream |
 | 06 Same provider, two models | An unlisted 529 passes through; a 503 on the first model fails over to the second model on the same provider |
-| 07 Exhaustion | All targets fail (status mix, then transport + status mix): fixed 503 body, each target tried once; single-target chains |
+| 07 Exhaustion | All targets fail (status mix, then transport + status mix): fixed 503 body, each target tried once |
 | 08 Suspension and recovery | Suspend after N failures and skip; probe after `suspendDuration` recovers; a failed probe suspends again; every target suspended answers without any upstream call |
-| 09 Global attachment and updates | `globalPolicies` attachment; `PUT` reordering the chain takes effect |
-| 10 Configuration validation | 14 invalid configurations rejected with 400, including a provider-selecting policy on the same proxy |
+| 09 Global attachment and updates | `globalPolicies` attachment; a `PUT` that changes the chain's primary takes effect |
+| 10 Configuration validation | 18 invalid configurations rejected with 400: the removed `targets`, duplicate primaries, a provider on a primary, bounds, and a provider-selecting policy on the same operation |
+| 11 Provider-mode model failover | model-failover on an LlmProvider: first model serves (own credential, no internal headers); 429, reset and a hanging first model fall back to the second model; 400 passes through; exhaustion; suspension skips a failing model; a proxy over that provider (nested failover); a Gemini-template provider fails over by rewriting the model in the path; a path that fixes the model and cross-provider fallbacks are rejected |
+| 12 Chains keyed by the requested model | Two chains on one proxy: `gpt-4.1` and `gpt-4o` each fall back along their own chain; an unconfigured model passes through with one attempt and its 503 unchanged; one chain exhausting; model-round-robin before model-failover picks the chain; round-robin after it is rejected |
 | 99 Cleanup | Deletes every proxy and provider the run created |
 
 Not covered here and why:

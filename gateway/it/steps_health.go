@@ -21,6 +21,7 @@ package it
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -247,6 +248,8 @@ func (h *HealthSteps) iWaitForEndpointToBeReadyWithMethodAndBody(url, method, bo
 	maxAttempts := 50
 	attemptInterval := 300 * time.Millisecond
 
+	lastStatus, lastBody := 0, ""
+	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		req, err := http.NewRequest(method, url, strings.NewReader(body))
 		if err != nil {
@@ -259,7 +262,11 @@ func (h *HealthSteps) iWaitForEndpointToBeReadyWithMethodAndBody(url, method, bo
 			resp.Body.Close()
 			return h.waitForPolicySnapshotSync()
 		}
+		lastErr = err
 		if resp != nil {
+			lastStatus = resp.StatusCode
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+			lastBody = string(b)
 			resp.Body.Close()
 		}
 
@@ -268,7 +275,7 @@ func (h *HealthSteps) iWaitForEndpointToBeReadyWithMethodAndBody(url, method, bo
 		}
 	}
 
-	return fmt.Errorf("endpoint %s did not become ready with %s method after %d attempts", url, method, maxAttempts)
+	return fmt.Errorf("endpoint %s did not become ready with %s method after %d attempts (last status %d, body %q, error %v)", url, method, maxAttempts, lastStatus, lastBody, lastErr)
 }
 
 func (h *HealthSteps) waitForPolicySnapshotSync() error {

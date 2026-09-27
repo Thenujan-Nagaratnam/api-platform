@@ -23,6 +23,7 @@ import (
 	"time"
 
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	luav3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/lua/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,7 +99,10 @@ func TestFailover_FrontRoute(t *testing.T) {
 	require.Len(t, r.GetRequestHeadersToAdd(), 1)
 	assert.Equal(t, failover.HeaderChain, r.GetRequestHeadersToAdd()[0].GetHeader().GetKey())
 	assert.Equal(t, "tok", r.GetRequestHeadersToAdd()[0].GetHeader().GetValue())
-	assert.Subset(t, r.GetResponseHeadersToRemove(), []string{failover.HeaderRetry, failover.HeaderExhausted, failover.HeaderUpstreamFailure})
+	assert.Contains(t, r.GetResponseHeadersToRemove(), failover.HeaderUpstreamFailure)
+	assert.NotContains(t, r.GetResponseHeadersToRemove(), failover.HeaderRetry,
+		"the front role must see the retry tag on the final response to answer with the exhaustion error")
+	assert.NotContains(t, r.GetResponseHeadersToRemove(), failover.HeaderExhausted)
 	assert.Contains(t, r.GetRequestHeadersToRemove(), constants.TargetUpstreamHeader)
 	assert.False(t, isFailoverDispatchRoute(r))
 }
@@ -177,9 +181,12 @@ func TestFailover_DispatchResources(t *testing.T) {
 	assert.True(t, manager.GetNormalizePath().GetValue(), "path canonicalization as on the main listener")
 	assert.True(t, manager.GetMergeSlashes())
 	assert.Empty(t, manager.GetAccessLog(), "no per-attempt access log on the internal hop")
-	require.Len(t, manager.GetHttpFilters(), 3)
+	require.Len(t, manager.GetHttpFilters(), 4)
 	assert.Equal(t, constants.ExtProcFilterName, manager.GetHttpFilters()[0].GetName())
-	assert.NotNil(t, manager.GetLocalReplyConfig())
+	assert.Equal(t, failover.HopFilterName, manager.GetHttpFilters()[2].GetName(), "the hop filter runs just before the router")
+	md := manager.GetLocalReplyConfig().GetMappers()[0].GetFilter().GetAndFilter().GetFilters()[1].GetMetadataFilter()
+	require.NotNil(t, md, "the internal listener matches the secret in metadata, like the main listener")
+	assert.False(t, md.GetMatchIfKeyNotFound().GetValue())
 
 	assert.Equal(t, failover.DispatchRouteConfigName, rc.GetName())
 	require.Len(t, rc.GetVirtualHosts(), 1)
@@ -230,4 +237,25 @@ func TestFailover_DispatchListenerMatchesHopHeader(t *testing.T) {
 	require.NotNil(t, hf)
 	assert.Equal(t, failover.HeaderHop, hf.GetHeader().GetName())
 	assert.Equal(t, failover.HopSecret(), hf.GetHeader().GetStringMatch().GetExact())
+}
+
+func TestFailover_ProxyDispatchRouteKeepsTheHopSecret(t *testing.T) {
+	tr := failoverTestTranslator()
+	rdcRoute, rdc := failoverTestRDC(string(failover.RoleDispatch))
+	r := tr.createRouteFromRDC("k", rdcRoute, rdc)
+	cfg, ok := r.GetTypedPerFilterConfig()[failover.HopFilterName]
+	require.True(t, ok, "a proxy-mode dispatch route disables the hop filter so the secret reaches the provider hop")
+	var per luav3.LuaPerRoute
+	require.NoError(t, cfg.UnmarshalTo(&per))
+	assert.True(t, per.GetDisabled())
+}
+
+func TestFailover_ProviderDispatchRouteStripsTheHopSecret(t *testing.T) {
+	tr := failoverTestTranslator()
+	rdcRoute, rdc := failoverTestRDC(string(failover.RoleDispatch))
+	rdcRoute.Failover.SameUpstream = true
+	r := tr.createRouteFromRDC("k", rdcRoute, rdc)
+	_, disabled := r.GetTypedPerFilterConfig()[failover.HopFilterName]
+	assert.False(t, disabled, "a provider-mode dispatch route keeps the hop filter on: it is the last hop before the provider")
+	require.NoError(t, r.Validate())
 }

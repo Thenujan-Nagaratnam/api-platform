@@ -64,7 +64,10 @@ const (
 	ParamTargetIDs    = "_targetIds"
 	ParamTargetNative = "_targetNative"
 	ParamHopSecret    = "_hopSecret"
-	internalPrefix    = "_"
+	// ParamRouteToTarget is false in provider mode: every attempt goes to the
+	// provider's own upstream, so the dispatch role selects no upstream.
+	ParamRouteToTarget = "_routeToTarget"
+	internalPrefix     = "_"
 )
 
 // Role is the part a model-failover instance or route plays.
@@ -84,7 +87,9 @@ const (
 	defaultPerAttempt      = 30 * time.Second
 	minPerAttempt          = time.Second
 	maxPerAttempt          = 300 * time.Second
-	maxTargets             = 10
+	maxChains              = 20
+	maxFallbacks           = 9
+	maxTargets             = 50
 	targetUpstreamPrefix   = "failover-"
 	UpstreamFailureFlags   = "UF,URX,UH,UO,UT,UC,DC,LR"
 	RouteMetadataKey       = "failover"
@@ -122,33 +127,57 @@ func TargetUpstreamName(targetID string) string {
 	return targetUpstreamPrefix + targetID
 }
 
-// Target is one authored chain entry.
+// Target is one provider and model a chain can try.
 type Target struct {
 	Provider string
 	Model    string
 }
 
-// Settings is what the controller reads from an authored model-failover
-// instance. The policy re-parses and fully validates its own params at
-// runtime; ValidateParams below is the registration-time equivalent.
+// Chain is one primary model and its fallbacks, as indices into
+// Settings.Targets: primary first.
+type Chain struct {
+	Primary string
+	Targets []int
+}
+
+// Settings is what the controller reads from a model-failover instance. The
+// policy re-parses and fully validates its own params at runtime;
+// ValidateParams below is the registration-time equivalent.
 type Settings struct {
+	// Targets are the distinct targets of every chain in flattening order
+	// (chains in order, primary then fallbacks, repeats skipped): the order
+	// the policy uses, so per-target ids and upstreams line up with it. The
+	// policy's pass-through target, appended after these, is not included.
 	Targets           []Target
+	Chains            []Chain
 	PerAttemptTimeout time.Duration
 	// RetryOnTimeout is failoverOn.timeout: whether a per-attempt timeout
 	// moves the request on, which the front route expresses as retry_on reset.
 	RetryOnTimeout bool
 }
 
-// NumRetries is the Envoy num_retries for the chain.
+// LongestChain is the most attempts one request can make.
+func (s Settings) LongestChain() int {
+	n := 1
+	for _, c := range s.Chains {
+		if len(c.Targets) > n {
+			n = len(c.Targets)
+		}
+	}
+	return n
+}
+
+// NumRetries is the Envoy num_retries for the route: enough for the longest
+// chain. Shorter chains stop early when their plan runs out.
 func (s Settings) NumRetries() int {
-	return len(s.Targets) - 1
+	return s.LongestChain() - 1
 }
 
 // FrontTimeout bounds the whole chain: every attempt at its limit plus a
 // margin for back-off and the hops themselves. It is the outer bound derived
 // from the inner per-attempt one, never a generic default.
 func (s Settings) FrontTimeout() time.Duration {
-	return time.Duration(len(s.Targets))*s.PerAttemptTimeout + frontTimeoutMargin
+	return time.Duration(s.LongestChain())*s.PerAttemptTimeout + frontTimeoutMargin
 }
 
 // RetryOn is the front route's retry_on value.
@@ -159,37 +188,97 @@ func (s Settings) RetryOn() string {
 	return "retriable-headers,connect-failure"
 }
 
-// ParseSettings extracts Settings from authored params, applying the policy
-// definition's defaults for omitted keys.
+// ParseSettings extracts Settings without resolving providers, which is
+// enough for the retry budget. Omitted keys take the policy definition's
+// defaults.
 func ParseSettings(params map[string]interface{}) (Settings, error) {
+	return ParseSettingsFor(params, "", false)
+}
+
+// ParseSettingsFor extracts Settings and fills in providers. primaryProvider
+// is where a chain's primary runs: an LlmProxy's primary provider, or the
+// LlmProvider itself; a fallback without a provider uses it too. When
+// sameProvider is set (an LlmProvider), a fallback may name no other provider,
+// because every attempt goes to the provider's own upstream.
+func ParseSettingsFor(params map[string]interface{}, primaryProvider string, sameProvider bool) (Settings, error) {
 	s := Settings{PerAttemptTimeout: defaultPerAttempt, RetryOnTimeout: true}
-	raw, ok := params["targets"].([]interface{})
+	if _, old := params["targets"]; old {
+		return s, fmt.Errorf("targets was replaced by chains; list a primary model and its fallbacks")
+	}
+	raw, ok := params["chains"].([]interface{})
 	if !ok || len(raw) == 0 {
-		return s, fmt.Errorf("targets is required and must be a non-empty array")
+		return s, fmt.Errorf("chains is required and must be a non-empty array")
 	}
-	if len(raw) > maxTargets {
-		return s, fmt.Errorf("targets must contain at most %d entries", maxTargets)
+	if len(raw) > maxChains {
+		return s, fmt.Errorf("chains must contain at most %d entries", maxChains)
 	}
-	seen := map[string]int{}
+	index := map[Target]int{}
+	primaries := map[string]int{}
 	for i, item := range raw {
+		path := fmt.Sprintf("chains[%d]", i)
 		m, ok := item.(map[string]interface{})
 		if !ok {
-			return s, fmt.Errorf("targets[%d] must be an object", i)
+			return s, fmt.Errorf("%s must be an object", path)
 		}
-		provider, _ := m["provider"].(string)
-		model, _ := m["model"].(string)
-		if strings.TrimSpace(provider) == "" {
-			return s, fmt.Errorf("targets[%d].provider is required", i)
+		pm, ok := m["primary"].(map[string]interface{})
+		if !ok {
+			return s, fmt.Errorf("%s.primary is required", path)
 		}
-		if strings.TrimSpace(model) == "" {
-			return s, fmt.Errorf("targets[%d].model is required", i)
+		primaryModel, _ := pm["model"].(string)
+		if strings.TrimSpace(primaryModel) == "" {
+			return s, fmt.Errorf("%s.primary.model is required", path)
 		}
-		key := provider + "\x00" + model
-		if prev, dup := seen[key]; dup {
-			return s, fmt.Errorf("targets[%d] duplicates targets[%d] (provider %q, model %q)", i, prev, provider, model)
+		if prev, dup := primaries[primaryModel]; dup {
+			return s, fmt.Errorf("%s.primary.model: %q already has a chain (chains[%d])", path, primaryModel, prev)
 		}
-		seen[key] = i
-		s.Targets = append(s.Targets, Target{Provider: provider, Model: model})
+		primaries[primaryModel] = i
+		members := []Target{{Provider: primaryProvider, Model: primaryModel}}
+		if p, _ := pm["provider"].(string); p != "" && primaryProvider == "" {
+			members[0].Provider = p // controller-rewritten params
+		}
+
+		fl, ok := m["fallbacks"].([]interface{})
+		if !ok || len(fl) == 0 || len(fl) > maxFallbacks {
+			return s, fmt.Errorf("%s.fallbacks must contain between 1 and %d entries", path, maxFallbacks)
+		}
+		for j, f := range fl {
+			fm, ok := f.(map[string]interface{})
+			if !ok {
+				return s, fmt.Errorf("%s.fallbacks[%d] must be an object", path, j)
+			}
+			provider, _ := fm["provider"].(string)
+			model, _ := fm["model"].(string)
+			if strings.TrimSpace(model) == "" {
+				return s, fmt.Errorf("%s.fallbacks[%d].model is required", path, j)
+			}
+			switch {
+			case sameProvider && provider != "" && provider != primaryProvider:
+				return s, fmt.Errorf("%s.fallbacks[%d].provider: on an LlmProvider, fallbacks name models of this provider only; attach %q to an LlmProxy to fail over to it", path, j, provider)
+			case provider == "":
+				provider = members[0].Provider
+			}
+			members = append(members, Target{Provider: provider, Model: model})
+		}
+
+		chain := Chain{Primary: primaryModel}
+		inChain := map[Target]bool{}
+		for k, t := range members {
+			if inChain[t] {
+				return s, fmt.Errorf("%s lists provider %q, model %q more than once (entry %d)", path, t.Provider, t.Model, k)
+			}
+			inChain[t] = true
+			idx, seen := index[t]
+			if !seen {
+				idx = len(s.Targets)
+				index[t] = idx
+				s.Targets = append(s.Targets, t)
+			}
+			chain.Targets = append(chain.Targets, idx)
+		}
+		s.Chains = append(s.Chains, chain)
+	}
+	if len(s.Targets) > maxTargets {
+		return s, fmt.Errorf("chains name %d distinct provider and model pairs; at most %d are allowed", len(s.Targets), maxTargets)
 	}
 	if v, present := params["perAttemptTimeout"]; present {
 		str, ok := v.(string)
@@ -218,6 +307,41 @@ func ParseSettings(params map[string]interface{}) (Settings, error) {
 	return s, nil
 }
 
+// ResolvedChains renders chains with every provider filled in, for the
+// params the policy receives.
+func (s Settings) ResolvedChains() []interface{} {
+	out := make([]interface{}, len(s.Chains))
+	for i, c := range s.Chains {
+		p := s.Targets[c.Targets[0]]
+		fallbacks := make([]interface{}, 0, len(c.Targets)-1)
+		for _, idx := range c.Targets[1:] {
+			t := s.Targets[idx]
+			fallbacks = append(fallbacks, map[string]interface{}{"provider": t.Provider, "model": t.Model})
+		}
+		out[i] = map[string]interface{}{
+			"primary":   map[string]interface{}{"provider": p.Provider, "model": p.Model},
+			"fallbacks": fallbacks,
+		}
+	}
+	return out
+}
+
+// CheckAuthored rejects what only the controller may write.
+func CheckAuthored(params map[string]interface{}) error {
+	if key, bad := HasInternalParams(params); bad {
+		return fmt.Errorf("parameter %q is reserved for gateway-internal use", key)
+	}
+	chains, _ := params["chains"].([]interface{})
+	for i, c := range chains {
+		m, _ := c.(map[string]interface{})
+		pm, _ := m["primary"].(map[string]interface{})
+		if _, set := pm["provider"]; set {
+			return fmt.Errorf("chains[%d].primary.provider: the primary is the requested model on the provider the request is routed to; name providers on fallbacks", i)
+		}
+	}
+	return nil
+}
+
 // HasInternalParams reports whether authored params set a controller-internal key.
 func HasInternalParams(params map[string]interface{}) (string, bool) {
 	for k := range params {
@@ -240,12 +364,13 @@ func RoleOf(params map[string]interface{}) (Role, bool) {
 
 // ValidateParams checks authored params against every bound in the policy
 // definition, so a bad configuration is rejected at registration rather than
-// when the policy engine first builds the chain.
-func ValidateParams(params map[string]interface{}) error {
-	if key, bad := HasInternalParams(params); bad {
-		return fmt.Errorf("parameter %q is reserved for gateway-internal use", key)
+// when the policy engine first builds the chain. primaryProvider and
+// sameProvider are as in ParseSettingsFor.
+func ValidateParams(params map[string]interface{}, primaryProvider string, sameProvider bool) error {
+	if err := CheckAuthored(params); err != nil {
+		return err
 	}
-	if _, err := ParseSettings(params); err != nil {
+	if _, err := ParseSettingsFor(params, primaryProvider, sameProvider); err != nil {
 		return err
 	}
 	if fo, present := params["failoverOn"]; present {
@@ -312,6 +437,28 @@ func asInt(v interface{}) (int, bool) {
 	return 0, false
 }
 
+// PassThroughTarget is the target that forwards a request whose model has no
+// chain: the primary's provider with no model override. The policy expects it
+// after every chain target.
+func PassThroughTarget(primaryProvider string) Target {
+	return Target{Provider: primaryProvider}
+}
+
+// ModelSelectingPolicies pick only a model when none of their entries names a
+// provider. Placed before model-failover on an operation, they choose the
+// primary whose chain runs.
+var ModelSelectingPolicies = []string{"model-round-robin", "model-weighted-round-robin"}
+
+// IsModelSelector reports whether name is one of ModelSelectingPolicies.
+func IsModelSelector(name string) bool {
+	for _, n := range ModelSelectingPolicies {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 // ProviderSelectingPolicies set selected_provider themselves and so cannot
 // share a route with model-failover, whose dispatch hop owns that key.
 var ProviderSelectingPolicies = []string{
@@ -322,4 +469,42 @@ var ProviderSelectingPolicies = []string{
 	"cost-based-model-routing",
 	"semantic-model-routing",
 	"time-based-model-routing",
+}
+
+// ValidateRequestModel checks a provider template's requestModel, which the
+// dispatch role uses to write each attempt's model: a JSONPath into the body,
+// a header, a query parameter, or a path regex whose first capture group is
+// the model. A nil requestModel means the top-level "model" of the body.
+// opPath is the operation's path: a path model must sit in a wildcard or
+// parameter segment, or the rewritten request no longer matches its route.
+func ValidateRequestModel(requestModel interface{}, opPath string) error {
+	if requestModel == nil {
+		return nil
+	}
+	m, ok := requestModel.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("the template's requestModel must be an object")
+	}
+	// The controller stores the template's typed enum, a JSON round trip a
+	// plain string; fmt.Sprint reads both the same way.
+	location := fmt.Sprint(m["location"])
+	identifier := fmt.Sprint(m["identifier"])
+	if m["identifier"] == nil || identifier == "" {
+		return fmt.Errorf("the template's requestModel has no identifier")
+	}
+	switch location {
+	case "payload", "header", "queryParam":
+		return nil
+	case "pathParam":
+	default:
+		return fmt.Errorf("the template's requestModel location %q is not supported", location)
+	}
+	re, err := regexp.Compile(identifier)
+	if err != nil || re.NumSubexp() < 1 {
+		return fmt.Errorf("the template's requestModel path pattern %q needs a capture group around the model", identifier)
+	}
+	if sub := re.FindStringSubmatch(opPath); len(sub) > 1 && !strings.ContainsAny(sub[1], "*{") {
+		return fmt.Errorf("the path %s fixes the model to %q; use a wildcard path (for example /models/*) so every target's model matches the operation", opPath, sub[1])
+	}
+	return nil
 }

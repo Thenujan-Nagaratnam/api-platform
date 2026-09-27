@@ -37,6 +37,7 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/failover"
+	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 )
 
 // TestFailover_GeneratedConfigPassesEnvoyValidation feeds the generated front
@@ -55,10 +56,14 @@ func TestFailover_GeneratedConfigPassesEnvoyValidation(t *testing.T) {
 	front := tr.createRouteFromRDC("front", frontRDC, rdc)
 	dispatchRDC, _ := failoverTestRDC(string(failover.RoleDispatch))
 	dispatch := tr.createRouteFromRDC("dispatch", dispatchRDC, rdc)
+	providerRDC, _ := failoverTestRDC(string(failover.RoleDispatch))
+	providerRDC.Failover.SameUpstream = true
+	providerRDC.MatchHeaders = []models.RouteHeaderMatch{{Name: failover.HeaderChain, Value: "tok2", Type: "Exact"}}
+	providerDispatch := tr.createRouteFromRDC("dispatch-provider", providerRDC, rdc)
 
 	mainListener, _, err := tr.createListener([]*route.VirtualHost{{Name: "main", Domains: []string{"*"}, Routes: []*route.Route{front}}}, false)
 	require.NoError(t, err)
-	dispatchListener, dispatchRC, dispatchCluster, err := tr.createFailoverDispatchResources([]*route.Route{dispatch})
+	dispatchListener, dispatchRC, dispatchCluster, err := tr.createFailoverDispatchResources([]*route.Route{dispatch, providerDispatch})
 	require.NoError(t, err)
 
 	// Validation mode has no ADS server, so inline each listener's routes.

@@ -61,7 +61,10 @@ func applyFailoverRoutes(rdc *models.RuntimeDeployConfig) error {
 				RetryOn:       settings.RetryOn(),
 			}
 		case failover.RoleDispatch:
-			route.Failover = &models.RouteFailover{Role: string(failover.RoleDispatch), ChainID: chainID}
+			// _routeToTarget false = provider mode: this route forwards to the
+			// real provider, so the hop secret must be stripped here.
+			sameUpstream := inst.Params[failover.ParamRouteToTarget] == false
+			route.Failover = &models.RouteFailover{Role: string(failover.RoleDispatch), ChainID: chainID, SameUpstream: sameUpstream}
 			kept := chain.Policies[:0:0]
 			for _, p := range chain.Policies {
 				if attachedTo, _ := p.Params["attachedTo"].(string); attachedTo == string(policyv1alpha.LevelAPI) {

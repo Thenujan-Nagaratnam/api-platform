@@ -19,6 +19,7 @@
 package it
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -133,9 +134,37 @@ spec:
 `, name, upstream, template, header, value)
 }
 
-// failoverProxyYAML attaches the fixture's providers to one proxy and puts
-// model-failover, with the given JSON params, on POST /chat/completions.
-func failoverProxyYAML(prefix, paramsJSON string) string {
+// failoverProxyYAML attaches the fixture's providers to one proxy, with
+// primarySuffix as its primary provider, and puts model-failover, with the
+// given JSON params, on POST /chat/completions. When roundRobinModels is set,
+// model-round-robin over those models runs first on the same operation.
+func failoverProxyYAML(prefix, primarySuffix, paramsJSON string, roundRobinModels []string) string {
+	var additional strings.Builder
+	for _, p := range failoverFixtureProviders {
+		if p.suffix == primarySuffix {
+			continue
+		}
+		fmt.Fprintf(&additional, "    - id: %s-%s\n", prefix, p.suffix)
+		if p.suffix == "anthropic" {
+			additional.WriteString("      transformer:\n        type: openai-to-anthropic-transformer\n        version: v0\n        params:\n          model: claude-default\n")
+		}
+	}
+	var roundRobin string
+	if len(roundRobinModels) > 0 {
+		var models strings.Builder
+		for _, m := range roundRobinModels {
+			fmt.Fprintf(&models, "              - model: %s\n", m)
+		}
+		roundRobin = fmt.Sprintf(`    - name: model-round-robin
+      version: v1
+      paths:
+        - path: /chat/completions
+          methods: [POST]
+          params:
+            suspendDuration: 0
+            models:
+%s`, models.String())
+	}
 	return fmt.Sprintf(`apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProxy
 metadata:
@@ -145,24 +174,16 @@ spec:
   version: v1.0
   context: /%[1]s-proxy
   provider:
-    id: %[1]s-openai-a
+    id: %[1]s-%[2]s
   additionalProviders:
-    - id: %[1]s-openai-b
-    - id: %[1]s-dead
-    - id: %[1]s-anthropic
-      transformer:
-        type: openai-to-anthropic-transformer
-        version: v0
-        params:
-          model: claude-default
-  operationPolicies:
-    - name: model-failover
+%[3]s  operationPolicies:
+%[5]s    - name: model-failover
       version: v0
       paths:
         - path: /chat/completions
           methods: [POST]
-          params: %[2]s
-`, prefix, strings.TrimSpace(paramsJSON))
+          params: %[4]s
+`, prefix, primarySuffix, additional.String(), strings.TrimSpace(paramsJSON), roundRobin)
 }
 
 func basicAuth(state *TestState) (string, error) {
@@ -184,11 +205,24 @@ func expectStatus(httpSteps *steps.HTTPSteps, want int, what string) error {
 	return nil
 }
 
+// resetMockLLMs clears every mock LLM's recorded requests and script.
+func resetMockLLMs() error {
+	for name := range mockLLMPorts {
+		resp, err := mockLLMDo(http.MethodDelete, name, "/__requests", "")
+		if err != nil {
+			return fmt.Errorf("reset mock LLM %s: %w", name, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return nil
+}
+
 // RegisterModelFailoverSteps registers the steps that deploy the
 // model-failover fixture and script and inspect the mock LLM backends used by
 // features/model-failover.feature.
 func RegisterModelFailoverSteps(ctx *godog.ScenarioContext, state *TestState, httpSteps *steps.HTTPSteps) {
-	ctx.Step(`^I deploy the model-failover fixture "([^"]*)" with params:$`, func(prefix string, params *godog.DocString) error {
+	deployFixture := func(prefix, primarySuffix string, roundRobinModels []string, params *godog.DocString) error {
 		auth, err := basicAuth(state)
 		if err != nil {
 			return err
@@ -207,10 +241,64 @@ func RegisterModelFailoverSteps(ctx *godog.ScenarioContext, state *TestState, ht
 		httpSteps.SetHeader("Authorization", auth)
 		httpSteps.SetHeader("Content-Type", "application/yaml")
 		if err := httpSteps.SendPOSTToService("gateway-controller", "/llm-proxies",
-			&godog.DocString{Content: failoverProxyYAML(prefix, params.Content)}); err != nil {
+			&godog.DocString{Content: failoverProxyYAML(prefix, primarySuffix, params.Content, roundRobinModels)}); err != nil {
 			return err
 		}
 		if err := expectStatus(httpSteps, http.StatusCreated, "create proxy "+prefix+"-proxy"); err != nil {
+			return err
+		}
+		httpSteps.ClearHeader("Authorization")
+		httpSteps.ClearHeader("Content-Type")
+		return nil
+	}
+	ctx.Step(`^I deploy the model-failover fixture "([^"]*)" with params:$`, func(prefix string, params *godog.DocString) error {
+		return deployFixture(prefix, "openai-a", nil, params)
+	})
+	ctx.Step(`^I deploy the model-failover fixture "([^"]*)" with primary "([^"]*)" and params:$`, func(prefix, primary string, params *godog.DocString) error {
+		return deployFixture(prefix, primary, nil, params)
+	})
+	ctx.Step(`^I deploy the model-failover fixture "([^"]*)" with round-robin over "([^"]*)" and params:$`, func(prefix, models string, params *godog.DocString) error {
+		return deployFixture(prefix, "openai-a", strings.Split(models, ","), params)
+	})
+
+	// A provider-mode fixture: one LlmProvider on mock openai-a with
+	// model-failover across its own models.
+	ctx.Step(`^I deploy the provider model-failover fixture "([^"]*)" with params:$`, func(name string, params *godog.DocString) error {
+		auth, err := basicAuth(state)
+		if err != nil {
+			return err
+		}
+		yaml := fmt.Sprintf(`apiVersion: gateway.api-platform.wso2.com/v1
+kind: LlmProvider
+metadata:
+  name: %[1]s
+spec:
+  displayName: %[1]s
+  version: v1.0
+  template: openai
+  context: /%[1]s
+  upstream:
+    url: http://mock-llm-openai-a:8080
+    auth:
+      type: api-key
+      header: Authorization
+      value: Bearer %[1]s-key
+  accessControl:
+    mode: allow_all
+  operationPolicies:
+    - name: model-failover
+      version: v0
+      paths:
+        - path: /chat/completions
+          methods: [POST]
+          params: %[2]s
+`, name, strings.TrimSpace(params.Content))
+		httpSteps.SetHeader("Authorization", auth)
+		httpSteps.SetHeader("Content-Type", "application/yaml")
+		if err := httpSteps.SendPOSTToService("gateway-controller", "/llm-providers", &godog.DocString{Content: yaml}); err != nil {
+			return err
+		}
+		if err := expectStatus(httpSteps, http.StatusCreated, "create provider "+name); err != nil {
 			return err
 		}
 		httpSteps.ClearHeader("Authorization")
@@ -286,16 +374,17 @@ func RegisterModelFailoverSteps(ctx *godog.ScenarioContext, state *TestState, ht
 		return nil
 	})
 
-	ctx.Step(`^I reset the mock LLMs$`, func() error {
-		for name := range mockLLMPorts {
-			resp, err := mockLLMDo(http.MethodDelete, name, "/__requests", "")
-			if err != nil {
-				return fmt.Errorf("reset mock LLM %s: %w", name, err)
-			}
-			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+	ctx.Step(`^I reset the mock LLMs$`, resetMockLLMs)
+
+	// A scenario can leave a mock scripted to fail (status:429, reset, ...).
+	// Every model-failover scenario starts from healthy mocks, so fixture
+	// readiness probes, which pass through to the primary, see the mock's
+	// normal answer rather than a previous scenario's script.
+	ctx.Before(func(c context.Context, sc *godog.Scenario) (context.Context, error) {
+		if strings.HasSuffix(sc.Uri, "model-failover.feature") {
+			return c, resetMockLLMs()
 		}
-		return nil
+		return c, nil
 	})
 
 	ctx.Step(`^the mock LLM "([^"]*)" is set to "([^"]*)"$`, func(name, mode string) error {

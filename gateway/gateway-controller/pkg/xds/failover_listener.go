@@ -93,8 +93,12 @@ func (t *Translator) applyRouteFailover(r *route.Route, rdcRoute *models.Route) 
 			Header:       &core.HeaderValue{Key: failover.HeaderChain, Value: fo.ChainID},
 			AppendAction: core.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 		})
-		r.ResponseHeadersToRemove = append(r.ResponseHeadersToRemove,
-			failover.HeaderRetry, failover.HeaderExhausted, failover.HeaderUpstreamFailure)
+		// The retry and exhausted tags must survive the router: the front role
+		// reads them on the final response to answer with the exhaustion error,
+		// and strips them itself. Route-level response_headers_to_remove runs in
+		// the router, before ext_proc sees the response, so only the header the
+		// front role never reads is removed here.
+		r.ResponseHeadersToRemove = append(r.ResponseHeadersToRemove, failover.HeaderUpstreamFailure)
 
 	case failover.RoleDispatch:
 		// Match any path: a transformer's path rewrite clears the route cache,
@@ -105,6 +109,18 @@ func (t *Translator) applyRouteFailover(r *route.Route, rdcRoute *models.Route) 
 		// route timeout here would also cut long streaming responses.
 		action.Timeout = durationpb.New(0)
 		r.RequestHeadersToRemove = append(r.RequestHeadersToRemove, failover.HeaderChain)
+		// A proxy-mode dispatch route hands the request to a provider route,
+		// which needs the hop secret: keep it here. A provider-mode route is
+		// the last hop before the real provider, so the internal listener's
+		// hop filter stays on and strips it.
+		if !fo.SameUpstream {
+			if disabled, err := anypb.New(&luav3.LuaPerRoute{Override: &luav3.LuaPerRoute_Disabled{Disabled: true}}); err == nil {
+				if r.TypedPerFilterConfig == nil {
+					r.TypedPerFilterConfig = map[string]*anypb.Any{}
+				}
+				r.TypedPerFilterConfig[failover.HopFilterName] = disabled
+			}
+		}
 	}
 }
 
@@ -138,15 +154,14 @@ func isFailoverDispatchRoute(r *route.Route) bool {
 }
 
 // failoverLocalReplyConfig annotates Envoy's own replies to transport failures
-// with their response flags, but only on requests carrying the hop secret —
-// i.e. the dispatch hop's loopback request to a provider route. The dispatch
-// policy reads the flags to tell a connection failure, reset or timeout from
-// a 503/504 the provider itself sent.
+// with their response flags, but only on requests carrying the hop secret. The
+// dispatch policy reads the flags to tell a connection failure, reset or
+// timeout from a 503/504 the provider itself sent.
 //
-// On the client-facing listener the hop filter has already moved the secret
-// from the request header into dynamic metadata (so it is never forwarded to
-// a provider), and the mapper matches the metadata. On the internal dispatch
-// listener nothing strips the header, so the mapper matches it directly.
+// Both listeners run the hop filter, which moves the secret from the request
+// header into dynamic metadata so it is never forwarded to a provider, and
+// both match the metadata. matchMetadata=false matches the header instead and
+// is kept for tests of that variant.
 func failoverLocalReplyConfig(matchMetadata bool) *hcm.LocalReplyConfig {
 	flags := strings.Split(failover.UpstreamFailureFlags, ",")
 	secret := &matcher.StringMatcher{MatchPattern: &matcher.StringMatcher_Exact{Exact: failover.HopSecret()}}
@@ -240,6 +255,12 @@ func (t *Translator) createFailoverDispatchResources(dispatchRoutes []*route.Rou
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create lua filter for failover dispatch: %w", err)
 	}
+	// Strips the hop secret on provider-mode dispatch routes, whose router
+	// forwards to the real provider; proxy-mode routes disable it per route.
+	hopFilter, err := createFailoverHopFilter()
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	routerAny, err := anypb.New(&router.Router{})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create router config: %w", err)
@@ -264,6 +285,7 @@ func (t *Translator) createFailoverDispatchResources(dispatchRoutes []*route.Rou
 		HttpFilters: []*hcm.HttpFilter{
 			extProcFilter,
 			luaFilter,
+			hopFilter,
 			{Name: wellknown.Router, ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: routerAny}},
 		},
 		StreamIdleTimeout: durationpb.New(t.routerConfig.HTTPListener.Timeouts.StreamIdleTimeout),
@@ -272,7 +294,7 @@ func (t *Translator) createFailoverDispatchResources(dispatchRoutes []*route.Rou
 		NormalizePath:                wrapperspb.Bool(!t.routerConfig.HTTPListener.DisablePathNormalization),
 		MergeSlashes:                 !t.routerConfig.HTTPListener.DisablePathNormalization,
 		PathWithEscapedSlashesAction: convertPathWithEscapedSlashesAction(t.routerConfig.HTTPListener.PathWithEscapedSlashesAction),
-		LocalReplyConfig:             failoverLocalReplyConfig(false),
+		LocalReplyConfig:             failoverLocalReplyConfig(true),
 	}
 	managerAny, err := anypb.New(manager)
 	if err != nil {

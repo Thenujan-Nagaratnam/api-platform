@@ -84,6 +84,10 @@ def request(name, method, target, path, body=None, headers=None, tests=None, pre
 
 
 def folder(name, items, description=""):
+    # Start every scenario folder from healthy mocks: a previous folder may have
+    # left one scripted to fail, and readiness probes reach the primary.
+    if not name.startswith(("00 ", "99 ")):
+        items = reset_mocks() + items
     return {"name": name, "description": description, "item": items}
 
 
@@ -130,11 +134,43 @@ spec:
 """
 
 
-def proxy_yaml(name, params, global_attach=False, extra_op_policies=""):
+# PRIMARY maps a proxy or provider name to the model its (first) chain is
+# keyed on; call() asks for it, since a request for any other model passes
+# through without failover.
+PRIMARY = {}
+ANTHROPIC_TRANSFORMER = """      transformer:
+        type: openai-to-anthropic-transformer
+        version: v0
+        params:
+          model: claude-default
+"""
+
+
+def to_chains(name, params):
+    """Converts a flat {"targets": [...]} list into one chain keyed on the first
+    target's model: the first target is the primary, the rest its fallbacks.
+    Returns the params and the primary's provider suffix (None if unknown)."""
+    if "targets" not in params:
+        return params, None
+    rest = {k: v for k, v in params.items() if k != "targets"}
+    ts = params["targets"]
+    if not ts:
+        return {"chains": [], **rest}, None
+    first = ts[0]
+    PRIMARY[name] = first["model"]
+    suffix = first.get("provider", "").replace(pname(""), "") or None
+    return {"chains": [{"primary": {"model": first["model"]}, "fallbacks": ts[1:]}], **rest}, suffix
+
+
+def proxy_yaml(name, params, global_attach=False, extra_op_policies="", primary="openai-a", before_policies="", raw=False):
     n = pname(name)
+    params, first = (params, None) if raw else to_chains(name, params)
+    for c in params.get("chains", []):
+        PRIMARY.setdefault(name, c["primary"]["model"])
+    primary = first or primary
     p = json.dumps(params)
     attach = f"""  operationPolicies:
-    - name: model-failover
+{before_policies}    - name: model-failover
       version: v0
       paths:
         - path: /chat/completions
@@ -147,6 +183,13 @@ def proxy_yaml(name, params, global_attach=False, extra_op_policies=""):
       version: v0
       params: {p}
 """
+    additional = ""
+    for suffix in ["openai-a", "openai-b", "dead", "anthropic"]:
+        if suffix == primary:
+            continue
+        additional += f"    - id: {pname(suffix)}\n"
+        if suffix == "anthropic":
+            additional += ANTHROPIC_TRANSFORMER
     return f"""apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProxy
 metadata:
@@ -156,17 +199,9 @@ spec:
   version: v1.0
   context: /{n}
   provider:
-    id: {pname('openai-a')}
+    id: {pname(primary)}
   additionalProviders:
-    - id: {pname('openai-b')}
-    - id: {pname('dead')}
-    - id: {pname('anthropic')}
-      transformer:
-        type: openai-to-anthropic-transformer
-        version: v0
-        params:
-          model: claude-default
-{attach}"""
+{additional}{attach}"""
 
 
 def t(provider, model):
@@ -190,10 +225,12 @@ def create_proxy(name, params, **kw):
                    """)
 
 
-def wait_ready(name):
-    """Polls the proxy until it answers 200, up to 60 times, 1s apart."""
+def wait_ready(name, path="chat/completions", body=None):
+    """Polls the proxy until it answers 200, up to 60 times, 1s apart. It asks
+    for the proxy's primary model, so a failing primary is covered by its chain."""
     key = f"ready_{name}".replace("-", "_")
-    return request(f"Wait until {name} is ready", "POST", "router", f"{pname(name)}/chat/completions", CHAT,
+    body = body or CHAT.replace('"client-model"', jstr(PRIMARY.get(name, "client-model")))
+    return request(f"Wait until {name} is ready", "POST", "router", f"{pname(name)}/{path}", body,
                    tests=f"""
                    const n = Number(pm.collectionVariables.get("{key}") || 0);
                    if (pm.response.code !== 200 && n < 60) {{
@@ -231,6 +268,9 @@ def last(mock, checks, label):
 
 
 def call(name, proxy, tests, body=CHAT, headers=None, path="chat/completions"):
+    """Sends a request asking for the proxy's primary model (see PRIMARY)."""
+    if proxy in PRIMARY and body is not None:
+        body = body.replace('"client-model"', jstr(PRIMARY[proxy]))
     return request(name, "POST", "router", f"{pname(proxy)}/{path}", body, headers=headers, tests=tests)
 
 
@@ -297,11 +337,14 @@ def setup():
 
 def basic():
     name = "basic"
-    params = {"targets": [t("openai-a", "gpt-a"), t("openai-b", "gpt-b")], "perAttemptTimeout": "2s"}
+    # A high threshold keeps the primary out of suspension across this matrix;
+    # suspension has its own folder.
+    params = {"targets": [t("openai-a", "gpt-a"), t("openai-b", "gpt-b")], "perAttemptTimeout": "2s",
+              "suspendAfterConsecutiveFailures": 100}
     items = [create_proxy(name, params), wait_ready(name), *reset_mocks(),
              call("Healthy primary serves", name, served_by("mock-llm-openai-a")),
              count("a", 1), count("b", 0),
-             last("a", 'pm.test("model rewritten to gpt-a", () => pm.expect(JSON.parse(last.body).model).to.eql("gpt-a"));\n'
+             last("a", 'pm.test("the requested primary model gpt-a is sent", () => pm.expect(JSON.parse(last.body).model).to.eql("gpt-a"));\n'
                   'pm.test("primary credential", () => pm.expect(last.headers.authorization).to.eql("Bearer " + "mfe" + pm.collectionVariables.get("run") + "-openai-a-key"));\n'
                   'pm.test("other body fields are kept", () => pm.expect(JSON.parse(last.body).messages[0].content).to.eql("hello"));\n'
                   + HIDDEN_HEADERS, "model, credential, hidden headers")]
@@ -351,7 +394,8 @@ pm.test("an OpenAI stream is returned", () => {
 
 def allow_list():
     name = "allow"
-    params = {"targets": [t("openai-a", "gpt-a"), t("openai-b", "gpt-b")], "failoverOn": {"statusCodes": [429, 529]}}
+    params = {"targets": [t("openai-a", "gpt-a"), t("openai-b", "gpt-b")], "failoverOn": {"statusCodes": [429, 529]},
+              "suspendAfterConsecutiveFailures": 100}
     return folder("02 Status allow-list", [
         create_proxy(name, params), wait_ready(name),
         *reset_mocks(), mode("a", "status:503"),
@@ -435,13 +479,13 @@ pm.test("OpenAI stream chunks and terminator", () => {
 
 def same_provider_two_models():
     name = "twomodels"
-    params = {"targets": [t("anthropic", "claude-opus"), t("anthropic", "claude-sonnet")]}
+    params = {"targets": [t("openai-a", "gpt-a"), t("anthropic", "claude-opus"), t("anthropic", "claude-sonnet")]}
     return folder("06 Same provider, two models", [
         create_proxy(name, params), wait_ready(name),
-        *reset_mocks(), mode("anthropic", "seq:status:529,ok"),
+        *reset_mocks(), mode("a", "status:503"), mode("anthropic", "seq:status:529,ok"),
         call("529 is not in the default list and reaches the client", name, status_is(529)),
         count("anthropic", 1),
-        *reset_mocks(), mode("anthropic", "seq:status:503,ok"),
+        *reset_mocks(), mode("a", "status:503"), mode("anthropic", "seq:status:503,ok"),
         call("503 on the first model fails over to the second", name, served_by("mock-llm-anthropic")),
         count("anthropic", 2),
         last("anthropic", 'pm.test("second attempt asked for claude-sonnet", () => pm.expect(JSON.parse(last.body).model).to.eql("claude-sonnet"));', "second model"),
@@ -458,13 +502,7 @@ def exhaustion():
         count("a", 1), count("b", 1), count("anthropic", 1),
         *reset_mocks(), mode("a", "reset"), mode("b", "status:502"), mode("anthropic", "status:503"),
         call("Mixed transport and status failures: same fixed error", name, EXHAUSTED),
-        create_proxy("single", {"targets": [t("openai-a", "gpt-a")]}), wait_ready("single"),
-        *reset_mocks(), mode("a", "status:429"),
-        call("A single-target chain that fails gets the fixed error", "single", EXHAUSTED),
-        count("a", 1),
-        *reset_mocks(),
-        call("A single-target chain that succeeds is untouched", "single", served_by("mock-llm-openai-a")),
-    ], "Every target failing, each tried exactly once, and single-target chains.")
+    ], "Every target failing, each tried exactly once.")
 
 
 def suspension():
@@ -525,24 +563,29 @@ def global_and_update():
 
 
 def validation():
+    ok_chain = lambda **kw: {"chains": [{"primary": {"model": "m"}, "fallbacks": [t("openai-b", "m")]}], **kw}
     bad = [
-        ("empty-targets", {"targets": []}),
-        ("unknown-provider", {"targets": [{"provider": "not-attached", "model": "m"}]}),
-        ("duplicate-target", {"targets": [t("openai-a", "m"), t("openai-a", "m")]}),
-        ("too-many", {"targets": [t("openai-a", f"m{i}") for i in range(11)]}),
-        ("status-404", {"targets": [t("openai-a", "m")], "failoverOn": {"statusCodes": [404]}}),
-        ("status-dup", {"targets": [t("openai-a", "m")], "failoverOn": {"statusCodes": [503, 503]}}),
-        ("timeout-zero", {"targets": [t("openai-a", "m")], "perAttemptTimeout": "0s"}),
-        ("timeout-big", {"targets": [t("openai-a", "m")], "perAttemptTimeout": "301s"}),
-        ("threshold-zero", {"targets": [t("openai-a", "m")], "suspendAfterConsecutiveFailures": 0}),
-        ("suspend-long", {"targets": [t("openai-a", "m")], "suspendDuration": "2h"}),
-        ("probes-high", {"targets": [t("openai-a", "m")], "probeConcurrency": 11}),
-        ("recover-zero", {"targets": [t("openai-a", "m")], "recoverAfterSuccessfulProbes": 0}),
-        ("internal-key", {"targets": [t("openai-a", "m")], "_role": "dispatch"}),
+        ("empty-chains", {"chains": []}),
+        ("old-targets", {"targets": [t("openai-a", "m"), t("openai-b", "m")]}),
+        ("no-fallbacks", {"chains": [{"primary": {"model": "m"}, "fallbacks": []}]}),
+        ("primary-provider", {"chains": [{"primary": t("openai-a", "m"), "fallbacks": [t("openai-b", "m")]}]}),
+        ("duplicate-primary", {"chains": ok_chain()["chains"] * 2}),
+        ("unknown-provider", {"chains": [{"primary": {"model": "m"}, "fallbacks": [{"provider": "not-attached", "model": "m"}]}]}),
+        ("duplicate-target", {"chains": [{"primary": {"model": "m"}, "fallbacks": [t("openai-a", "m")]}]}),
+        ("too-many", {"chains": [{"primary": {"model": "m"}, "fallbacks": [t("openai-b", f"m{i}") for i in range(10)]}]}),
+        ("status-404", ok_chain(failoverOn={"statusCodes": [404]})),
+        ("status-dup", ok_chain(failoverOn={"statusCodes": [503, 503]})),
+        ("timeout-zero", ok_chain(perAttemptTimeout="0s")),
+        ("timeout-big", ok_chain(perAttemptTimeout="301s")),
+        ("threshold-zero", ok_chain(suspendAfterConsecutiveFailures=0)),
+        ("suspend-long", ok_chain(suspendDuration="2h")),
+        ("probes-high", ok_chain(probeConcurrency=11)),
+        ("recover-zero", ok_chain(recoverAfterSuccessfulProbes=0)),
+        ("internal-key", ok_chain(_role="dispatch")),
     ]
     items = []
     for name, params in bad:
-        items.append(request(f"Rejected: {name}", "POST", "ctrl", "llm-proxies", proxy_yaml("bad-" + name, params),
+        items.append(request(f"Rejected: {name}", "POST", "ctrl", "llm-proxies", proxy_yaml("bad-" + name, params, raw=True),
                              body_type="application/yaml",
                              tests='pm.test("invalid configuration is rejected (400)", () => pm.response.to.have.status(400));'))
     router = """    - name: llm-header-router
@@ -553,24 +596,202 @@ def validation():
           params: {}
 """
     items.append(request("Rejected: combined with llm-header-router", "POST", "ctrl", "llm-proxies",
-                         proxy_yaml("bad-router", {"targets": [t("openai-a", "m")]}, extra_op_policies=router),
+                         proxy_yaml("bad-router", ok_chain(), extra_op_policies=router),
                          body_type="application/yaml",
                          tests='pm.test("provider-selecting policy is rejected (400)", () => pm.response.to.have.status(400));'))
     return folder("10 Configuration validation", items, "Every invalid configuration is rejected at registration with 400.")
 
 
+def provider_yaml_with_failover(name, params, template="openai", path="/chat/completions"):
+    n = pname(name)
+    params, _ = to_chains(name, params)
+    return f"""apiVersion: gateway.api-platform.wso2.com/v1
+kind: LlmProvider
+metadata:
+  name: {n}
+spec:
+  displayName: {n}
+  version: v1.0
+  template: {template}
+  context: /{n}
+  upstream:
+    url: http://mock-llm-openai-a:8080
+    auth:
+      type: api-key
+      header: Authorization
+      value: Bearer {n}-key
+  accessControl:
+    mode: allow_all
+  operationPolicies:
+    - name: model-failover
+      version: v0
+      paths:
+        - path: {path}
+          methods: [POST]
+          params: {json.dumps(params)}
+"""
+
+
+GEMINI_PATH_CHECKS = """
+pm.test("attempt asked for gemini-2.5-flash in the path", () => pm.expect(last.path).to.include("/models/gemini-2.5-flash:generateContent"));
+pm.test("query kept", () => pm.expect(last.path).to.include("alt=sse"));
+"""
+GEMINI_BODY = json.dumps({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]})
+
+
+def provider_mode():
+    name = "pmodel"
+    # A high threshold keeps gpt-a1 in rotation for the failover cases; the
+    # suspension cases use their own provider (psusp) below.
+    params = {"targets": [{"model": "gpt-a1"}, {"model": "gpt-a2"}], "perAttemptTimeout": "2s",
+              "suspendAfterConsecutiveFailures": 100}
+    susp_params = {"targets": [{"model": "gpt-a1"}, {"model": "gpt-a2"}],
+                   "suspendAfterConsecutiveFailures": 2, "suspendDuration": "30s"}
+    model_is = lambda m: f'pm.test("attempt asked for {m}", () => pm.expect(JSON.parse(last.body).model).to.eql("{m}"));\n'
+    own_key = 'pm.test("the provider\'s own credential", () => pm.expect(last.headers.authorization).to.eql("Bearer mfe" + pm.collectionVariables.get("run") + "-pmodel-key"));\n'
+    nested_targets = {"targets": [t("pmodel", "gpt-a1"), t("openai-b", "gpt-b")]}
+    nested_proxy = proxy_yaml("nested", nested_targets)
+    items = [
+        request("Create provider with model failover", "POST", "ctrl", "llm-providers", provider_yaml_with_failover(name, params),
+                body_type="application/yaml", tests='pm.test("provider is created (201)", () => pm.response.to.have.status(201));'),
+        wait_ready_provider(name),
+        *reset_mocks(),
+        call("First model serves", name, served_by("mock-llm-openai-a")),
+        count("a", 1), last("a", model_is("gpt-a1") + own_key + HIDDEN_HEADERS, "first model, own credential"),
+        *reset_mocks(), mode("a", "seq:status:429,ok"),
+        call("429 falls back to the second model", name, served_by("mock-llm-openai-a")),
+        count("a", 2), last("a", model_is("gpt-a2") + own_key + HIDDEN_HEADERS, "second model, no internal headers"),
+        *reset_mocks(), mode("a", "seq:reset,ok"),
+        call("A connection reset falls back to the second model", name, served_by("mock-llm-openai-a")),
+        last("a", model_is("gpt-a2"), "second model after reset"),
+        *reset_mocks(), mode("a", "seq:hang:10,ok"),
+        call("A hanging first model is abandoned after 2s", name, served_by("mock-llm-openai-a") + """
+pm.test("took at least the per-attempt timeout", () => pm.expect(pm.response.responseTime).to.be.at.least(1900));
+pm.test("did not wait for the hanging attempt", () => pm.expect(pm.response.responseTime).to.be.below(5000));
+"""),
+        *reset_mocks(), mode("a", "status:400"),
+        call("A 400 is returned without trying the second model", name, status_is(400)),
+        count("a", 1),
+        *reset_mocks(), mode("a", "status:503"),
+        call("Every model fails: fixed error", name, EXHAUSTED),
+        count("a", 2),
+        *reset_mocks(),
+        request("Create provider psusp (suspension after 2 failures)", "POST", "ctrl", "llm-providers",
+                provider_yaml_with_failover("psusp", susp_params),
+                body_type="application/yaml", tests='pm.test("provider is created (201)", () => pm.response.to.have.status(201));'),
+        wait_ready("psusp"),
+        *reset_mocks(), mode("a", "seq:status:503,ok,status:503,ok,ok"),
+        call("Model failure 1 of 2", "psusp", served_by("mock-llm-openai-a")),
+        call("Model failure 2 of 2 suspends gpt-a1", "psusp", served_by("mock-llm-openai-a")),
+        call("The suspended model is skipped", "psusp", served_by("mock-llm-openai-a")),
+        count("a", 5), last("a", model_is("gpt-a2"), "suspended model skipped"),
+        create_proxy_raw("nested", nested_proxy), wait_ready("nested"),
+        *reset_mocks(), mode("a", "seq:status:429,ok"),
+        call("A proxy over a provider with its own failover: the provider's second model serves", "nested", served_by("mock-llm-openai-a")),
+        count("a", 2), count("b", 0),
+        request("Create Gemini-template provider with model failover on /models/*", "POST", "ctrl", "llm-providers",
+                provider_yaml_with_failover("pgemini", {"targets": [{"model": "gemini-2.5-pro"}, {"model": "gemini-2.5-flash"}]},
+                                            template="gemini", path="/models/*"),
+                body_type="application/yaml", tests='pm.test("provider is created (201)", () => pm.response.to.have.status(201));'),
+        wait_ready("pgemini", path="models/client:generateContent", body=GEMINI_BODY),
+        *reset_mocks(), mode("a", "seq:status:429,ok"),
+        call("Gemini path model: 429 falls back to the second model", "pgemini", served_by("mock-llm-openai-a"),
+             body=GEMINI_BODY, path="models/gemini-2.5-pro:generateContent?alt=sse"),
+        count("a", 2), last("a", GEMINI_PATH_CHECKS + HIDDEN_HEADERS, "second model in the path"),
+        request("Rejected: path that fixes the model", "POST", "ctrl", "llm-providers",
+                provider_yaml_with_failover("bad-gemini", {"targets": [{"model": "g1"}, {"model": "g2"}]}, template="gemini",
+                                            path="/models/gemini-2.5-pro:generateContent"),
+                body_type="application/yaml",
+                tests='pm.test("rejected (400)", () => pm.response.to.have.status(400));\npm.test("asks for a wildcard path", () => pm.expect(pm.response.text()).to.include("use a wildcard path"));'),
+        request("Rejected: target naming another provider", "POST", "ctrl", "llm-providers",
+                provider_yaml_with_failover("bad-cross", {"targets": [{"model": "m1"}, {"provider": "someone-else", "model": "m2"}]}),
+                body_type="application/yaml",
+                tests='pm.test("rejected (400)", () => pm.response.to.have.status(400));\npm.test("points to an LlmProxy", () => pm.expect(pm.response.text()).to.include("LlmProxy"));'),
+    ]
+    return folder("11 Provider-mode model failover", items,
+                  "model-failover on an LlmProvider: fallback across its own models, reset, timeout, pass-through, exhaustion, suspension, nesting under a proxy, and the registration rules.")
+
+
+def keyed_chains():
+    chains = {"chains": [
+        {"primary": {"model": "gpt-4o"}, "fallbacks": [t("openai-b", "gpt-4o"), t("anthropic", "claude-sonnet-4-5")]},
+        {"primary": {"model": "gpt-4.1"}, "fallbacks": [{"model": "gpt-4.1-mini"}]},
+    ]}
+    ask = lambda m: jstr({"model": m, "messages": [{"role": "user", "content": "hello"}]})
+    model_is = lambda m: f'pm.test("asked for {m}", () => pm.expect(JSON.parse(last.body).model).to.eql("{m}"));\n'
+    rr = """    - name: model-round-robin
+      version: v1
+      paths:
+        - path: /chat/completions
+          methods: [POST]
+          params:
+            suspendDuration: 0
+            models:
+              - model: gpt-4.1
+"""
+    items = [
+        create_proxy("keyed", chains), wait_ready("keyed"),
+        *reset_mocks(), mode("a", "seq:status:429,ok"),
+        request("gpt-4.1 falls back along its own chain", "POST", "router", f"{pname('keyed')}/chat/completions", ask("gpt-4.1"),
+                tests=served_by("mock-llm-openai-a")),
+        count("a", 2), count("b", 0), count("anthropic", 0),
+        last("a", model_is("gpt-4.1-mini"), "gpt-4.1's fallback"),
+        *reset_mocks(), mode("a", "status:429"),
+        request("gpt-4o falls back along its own chain", "POST", "router", f"{pname('keyed')}/chat/completions", ask("gpt-4o"),
+                tests=served_by("mock-llm-openai-b")),
+        last("b", model_is("gpt-4o"), "gpt-4o's fallback"),
+        *reset_mocks(), mode("a", "status:503"),
+        request("A model with no chain passes through with one attempt", "POST", "router", f"{pname('keyed')}/chat/completions", ask("gpt-4o-mini"),
+                tests=status_is(503) + 'pm.test("not the exhaustion body", () => pm.expect(pm.response.text()).to.not.include("all_targets_unavailable"));\n'),
+        count("a", 1), count("b", 0),
+        last("a", model_is("gpt-4o-mini") + HIDDEN_HEADERS, "unchanged model, no internal headers"),
+        *reset_mocks(), mode("a", "status:503"), mode("b", "status:503"), mode("anthropic", "status:503"),
+        request("Every model of gpt-4o's chain fails: fixed error", "POST", "router", f"{pname('keyed')}/chat/completions", ask("gpt-4o"),
+                tests=EXHAUSTED),
+        count("a", 1), count("b", 1), count("anthropic", 1),
+        *reset_mocks(),
+        request("Create proxy with round-robin before model-failover", "POST", "ctrl", "llm-proxies",
+                proxy_yaml("rrfirst", dict(chains), before_policies=rr), body_type="application/yaml",
+                tests='pm.test("proxy is created (201)", () => pm.response.to.have.status(201));'),
+        wait_ready("rrfirst"),
+        *reset_mocks(), mode("a", "seq:status:429,ok"),
+        request("Round-robin picks gpt-4.1 and its chain serves", "POST", "router", f"{pname('rrfirst')}/chat/completions", ask("gpt-4o"),
+                tests=served_by("mock-llm-openai-a")),
+        count("a", 2), count("b", 0),
+        last("a", model_is("gpt-4.1-mini"), "round-robin's pick fell back along its own chain"),
+        request("Rejected: round-robin after model-failover", "POST", "ctrl", "llm-proxies",
+                proxy_yaml("bad-rrafter", dict(chains), extra_op_policies=rr), body_type="application/yaml",
+                tests='pm.test("rejected (400)", () => pm.response.to.have.status(400));\npm.test("names the order rule", () => pm.expect(pm.response.text()).to.include("must come before"));'),
+    ]
+    return folder("12 Chains keyed by the requested model", items,
+                  "Two chains on one proxy: each model walks its own chain, an unconfigured model passes through, round-robin before failover picks the chain, and round-robin after it is rejected.")
+
+
+def wait_ready_provider(name):
+    return wait_ready(name)
+
+
+def create_proxy_raw(name, yaml_text):
+    return request(f"Create proxy {name}", "POST", "ctrl", "llm-proxies", yaml_text, body_type="application/yaml",
+                   tests='pm.test("proxy is created (201)", () => pm.response.to.have.status(201));')
+
+
 def cleanup():
-    proxies = ["basic", "allow", "notimeout", "conn", "noconn", "cross", "twomodels", "exh", "single",
-               "susp", "reprobe", "allsusp", "global"]
-    bad = ["empty-targets", "unknown-provider", "duplicate-target", "too-many", "status-404", "status-dup",
+    proxies = ["basic", "allow", "notimeout", "conn", "noconn", "cross", "twomodels", "exh",
+               "susp", "reprobe", "allsusp", "global", "nested", "keyed", "rrfirst"]
+    bad = ["empty-chains", "old-targets", "no-fallbacks", "primary-provider", "duplicate-primary",
+           "unknown-provider", "duplicate-target", "too-many", "status-404", "status-dup",
            "timeout-zero", "timeout-big", "threshold-zero", "suspend-long", "probes-high", "recover-zero",
-           "internal-key", "router"]
+           "internal-key", "router", "rrafter"]
     items = []
     for p in proxies:
         items.append(request(f"Delete proxy {p}", "DELETE", "ctrl", f"llm-proxies/{pname(p)}",
                              tests='pm.test("deleted", () => pm.expect(pm.response.code).to.be.oneOf([200, 204]));'))
     for b in bad:
         items.append(request(f"Delete leftover bad-{b}", "DELETE", "ctrl", f"llm-proxies/{pname('bad-' + b)}",
+                             tests='pm.test("not left behind", () => pm.expect(pm.response.code).to.be.oneOf([200, 204, 404]));'))
+    for p in ["pmodel", "psusp", "pgemini", "bad-gemini", "bad-cross"]:
+        items.append(request(f"Delete provider {p}", "DELETE", "ctrl", f"llm-providers/{pname(p)}",
                              tests='pm.test("not left behind", () => pm.expect(pm.response.code).to.be.oneOf([200, 204, 404]));'))
     for p in PROVIDERS:
         items.append(request(f"Delete provider {p[0]}", "DELETE", "ctrl", f"llm-providers/{pname(p[0])}",
@@ -589,7 +810,7 @@ def build():
         },
         "variable": [{"key": "run", "value": ""}],
         "item": [setup(), basic(), allow_list(), no_timeout(), connection(), cross_provider(),
-                 same_provider_two_models(), exhaustion(), suspension(), global_and_update(), validation(), cleanup()],
+                 same_provider_two_models(), exhaustion(), suspension(), global_and_update(), validation(), provider_mode(), keyed_chains(), cleanup()],
     }
 
 

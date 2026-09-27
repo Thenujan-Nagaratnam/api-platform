@@ -20,6 +20,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/failover"
@@ -31,92 +32,201 @@ type failoverAttachmentRef struct {
 	params map[string]interface{}
 }
 
-// validateModelFailover checks every model-failover attachment on a proxy at
-// registration: its params, that each target names a provider attached to
-// this proxy, and that no other policy on the proxy selects providers.
-func validateModelFailover(spec *api.LLMProxyConfigData, attachments []models.LLMProxyAttachment) []ValidationError {
-	var refs []failoverAttachmentRef
-	var selectors []string
+// policyPlacement is where one attachment of a policy applies: every
+// operation (global), or one path and its methods, and its position among the
+// operation policies (API-level policies run first).
+type policyPlacement struct {
+	field   string
+	name    string
+	params  map[string]interface{}
+	global  bool
+	path    string
+	methods map[string]bool
+	order   int
+}
+
+// overlaps reports whether two placements can land on the same operation.
+func (a policyPlacement) overlaps(b policyPlacement) bool {
+	if a.global || b.global {
+		return true
+	}
+	if !pathsOverlap(a.path, b.path) {
+		return false
+	}
+	for m := range a.methods {
+		if b.methods[m] || b.methods["*"] || m == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func pathsOverlap(a, b string) bool {
+	if a == b {
+		return true
+	}
+	wild := func(p, q string) bool {
+		return strings.HasSuffix(p, "/*") && strings.HasPrefix(q, strings.TrimSuffix(p, "*"))
+	}
+	return wild(a, b) || wild(b, a)
+}
+
+// failoverAttachments collects every model-failover attachment and every
+// provider- or model-selecting policy across the three policy lists an LLM
+// resource can carry, with the field path and placement of each.
+func failoverAttachments(global *[]api.Policy, opPolicies *[]api.OperationPolicy, legacy *[]api.LLMPolicy) (refs []failoverAttachmentRef, failovers, selectors []policyPlacement, globalCount int) {
 	isSelector := map[string]bool{}
 	for _, n := range failover.ProviderSelectingPolicies {
 		isSelector[n] = true
 	}
-
-	globalCount := 0
-	if spec.GlobalPolicies != nil {
-		for i, p := range *spec.GlobalPolicies {
-			field := fmt.Sprintf("spec.globalPolicies[%d]", i)
+	add := func(pl policyPlacement) {
+		if pl.name == failover.PolicyName {
+			refs = append(refs, failoverAttachmentRef{field: pl.field + ".params", params: pl.params})
+			failovers = append(failovers, pl)
+		}
+		if isSelector[pl.name] {
+			selectors = append(selectors, pl)
+		}
+	}
+	if global != nil {
+		for i, p := range *global {
+			params := map[string]interface{}{}
+			if p.Params != nil {
+				params = *p.Params
+			}
 			if p.Name == failover.PolicyName {
 				globalCount++
-				params := map[string]interface{}{}
-				if p.Params != nil {
-					params = *p.Params
-				}
-				refs = append(refs, failoverAttachmentRef{field: field + ".params", params: params})
 			}
-			if isSelector[p.Name] {
-				selectors = append(selectors, field)
-			}
+			add(policyPlacement{field: fmt.Sprintf("spec.globalPolicies[%d]", i), name: p.Name, params: params, global: true, order: -1})
 		}
 	}
-	if spec.OperationPolicies != nil {
-		for i, p := range *spec.OperationPolicies {
+	order := 0
+	if opPolicies != nil {
+		for i, p := range *opPolicies {
 			for j, path := range p.Paths {
-				field := fmt.Sprintf("spec.operationPolicies[%d].paths[%d]", i, j)
-				if p.Name == failover.PolicyName {
-					refs = append(refs, failoverAttachmentRef{field: field + ".params", params: path.Params})
+				methods := map[string]bool{}
+				for _, m := range path.Methods {
+					methods[strings.ToUpper(string(m))] = true
 				}
-				if isSelector[p.Name] {
-					selectors = append(selectors, field)
-				}
+				add(policyPlacement{field: fmt.Sprintf("spec.operationPolicies[%d].paths[%d]", i, j), name: p.Name, params: path.Params, path: path.Path, methods: methods, order: order})
 			}
+			order++
 		}
 	}
-	if spec.Policies != nil {
-		for i, p := range *spec.Policies {
+	if legacy != nil {
+		for i, p := range *legacy {
 			for j, path := range p.Paths {
-				field := fmt.Sprintf("spec.policies[%d].paths[%d]", i, j)
-				if p.Name == failover.PolicyName {
-					refs = append(refs, failoverAttachmentRef{field: field + ".params", params: path.Params})
+				methods := map[string]bool{}
+				for _, m := range path.Methods {
+					methods[strings.ToUpper(string(m))] = true
 				}
-				if isSelector[p.Name] {
-					selectors = append(selectors, field)
-				}
+				add(policyPlacement{field: fmt.Sprintf("spec.policies[%d].paths[%d]", i, j), name: p.Name, params: path.Params, path: path.Path, methods: methods, order: order})
 			}
+			order++
 		}
 	}
-	if len(refs) == 0 {
-		return nil
-	}
+	return refs, failovers, selectors, globalCount
+}
 
+// namesProvider reports whether any entry of a round-robin style models list
+// routes to a provider.
+func namesProvider(params map[string]interface{}) bool {
+	models, _ := params["models"].([]interface{})
+	for _, m := range models {
+		if e, ok := m.(map[string]interface{}); ok {
+			if p, _ := e["provider"].(string); p != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// commonFailoverErrors reports the rules every attachment point shares: at
+// most one global attachment, and on any operation model-failover shares, no
+// other selecting policy except a model-only round-robin that runs first and
+// so picks the primary whose chain runs.
+func commonFailoverErrors(failovers, selectors []policyPlacement, globalCount int) []ValidationError {
 	var errs []ValidationError
 	if globalCount > 1 {
 		errs = append(errs, ValidationError{Field: "spec.globalPolicies",
 			Message: fmt.Sprintf("%s may be attached at most once in globalPolicies", failover.PolicyName)})
 	}
-	for _, field := range selectors {
-		errs = append(errs, ValidationError{Field: field,
-			Message: fmt.Sprintf("this policy selects providers and cannot be combined with %s on the same proxy", failover.PolicyName)})
+	for _, sel := range selectors {
+		for _, fo := range failovers {
+			if !sel.overlaps(fo) {
+				continue
+			}
+			switch {
+			case !failover.IsModelSelector(sel.name) || namesProvider(sel.params):
+				errs = append(errs, ValidationError{Field: sel.field,
+					Message: fmt.Sprintf("this policy selects providers and cannot share an operation with %s", failover.PolicyName)})
+			case !fo.global && !sel.global && sel.order > fo.order:
+				errs = append(errs, ValidationError{Field: sel.field,
+					Message: fmt.Sprintf("%s must come before %s on the same operation, so the model it picks selects the chain", sel.name, failover.PolicyName)})
+			default:
+				continue
+			}
+			break
+		}
 	}
+	return errs
+}
 
+// validateModelFailover checks every model-failover attachment on a proxy at
+// registration: its params, that each fallback names a provider attached to
+// this proxy, and the selecting-policy rules above.
+func validateModelFailover(spec *api.LLMProxyConfigData, attachments []models.LLMProxyAttachment) []ValidationError {
+	refs, failovers, selectors, globalCount := failoverAttachments(spec.GlobalPolicies, spec.OperationPolicies, spec.Policies)
+	if len(refs) == 0 {
+		return nil
+	}
+	errs := commonFailoverErrors(failovers, selectors, globalCount)
 	names := map[string]bool{}
+	primary := ""
 	for _, a := range attachments {
 		names[a.EffectiveName()] = true
 		names[a.Id] = true
+		if a.IsPrimary {
+			primary = a.EffectiveName()
+		}
 	}
 	for _, ref := range refs {
-		if err := failover.ValidateParams(ref.params); err != nil {
+		if err := failover.ValidateParams(ref.params, primary, false); err != nil {
 			errs = append(errs, ValidationError{Field: ref.field, Message: err.Error()})
 			continue
 		}
-		settings, _ := failover.ParseSettings(ref.params)
-		for k, target := range settings.Targets {
-			if !names[target.Provider] {
-				errs = append(errs, ValidationError{
-					Field:   fmt.Sprintf("%s.targets[%d].provider", ref.field, k),
-					Message: fmt.Sprintf("provider %q is not attached to this proxy (use its id or alias from provider/additionalProviders)", target.Provider),
-				})
+		chains, _ := ref.params["chains"].([]interface{})
+		for i, c := range chains {
+			m, _ := c.(map[string]interface{})
+			fallbacks, _ := m["fallbacks"].([]interface{})
+			for j, f := range fallbacks {
+				fm, _ := f.(map[string]interface{})
+				if p, _ := fm["provider"].(string); p != "" && !names[p] {
+					errs = append(errs, ValidationError{
+						Field:   fmt.Sprintf("%s.chains[%d].fallbacks[%d].provider", ref.field, i, j),
+						Message: fmt.Sprintf("provider %q is not attached to this proxy (use its id or alias from provider/additionalProviders)", p),
+					})
+				}
 			}
+		}
+	}
+	return errs
+}
+
+// validateProviderModelFailover checks model-failover attachments on an
+// LlmProvider, where fallbacks are this provider's models. The template's
+// model location is checked when the provider is transformed, since the
+// validator has no template access; that error is also returned as 400.
+func validateProviderModelFailover(spec *api.LLMProviderConfigData, providerName string) []ValidationError {
+	refs, failovers, selectors, globalCount := failoverAttachments(spec.GlobalPolicies, spec.OperationPolicies, spec.Policies)
+	if len(refs) == 0 {
+		return nil
+	}
+	errs := commonFailoverErrors(failovers, selectors, globalCount)
+	for _, ref := range refs {
+		if err := failover.ValidateParams(ref.params, providerName, true); err != nil {
+			errs = append(errs, ValidationError{Field: ref.field, Message: err.Error()})
 		}
 	}
 	return errs

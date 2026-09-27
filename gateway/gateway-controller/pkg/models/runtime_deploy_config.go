@@ -161,6 +161,11 @@ type RouteFailover struct {
 	PerTryTimeout time.Duration
 	RouteTimeout  time.Duration
 	RetryOn       string
+	// SameUpstream is true on a dispatch route that forwards to the real
+	// provider (model-failover on an LlmProvider). The internal listener's
+	// hop filter must then strip the hop secret here; a proxy-mode dispatch
+	// route (false) disables it so the secret reaches the provider hop.
+	SameUpstream bool
 }
 
 // RouteTimeout holds parsed timeout values for a route.

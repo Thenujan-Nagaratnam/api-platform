@@ -447,6 +447,7 @@ func (v *LLMValidator) validateLLMProvider(provider *api.LLMProviderConfiguratio
 
 	// Validate spec section
 	errors = append(errors, v.validateProviderSpec(&provider.Spec)...)
+	errors = append(errors, validateProviderModelFailover(&provider.Spec, provider.Metadata.Name)...)
 
 	return errors
 }
