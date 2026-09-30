@@ -205,3 +205,19 @@ func TestBridgeCloseReturnsExecutorDestroyFailure(t *testing.T) {
 	require.EqualError(t, err, "destroy Python policy instance rejected by executor: executor refused destroy")
 	assert.Equal(t, 1, fakeClient.destroyPolicyCalls)
 }
+
+func TestErrorImmediateResponseFollowsAPIKind(t *testing.T) {
+	b := &bridge{}
+
+	plain := b.errorImmediateResponse(false)
+	assert.Equal(t, 500, plain.StatusCode)
+	assert.Equal(t, "text/plain", plain.Headers["Content-Type"])
+	assert.Equal(t, "Internal policy error", string(plain.Body))
+
+	llm := b.errorImmediateResponse(true)
+	assert.Equal(t, 500, llm.StatusCode)
+	assert.Equal(t, "application/json", llm.Headers["Content-Type"])
+	assert.JSONEq(t,
+		`{"error":{"message":"Internal policy error","type":"server_error","param":null,"code":null}}`,
+		string(llm.Body))
+}

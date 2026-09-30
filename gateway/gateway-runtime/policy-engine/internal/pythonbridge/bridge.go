@@ -63,19 +63,19 @@ func (b *bridge) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHea
 	req, err := b.buildRequestHeadersRequest(ctx, reqCtx, params)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to build request-header payload", "error", err)
-		return b.requestHeaderErrorAction(err)
+		return b.requestHeaderErrorAction(err, reqCtx.IsLLMAPI())
 	}
 
 	resp, err := b.execute(ctx, req, reqCtx.SharedContext)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to execute Python request-header policy", "error", err)
-		return b.requestHeaderErrorAction(err)
+		return b.requestHeaderErrorAction(err, reqCtx.IsLLMAPI())
 	}
 
 	action, err := b.translator.ToGoRequestHeaderAction(resp)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to translate Python request-header response", "error", err)
-		return b.requestHeaderErrorAction(err)
+		return b.requestHeaderErrorAction(err, reqCtx.IsLLMAPI())
 	}
 	return action
 }
@@ -88,19 +88,19 @@ func (b *bridge) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContex
 	req, err := b.buildRequestBodyRequest(ctx, reqCtx, params)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to build request-body payload", "error", err)
-		return b.requestBodyErrorAction(err)
+		return b.requestBodyErrorAction(err, reqCtx.IsLLMAPI())
 	}
 
 	resp, err := b.execute(ctx, req, reqCtx.SharedContext)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to execute Python request-body policy", "error", err)
-		return b.requestBodyErrorAction(err)
+		return b.requestBodyErrorAction(err, reqCtx.IsLLMAPI())
 	}
 
 	action, err := b.translator.ToGoRequestAction(resp)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to translate Python request-body response", "error", err)
-		return b.requestBodyErrorAction(err)
+		return b.requestBodyErrorAction(err, reqCtx.IsLLMAPI())
 	}
 	return action
 }
@@ -113,19 +113,19 @@ func (b *bridge) OnResponseHeaders(ctx context.Context, respCtx *policy.Response
 	req, err := b.buildResponseHeadersRequest(ctx, respCtx, params)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to build response-header payload", "error", err)
-		return b.responseHeaderErrorAction(err)
+		return b.responseHeaderErrorAction(err, respCtx.IsLLMAPI())
 	}
 
 	resp, err := b.execute(ctx, req, respCtx.SharedContext)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to execute Python response-header policy", "error", err)
-		return b.responseHeaderErrorAction(err)
+		return b.responseHeaderErrorAction(err, respCtx.IsLLMAPI())
 	}
 
 	action, err := b.translator.ToGoResponseHeaderAction(resp)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to translate Python response-header response", "error", err)
-		return b.responseHeaderErrorAction(err)
+		return b.responseHeaderErrorAction(err, respCtx.IsLLMAPI())
 	}
 	return action
 }
@@ -138,19 +138,19 @@ func (b *bridge) OnResponseBody(ctx context.Context, respCtx *policy.ResponseCon
 	req, err := b.buildResponseBodyRequest(ctx, respCtx, params)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to build response-body payload", "error", err)
-		return b.responseBodyErrorAction(err)
+		return b.responseBodyErrorAction(err, respCtx.IsLLMAPI())
 	}
 
 	resp, err := b.execute(ctx, req, respCtx.SharedContext)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to execute Python response-body policy", "error", err)
-		return b.responseBodyErrorAction(err)
+		return b.responseBodyErrorAction(err, respCtx.IsLLMAPI())
 	}
 
 	action, err := b.translator.ToGoResponseAction(resp)
 	if err != nil {
 		b.slogger.ErrorContext(ctx, "Failed to translate Python response-body response", "error", err)
-		return b.responseBodyErrorAction(err)
+		return b.responseBodyErrorAction(err, respCtx.IsLLMAPI())
 	}
 	return action
 }

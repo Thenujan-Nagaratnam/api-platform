@@ -315,7 +315,7 @@ func (ec *PolicyExecutionContext) handlePolicyError(
 		"error", err,
 	)
 
-	errorBody := fmt.Sprintf(`{"error":"Internal Server Error","error_id":"%s"}`, errorID)
+	errorBody := engineErrorBody(ec.sharedCtx.IsLLMAPI(), http.StatusInternalServerError, "Internal Server Error", errorID)
 
 	resp := &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_ImmediateResponse{
@@ -327,7 +327,7 @@ func (ec *PolicyExecutionContext) handlePolicyError(
 					"content-type": "application/json",
 					"x-error-id":   errorID,
 				}),
-				Body: []byte(errorBody),
+				Body: errorBody,
 			},
 		},
 	}
@@ -366,19 +366,21 @@ func (ec *PolicyExecutionContext) handlePayloadTooLarge(
 		"error", err,
 	)
 
-	errorBody := fmt.Sprintf(`{"error":"Payload Too Large","error_id":"%s"}`, errorID)
+	llm := ec.sharedCtx.IsLLMAPI()
+	httpStatus := http.StatusRequestEntityTooLarge
+	errorBody := engineErrorBody(llm, httpStatus, "Payload Too Large", errorID)
 
 	resp := &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_ImmediateResponse{
 			ImmediateResponse: &extprocv3.ImmediateResponse{
 				Status: &typev3.HttpStatus{
-					Code: typev3.StatusCode_PayloadTooLarge,
+					Code: typev3.StatusCode(httpStatus),
 				},
 				Headers: buildHeaderValueOptions(map[string]string{
 					"content-type": "application/json",
 					"x-error-id":   errorID,
 				}),
-				Body: []byte(errorBody),
+				Body: errorBody,
 			},
 		},
 	}
@@ -389,7 +391,7 @@ func (ec *PolicyExecutionContext) handlePayloadTooLarge(
 	ec.generated = generatedResponse{
 		resp: resp,
 		outcome: tracing.HTTPOutcome{
-			StatusCode: http.StatusRequestEntityTooLarge,
+			StatusCode: httpStatus,
 			Reason:     constants.TerminalReasonPayloadTooLarge,
 			ErrorID:    errorID,
 		},
@@ -432,7 +434,8 @@ func (ec *PolicyExecutionContext) rejectUnsupportedEncoding(
 		"encoding", encoding,
 	)
 
-	errorBody := fmt.Sprintf(`{"error":%q,"error_id":"%s"}`, clientError, errorID)
+	llm := ec.sharedCtx.IsLLMAPI()
+	errorBody := engineErrorBody(llm, httpStatus, clientError, errorID)
 
 	resp := &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_ImmediateResponse{
@@ -444,7 +447,7 @@ func (ec *PolicyExecutionContext) rejectUnsupportedEncoding(
 					"content-type": "application/json",
 					"x-error-id":   errorID,
 				}),
-				Body: []byte(errorBody),
+				Body: errorBody,
 			},
 		},
 	}
@@ -516,7 +519,8 @@ func (ec *PolicyExecutionContext) rejectUndecodableBody(
 		"error", err,
 	)
 
-	errorBody := fmt.Sprintf(`{"error":%q,"error_id":"%s"}`, clientError, errorID)
+	llm := ec.sharedCtx.IsLLMAPI()
+	errorBody := engineErrorBody(llm, httpStatus, clientError, errorID)
 
 	resp := &extprocv3.ProcessingResponse{
 		Response: &extprocv3.ProcessingResponse_ImmediateResponse{
@@ -528,7 +532,7 @@ func (ec *PolicyExecutionContext) rejectUndecodableBody(
 					"content-type": "application/json",
 					"x-error-id":   errorID,
 				}),
-				Body: []byte(errorBody),
+				Body: errorBody,
 			},
 		},
 	}

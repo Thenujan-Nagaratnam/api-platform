@@ -415,7 +415,7 @@ func (ec *PolicyExecutionContext) denyResolution(
 	failure *resolver.ResolutionError,
 ) *extprocv3.ProcessingResponse {
 	resp, outcome := renderResolutionFailure(ctx, ec.resolverName, ec.routeKey, ec.requestID, failure,
-		resolutionFailureAnalytics(nil, ec, failure))
+		resolutionFailureAnalytics(nil, ec, failure), ec.sharedCtx.IsLLMAPI())
 
 	// The chain is never bound for this request. Later phases check this so a
 	// response callback that arrives anyway cannot dereference a nil chain.
@@ -441,6 +441,7 @@ func renderResolutionFailure(
 	requestID string,
 	failure *resolver.ResolutionError,
 	analytics *structpb.Struct,
+	llm bool,
 ) (*extprocv3.ProcessingResponse, tracing.HTTPOutcome) {
 	errorID := uuid.New().String()
 
@@ -454,7 +455,7 @@ func renderResolutionFailure(
 	)
 	metrics.ResolutionFailuresTotal.WithLabelValues(resolverName, string(failure.Kind)).Inc()
 
-	rendered := genericResolutionFailure(failure.Kind, errorID)
+	rendered := genericResolutionFailure(failure.Kind, errorID, llm)
 
 	imm := &extprocv3.ImmediateResponse{
 		Status:  &typev3.HttpStatus{Code: typev3.StatusCode(rendered.StatusCode)},
@@ -537,7 +538,7 @@ type sterileFailure struct {
 // genericResolutionFailure is the sterile response for a resolution failure: an
 // HTTP status, a fixed reason phrase, and a correlation id that also appears in the
 // warning log. It never names the resolver, the operation, or the underlying cause.
-func genericResolutionFailure(kind resolver.FailureKind, errorID string) sterileFailure {
+func genericResolutionFailure(kind resolver.FailureKind, errorID string, llm bool) sterileFailure {
 	status := http.StatusInternalServerError
 	message := "Internal Server Error"
 
@@ -567,7 +568,7 @@ func genericResolutionFailure(kind resolver.FailureKind, errorID string) sterile
 			"content-type": "application/json",
 			"x-error-id":   errorID,
 		},
-		Body: []byte(fmt.Sprintf(`{"error":%q,"error_id":%q}`, message, errorID)),
+		Body: engineErrorBody(llm, status, message, errorID),
 	}
 }
 

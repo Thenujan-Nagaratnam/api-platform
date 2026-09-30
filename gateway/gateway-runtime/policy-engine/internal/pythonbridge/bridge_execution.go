@@ -48,12 +48,12 @@ func (b *bridge) buildRequestHeadersRequest(
 ) (*proto.StreamRequest, error) {
 	payload := &proto.RequestHeadersPayload{
 		Context: &proto.RequestHeaderContext{
-			Headers:   b.translator.ToProtoHeaders(reqCtx.Headers),
-			Path:      reqCtx.Path,
-			Method:    reqCtx.Method,
-			Authority: reqCtx.Authority,
-			Scheme:    reqCtx.Scheme,
-			Vhost:     reqCtx.Vhost,
+			Headers:    b.translator.ToProtoHeaders(reqCtx.Headers),
+			Path:       reqCtx.Path,
+			Method:     reqCtx.Method,
+			Authority:  reqCtx.Authority,
+			Scheme:     reqCtx.Scheme,
+			Vhost:      reqCtx.Vhost,
 			Downstream: b.translator.ToProtoDownstream(reqCtx.Downstream),
 			Upstream:   b.translator.ToProtoRequestUpstream(reqCtx.Upstream),
 		},
@@ -70,13 +70,13 @@ func (b *bridge) buildRequestBodyRequest(
 ) (*proto.StreamRequest, error) {
 	payload := &proto.RequestBodyPayload{
 		Context: &proto.RequestContext{
-			Headers:   b.translator.ToProtoHeaders(reqCtx.Headers),
-			Body:      b.translator.ToProtoBody(reqCtx.Body),
-			Path:      reqCtx.Path,
-			Method:    reqCtx.Method,
-			Authority: reqCtx.Authority,
-			Scheme:    reqCtx.Scheme,
-			Vhost:     reqCtx.Vhost,
+			Headers:    b.translator.ToProtoHeaders(reqCtx.Headers),
+			Body:       b.translator.ToProtoBody(reqCtx.Body),
+			Path:       reqCtx.Path,
+			Method:     reqCtx.Method,
+			Authority:  reqCtx.Authority,
+			Scheme:     reqCtx.Scheme,
+			Vhost:      reqCtx.Vhost,
 			Downstream: b.translator.ToProtoDownstream(reqCtx.Downstream),
 			Upstream:   b.translator.ToProtoRequestUpstream(reqCtx.Upstream),
 		},
@@ -154,12 +154,12 @@ func (b *bridge) buildRequestChunkRequest(
 ) (*proto.StreamRequest, error) {
 	payload := &proto.RequestChunkPayload{
 		Context: &proto.RequestStreamContext{
-			Headers:   b.translator.ToProtoHeaders(reqCtx.Headers),
-			Path:      reqCtx.Path,
-			Method:    reqCtx.Method,
-			Authority: reqCtx.Authority,
-			Scheme:    reqCtx.Scheme,
-			Vhost:     reqCtx.Vhost,
+			Headers:    b.translator.ToProtoHeaders(reqCtx.Headers),
+			Path:       reqCtx.Path,
+			Method:     reqCtx.Method,
+			Authority:  reqCtx.Authority,
+			Scheme:     reqCtx.Scheme,
+			Vhost:      reqCtx.Vhost,
 			Downstream: b.translator.ToProtoDownstream(reqCtx.Downstream),
 			Upstream:   b.translator.ToProtoRequestUpstream(reqCtx.Upstream),
 		},
@@ -293,7 +293,12 @@ func (b *bridge) mergeMetadata(shared *policy.SharedContext, updated *structpb.S
 	}
 }
 
-func (b *bridge) errorImmediateResponse() policy.ImmediateResponse {
+// errorImmediateResponse is returned when the Python executor call itself fails.
+// LLM API clients get an OpenAI-compatible error; other API kinds keep plain text.
+func (b *bridge) errorImmediateResponse(llm bool) policy.ImmediateResponse {
+	if llm {
+		return policy.NewOpenAIErrorResponse(500, policy.OpenAIError{Message: "Internal policy error"})
+	}
 	return policy.ImmediateResponse{
 		StatusCode: 500,
 		Headers:    map[string]string{"Content-Type": "text/plain"},
@@ -301,20 +306,20 @@ func (b *bridge) errorImmediateResponse() policy.ImmediateResponse {
 	}
 }
 
-func (b *bridge) requestBodyErrorAction(err error) policy.RequestAction {
-	return b.errorImmediateResponse()
+func (b *bridge) requestBodyErrorAction(err error, llm bool) policy.RequestAction {
+	return b.errorImmediateResponse(llm)
 }
 
-func (b *bridge) responseBodyErrorAction(err error) policy.ResponseAction {
-	return b.errorImmediateResponse()
+func (b *bridge) responseBodyErrorAction(err error, llm bool) policy.ResponseAction {
+	return b.errorImmediateResponse(llm)
 }
 
-func (b *bridge) requestHeaderErrorAction(err error) policy.RequestHeaderAction {
-	return b.errorImmediateResponse()
+func (b *bridge) requestHeaderErrorAction(err error, llm bool) policy.RequestHeaderAction {
+	return b.errorImmediateResponse(llm)
 }
 
-func (b *bridge) responseHeaderErrorAction(err error) policy.ResponseHeaderAction {
-	return b.errorImmediateResponse()
+func (b *bridge) responseHeaderErrorAction(err error, llm bool) policy.ResponseHeaderAction {
+	return b.errorImmediateResponse(llm)
 }
 
 func (b *bridge) streamingRequestErrorAction(err error) policy.StreamingRequestAction {
