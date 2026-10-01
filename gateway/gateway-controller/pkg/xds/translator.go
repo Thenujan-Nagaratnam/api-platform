@@ -395,56 +395,24 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 	}
 
 	// Failover routes always auto-rewrite Host (needed for per-attempt
-	// backend resolution to tell attempts apart, see the design spec) and
-	// carry a retry policy that escalates through the aggregate cluster's
-	// priority levels on a 5xx.
+	// backend resolution to tell attempts apart, see the design spec). The
+	// downstream model-failover policy overrides HostRewrite's effect per
+	// request with the selected chain's exact depth; this route-level
+	// setting only matters for requests that reach this route without that
+	// override.
 	if rdcRoute.Upstream.Failover != nil {
 		routeAction.Route.HostRewriteSpecifier = &route.RouteAction_AutoHostRewrite{
 			AutoHostRewrite: &wrapperspb.BoolValue{Value: true},
 		}
-		// The downstream model-failover policy overrides this value per request
-		// with the selected chain's exact depth. The route-level maximum is only
-		// a defensive ceiling for requests that reach this route without that
-		// override.
-		maxFallbackDepth := 0
-		for _, target := range rdcRoute.Upstream.Failover.Targets {
-			if len(target.Fallbacks) > maxFallbackDepth {
-				maxFallbackDepth = len(target.Fallbacks)
-			}
-		}
-		// RetryOn is expected non-empty by the time it reaches here —
-		// buildRouteFailoverFromPolicy (pkg/transform/model_failover_policy.go)
-		// defaults it to ["5xx"] — but default defensively here too, so a
-		// RouteFailover built any other
-		// way never produces an empty retry_on (which Envoy treats as "never
-		// retry", silently defeating the whole feature). Envoy's retry_on
-		// accepts a comma-separated list of conditions in one string.
-		retryOn := rdcRoute.Upstream.Failover.RetryOn
-		if len(retryOn) == 0 {
-			retryOn = []string{"5xx"}
-		}
-		retryPolicy := &route.RetryPolicy{
-			RetryOn:    strings.Join(retryOn, ","),
-			NumRetries: wrapperspb.UInt32(uint32(maxFallbackDepth)),
-		}
-		// RetriableStatusCodes only takes effect when RetryOn includes
-		// "retriable-status-codes" (which buildRouteFailoverFromPolicy only
-		// ever sets together with a non-empty RetriableStatusCodes), so this
-		// is safe to set unconditionally from whatever the model carries.
-		if len(rdcRoute.Upstream.Failover.RetriableStatusCodes) > 0 {
-			codes := make([]uint32, len(rdcRoute.Upstream.Failover.RetriableStatusCodes))
-			for i, code := range rdcRoute.Upstream.Failover.RetriableStatusCodes {
-				codes[i] = uint32(code)
-			}
-			retryPolicy.RetriableStatusCodes = codes
-		}
-		// design §9.2: left nil (the route's overall timeout applies) unless
-		// the operator configured it; retry backoff stays at Envoy's default
-		// (25ms base) — failover moves to a different target, so there is no
-		// reason to wait longer between attempts.
-		if rdcRoute.Upstream.Failover.PerTryTimeoutMs > 0 {
-			retryPolicy.PerTryTimeout = durationpb.New(time.Duration(rdcRoute.Upstream.Failover.PerTryTimeoutMs) * time.Millisecond)
-		}
+	}
+	// RetryPolicy is generated whenever there's something to retry on: a
+	// failover chain (escalating through the aggregate cluster's priority
+	// levels), one or more attached policies declaring their own Retry
+	// contribution (specs/001-upstream-retry-contribution), or both —
+	// mergeUpstreamRetryPolicy folds every source into one policy and
+	// returns nil when there's nothing to retry on, exactly preserving
+	// today's "no RetryPolicy at all" behavior for an unaffected route.
+	if retryPolicy := mergeUpstreamRetryPolicy(rdcRoute.Upstream.RetryContributions, rdcRoute.Upstream.Failover); retryPolicy != nil {
 		routeAction.Route.RetryPolicy = retryPolicy
 	}
 

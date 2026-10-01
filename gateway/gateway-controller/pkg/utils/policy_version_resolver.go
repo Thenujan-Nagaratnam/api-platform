@@ -44,14 +44,26 @@ func IsPolicyDefinitionMissingError(err error) bool {
 	return errors.As(err, &missingErr)
 }
 
-// PolicyVersionResolver resolves a policy name to a version string.
+// PolicyVersionResolver resolves a policy name to a version string, and can
+// look up a specific (name, version) pair's full definition.
 type PolicyVersionResolver interface {
 	Resolve(name string) (string, error)
+
+	// Definition returns the loaded PolicyDefinition for an exact
+	// (name, version) pair, and whether it was found. Used by the
+	// specs/001-upstream-retry-contribution transform-phase resolution step
+	// to read an attached policy instance's own Retry declaration.
+	Definition(name, version string) (*models.PolicyDefinition, bool)
 }
 
 // StaticPolicyVersionResolver resolves policy versions from a fixed map.
 type StaticPolicyVersionResolver struct {
 	versions map[string]string
+	// definitions is keyed "name|version" (matching PolicyLoader's own key
+	// shape, see pkg/utils/policy_loader.go) and is nil for a resolver built
+	// via NewStaticPolicyVersionResolver — only NewLoadedPolicyVersionResolver
+	// has full PolicyDefinition values to populate it with.
+	definitions map[string]models.PolicyDefinition
 }
 
 // NewStaticPolicyVersionResolver creates a resolver from an explicit policy->version map.
@@ -66,7 +78,9 @@ func NewStaticPolicyVersionResolver(versions map[string]string) *StaticPolicyVer
 // NewLoadedPolicyVersionResolver builds a resolver from loaded policy definitions.
 // The highest semantic version per policy name is selected, then converted to
 // a major-only version (e.g., v0) for compatibility with policy version
-// validation rules.
+// validation rules. The full definitions remain available via Definition,
+// keyed by their own exact (unresolved) name/version, not the major-only
+// version Resolve returns.
 func NewLoadedPolicyVersionResolver(policyDefinitions map[string]models.PolicyDefinition) *StaticPolicyVersionResolver {
 	versions := make(map[string]string)
 	for _, def := range policyDefinitions {
@@ -78,7 +92,12 @@ func NewLoadedPolicyVersionResolver(policyDefinitions map[string]models.PolicyDe
 	for name, version := range versions {
 		versions[name] = versionutil.MajorVersion(version)
 	}
-	return NewStaticPolicyVersionResolver(versions)
+	resolver := NewStaticPolicyVersionResolver(versions)
+	resolver.definitions = make(map[string]models.PolicyDefinition, len(policyDefinitions))
+	for key, def := range policyDefinitions {
+		resolver.definitions[key] = def
+	}
+	return resolver
 }
 
 // Resolve returns the version for a policy name or an error if missing.
@@ -91,4 +110,17 @@ func (r *StaticPolicyVersionResolver) Resolve(name string) (string, error) {
 		return "", &PolicyDefinitionMissingError{PolicyName: name}
 	}
 	return version, nil
+}
+
+// Definition returns the loaded PolicyDefinition for an exact (name, version)
+// pair, and whether it was found.
+func (r *StaticPolicyVersionResolver) Definition(name, version string) (*models.PolicyDefinition, bool) {
+	if r == nil || r.definitions == nil {
+		return nil, false
+	}
+	def, ok := r.definitions[name+"|"+version]
+	if !ok {
+		return nil, false
+	}
+	return &def, true
 }

@@ -153,6 +153,33 @@ type RouteUpstream struct {
 	// LlmProxy attached the model-failover policy to this route). See
 	// RouteFailover.
 	Failover *RouteFailover
+
+	// RetryContributions holds one resolved entry per attached policy
+	// instance whose own definition declares a Retry block (and, if it set
+	// EnabledByParam, that condition resolved true for this attachment).
+	// Empty/nil for the common case of a route with no contributing policy.
+	// See specs/001-upstream-retry-contribution/data-model.md.
+	RetryContributions []UpstreamRetryContribution
+}
+
+// UpstreamRetryContribution is the resolved, per-attachment form of a
+// policy's Retry declaration — every "...FromParam"/"...FromLongestList"
+// reference has already been read against that specific attachment's own
+// configured params by the time this is populated. See
+// specs/001-upstream-retry-contribution/data-model.md.
+type UpstreamRetryContribution struct {
+	// PolicyName is provenance only, for observability/debugging — never
+	// read by the merge step that folds contributions into a RetryPolicy.
+	PolicyName string
+
+	StatusCodes []int
+
+	// MaxAttempts is the total number of sends, the first attempt included
+	// — not Envoy's RetryPolicy.NumRetries convention, which excludes it.
+	MaxAttempts int
+
+	PerAttemptTimeoutMs          int
+	AlsoRetryOnConnectionFailure bool
 }
 
 // RouteFailover declares, for one route, the ordered failover chains a
