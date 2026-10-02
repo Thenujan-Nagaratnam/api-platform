@@ -311,7 +311,10 @@ func TestOnResponseHeaders_RecordsSuspensionOn5xx(t *testing.T) {
 
 	action := p.OnResponseHeaders(context.Background(), respCtx, nil)
 
-	assert.Nil(t, action, "primary attempt sets no resolved-provider header")
+	mods, ok := action.(policy.DownstreamResponseHeaderModifications)
+	require.True(t, ok)
+	assert.Empty(t, mods.HeadersToSet, "primary attempt sets no client-visible resolved-provider header")
+	assert.Equal(t, 1, mods.AnalyticsMetadata["model_failover_chain_position"])
 	assert.True(t, p.isSuspended("gpt-4o", "", ""))
 }
 
@@ -1379,6 +1382,37 @@ func TestRecordOutcome_RollingFailureRateSuspendsOnceThresholdAndMinimumSamplesA
 	assert.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
 }
 
+func TestRecordOutcome_SeveralBreachedRulesOpenCircuitOnlyOnce(t *testing.T) {
+	p := &Policy{
+		params: ModelFailoverParams{
+			SuspendDuration:             30,
+			SuspendAfterFailures:        1,
+			FailureRateThresholdPercent: 50,
+			LatencyThresholdMs:          100,
+		},
+		susp: newSuspensionState(),
+	}
+	target := FailoverTarget{Model: "gpt-4o"}
+	key := p.keyFor(target)
+	now := time.Now()
+
+	// Prime both rolling rules to breach on the same failing attempt that
+	// also breaches the consecutive-failure rule.
+	rateWindow := p.rateWindowFor(key)
+	latencyWindow := p.latencyWindowFor(key)
+	for i := 0; i < circuitMinimumSamples-1; i++ {
+		rateWindow.recordOutcome(now, true)
+		latencyWindow.recordLatency(now, 200)
+	}
+
+	p.recordOutcome(target, true, true, 200)
+
+	assert.Equal(t, 1, p.susp.suspensionStreak[key],
+		"one attempt is one circuit transition even when several rules breach")
+	assert.WithinDuration(t, time.Now().Add(30*time.Second), p.susp.suspended[key], 2*time.Second,
+		"the first open must use the base suspension, not multiply it once per breached rule")
+}
+
 func TestRecordOutcome_RollingFailureRateBelowThresholdDoesNotSuspend(t *testing.T) {
 	p := rateOnlyPolicy(ModelFailoverParams{FailureRateThresholdPercent: 50})
 	target := FailoverTarget{Model: "gpt-4o"}
@@ -1412,10 +1446,12 @@ func TestRecordOutcome_SuspensionClearsTheWindowsSoRecoveryIsJudgedAfresh(t *tes
 	}
 	require.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
 
-	// The window expires and the half-open probe succeeds, closing the circuit.
+	// The window expires and the configured successful-probe quorum closes the circuit.
 	p.susp.suspended[key] = time.Now().Add(-time.Second)
-	require.True(t, p.allowRequest(target))
-	p.recordOutcome(target, false, false, 0)
+	for i := 0; i < circuitProbeSuccessesToClose; i++ {
+		require.True(t, p.allowRequest(target))
+		p.recordOutcome(target, false, false, 0)
+	}
 	require.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
 
 	// One more success must not re-trip the rule off the pre-suspension failures.
@@ -1465,7 +1501,7 @@ func TestRecordOutcome_NoLatencySampleNeverFeedsTheLatencyRule(t *testing.T) {
 
 // ─── ECI #18469 finding #5: half-open controlled recovery ──────────────────
 
-func TestAllowRequest_HalfOpenAllowsOneProbeAndClosesOnSuccess(t *testing.T) {
+func TestAllowRequest_HalfOpenAllowsOneProbeAtATimeAndClosesOnSuccessQuorum(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 30}, susp: newSuspensionState()}
 	target := FailoverTarget{Model: "gpt-4o"}
 	key := p.keyFor(target)
@@ -1474,8 +1510,14 @@ func TestAllowRequest_HalfOpenAllowsOneProbeAndClosesOnSuccess(t *testing.T) {
 	assert.True(t, p.allowRequest(target), "first probe must be granted")
 	assert.False(t, p.allowRequest(target), "a probe is already in flight — a second concurrent request must be blocked")
 
-	p.recordOutcome(target, false, false, 0) // the in-flight probe succeeds
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition), "a successful probe must close the circuit")
+	for i := 0; i < circuitProbeSuccessesToClose; i++ {
+		p.recordOutcome(target, false, false, 0)
+		if i < circuitProbeSuccessesToClose-1 {
+			assert.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition), "the circuit stays half-open until the success quorum")
+			require.True(t, p.allowRequest(target), "the next controlled probe should be admitted")
+		}
+	}
+	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition), "the success quorum must close the circuit")
 	assert.True(t, p.allowRequest(target), "circuit is closed — no longer gated by the probe")
 	assert.True(t, p.allowRequest(target))
 }
@@ -1505,7 +1547,8 @@ func TestAllowRequest_LostProbeIsReleasedAfterItsLease(t *testing.T) {
 	// The probe's outcome never arrives (transport failure, client cancel).
 	p.susp.probes[key].grantedAt = time.Now().Add(-circuitProbeLease - time.Second)
 
-	assert.True(t, p.allowRequest(target), "a probe lost past its lease must not hold the target half-open forever")
+	assert.False(t, p.allowRequest(target), "a lost probe must reopen the circuit instead of racing a replacement")
+	assert.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
 }
 
 // ─── ECI #18469 finding #7: idle registry eviction ──────────────────────────

@@ -275,6 +275,7 @@ func (s *suspensionState) markUsed(now time.Time) {
 type probeState struct {
 	inFlight  bool
 	grantedAt time.Time // when the in-flight probe was granted, for circuitProbeLease
+	successes int
 }
 
 // Fixed circuit-breaker tuning. Only the thresholds that decide WHEN a target
@@ -299,6 +300,9 @@ const (
 	// arrived (a transport failure or client cancel never reaches
 	// recordOutcome), so a lost probe can't hold a target half-open forever.
 	circuitProbeLease = 60 * time.Second
+	// Require a few consecutive successful probes before normal traffic is
+	// restored. Kept internal so the user-facing policy stays simple.
+	circuitProbeSuccessesToClose = 3
 )
 const maxLatencySamplesPerBucket = 200 // bounds memory; ample for percentile accuracy at normal traffic
 
@@ -844,24 +848,18 @@ func (p *Policy) isFailureStatus(status int) bool {
 	return false
 }
 
-// isSuspended checks and lazily clears an expired suspension entry — same
-// check-and-delete-if-expired pattern model-round-robin uses (no background
-// sweep). Side-effect-free (besides that lazy clear) — safe to call from
-// anywhere just to inspect state. The actual dispatch decision must use
-// allowRequest instead, which additionally accounts for half-open recovery.
+// isSuspended reports whether the circuit is OPEN or HALF_OPEN. Expiry does
+// not delete the entry: allowRequest must retain it while controlled probes
+// decide whether the target is healthy enough to close.
 func (p *Policy) isSuspended(model, provider, upstreamDefinition string) bool {
 	p.susp.mu.Lock()
 	defer p.susp.mu.Unlock()
 	key := suspensionKey(model, provider, upstreamDefinition)
-	until, ok := p.susp.suspended[key]
+	_, ok := p.susp.suspended[key]
 	if !ok {
 		return false
 	}
-	if time.Now().Before(until) {
-		return true
-	}
-	delete(p.susp.suspended, key)
-	return false
+	return true
 }
 
 // suspend immediately marks (model, provider, upstreamDefinition) suspended
@@ -883,8 +881,8 @@ func (p *Policy) suspend(model, provider, upstreamDefinition string) {
 // controlled recovery: once a suspension window expires, instead of
 // immediately treating the target as fully healthy again, exactly one request
 // at a time is let through as a probe while it's otherwise still treated as
-// suspended. One successful probe closes the circuit; one failed probe
-// re-suspends it with its backoff window doubled.
+// suspended. A small quorum of successful probes closes the circuit; one
+// failed probe re-suspends it with its backoff window doubled.
 //
 // This MUTATES probe accounting when it grants a probe slot (increments
 // active), so it must only be called at an actual dispatch decision, never
@@ -924,6 +922,14 @@ func (p *Policy) allowRequest(target FailoverTarget) bool {
 	if ps.inFlight && now.Sub(ps.grantedAt) < circuitProbeLease {
 		return false // a probe is already in flight — still treated as blocked
 	}
+	if ps.inFlight {
+		// The previous probe never produced an outcome. Treat the expired lease
+		// as a failed recovery attempt instead of granting a replacement whose
+		// result could race with a late response from the old probe.
+		delete(p.susp.probes, key)
+		p.triggerSuspensionLocked(key, now, "half_open_probe_lost")
+		return false
+	}
 	ps.inFlight = true
 	ps.grantedAt = now
 	circuitLogger().Debug("model-failover half-open probe granted", "target", key)
@@ -941,12 +947,25 @@ func (p *Policy) completeProbe(key string, failed bool, now time.Time) {
 	if _, ok := p.susp.probes[key]; !ok {
 		return
 	}
-	delete(p.susp.probes, key)
 	if failed {
+		delete(p.susp.probes, key)
 		p.triggerSuspensionLocked(key, now, "half_open_probe_failed")
 		return
 	}
+	ps := p.susp.probes[key]
+	ps.inFlight = false
+	ps.grantedAt = time.Time{}
+	ps.successes++
+	if ps.successes < circuitProbeSuccessesToClose {
+		circuitLogger().Info("model-failover half-open probe succeeded", "target", key,
+			"successes", ps.successes, "required", circuitProbeSuccessesToClose)
+		return
+	}
+	delete(p.susp.probes, key)
 	delete(p.susp.suspended, key)
+	delete(p.susp.failureCounts, key)
+	delete(p.susp.suspensionStreak, key)
+	delete(p.susp.streakExpiresAt, key)
 	circuitLogger().Info("model-failover circuit closed", "target", key, "reason", "half_open_probe_succeeded")
 }
 
@@ -1016,8 +1035,9 @@ func (p *Policy) latencyWindowFor(key string) *rollingWindow {
 //
 // If target is currently in a half-open recovery cycle (completeProbe would
 // find an active probes[] entry), this delegates to completeProbe instead of
-// the ordinary counters — a single probe outcome closes or reopens the
-// circuit, regardless of SuspendAfterFailures.
+// the ordinary counters — failed probes reopen immediately, while the small
+// successful-probe quorum closes the circuit regardless of
+// SuspendAfterFailures.
 func (p *Policy) recordOutcome(target FailoverTarget, failed bool, hasLatency bool, latencyMs int) {
 	if p.params.SuspendDuration <= 0 {
 		return // suspension disabled entirely; nothing to track
@@ -1051,7 +1071,14 @@ func (p *Policy) recordOutcome(target FailoverTarget, failed bool, hasLatency bo
 		p.completeProbe(key, failed, now)
 		return
 	}
+	// Ignore late completions from requests that were already in flight when
+	// another request opened the circuit. They must not repeatedly extend the
+	// same suspension window or compound its backoff.
+	if until, open := p.susp.suspended[key]; open && now.Before(until) {
+		return
+	}
 
+	consecutiveBreached := false
 	if !failed {
 		delete(p.susp.failureCounts, key)
 		delete(p.susp.suspensionStreak, key)
@@ -1064,29 +1091,42 @@ func (p *Policy) recordOutcome(target FailoverTarget, failed bool, hasLatency bo
 		p.susp.failureCounts[key]++
 		if p.susp.failureCounts[key] >= threshold {
 			p.susp.failureCounts[key] = 0
-			p.triggerSuspensionLocked(key, now, "consecutive_failures")
+			consecutiveBreached = true
 		}
 	}
 
 	// Rolling failure-rate rule — additive to the consecutive-failure trigger
 	// above; either can independently suspend the target.
+	failureRateBreached := false
 	if p.params.FailureRateThresholdPercent > 0 {
 		w := p.rateWindowFor(key)
 		w.recordOutcome(now, failed)
 		attempts, failures := w.totals()
 		if attempts >= circuitMinimumSamples && failures*100/attempts >= p.params.FailureRateThresholdPercent {
-			p.triggerSuspensionLocked(key, now, "failure_rate_threshold")
+			failureRateBreached = true
 		}
 	}
 
 	// Latency rule — every attempt (success or failure) has a latency, so
 	// this is tracked regardless of the failed/success branch above.
+	latencyBreached := false
 	if hasLatency && p.params.LatencyThresholdMs > 0 {
 		w := p.latencyWindowFor(key)
 		w.recordLatency(now, latencyMs)
 		if pct, ok := w.latencyPercentile(circuitLatencyPercentile, circuitMinimumSamples); ok && pct >= p.params.LatencyThresholdMs {
-			p.triggerSuspensionLocked(key, now, "latency_threshold")
+			latencyBreached = true
 		}
+	}
+
+	// One attempt may breach several rules, but opening the circuit is one
+	// state transition and must advance backoff only once.
+	switch {
+	case consecutiveBreached:
+		p.triggerSuspensionLocked(key, now, "consecutive_failures")
+	case failureRateBreached:
+		p.triggerSuspensionLocked(key, now, "failure_rate_threshold")
+	case latencyBreached:
+		p.triggerSuspensionLocked(key, now, "latency_threshold")
 	}
 }
 
@@ -1646,19 +1686,18 @@ func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHe
 	}
 	p.recordOutcome(*member, p.isFailureStatus(int(respCtx.ResponseStatus)), hasLatency, latencyMs)
 
-	if index > 1 {
-		return policy.DownstreamResponseHeaderModifications{
-			HeadersToSet: map[string]string{ResolvedFailoverProviderHeader: p.resolvedProvider(*member)},
-			// Per-request circuit-breaking observability (ECI #18469 finding
-			// #8): which chain position actually served this request. There is
-			// no first-class metrics API to emit a counter from directly (see
-			// circuitLogger's doc comment), so this rides the one per-request
-			// telemetry surface the SDK does expose.
-			AnalyticsMetadata: map[string]any{
-				"model_failover_chain_position": index,
-				"model_failover_resolved_model": member.Model,
-			},
-		}
+	mods := policy.DownstreamResponseHeaderModifications{
+		// Record the selected target for every completed response, including
+		// the primary. This keeps audit data consistent without exposing an
+		// internal routing header to clients on the normal primary path.
+		AnalyticsMetadata: map[string]any{
+			"model_failover_chain_position": index,
+			"model_failover_resolved_model": member.Model,
+			"model_failover_provider":       p.resolvedProvider(*member),
+		},
 	}
-	return nil
+	if index > 1 {
+		mods.HeadersToSet = map[string]string{ResolvedFailoverProviderHeader: p.resolvedProvider(*member)}
+	}
+	return mods
 }

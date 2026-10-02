@@ -302,7 +302,7 @@ func TestLLMTransform_FailoverBlock_FullShapeEndToEnd(t *testing.T) {
 	action := r.GetRoute()
 	require.NotNil(t, action)
 	require.NotNil(t, action.RetryPolicy)
-	assert.Equal(t, "5xx", action.RetryPolicy.RetryOn)
+	assert.Equal(t, "5xx,connect-failure,reset,reset-before-request", action.RetryPolicy.RetryOn)
 
 	_, isAutoRewrite := action.HostRewriteSpecifier.(*route.RouteAction_AutoHostRewrite)
 	assert.True(t, isAutoRewrite, "a failover route must auto-rewrite Host")
@@ -418,7 +418,7 @@ func TestLLMTransform_FailoverBlock_ConfiguredStatusCodesWireIntoRetryPolicy(t *
 					UseClusterHeader: true,
 					DefaultCluster:   openaiClusterKey,
 					Failover: &models.RouteFailover{
-						RetryOn:              []string{"retriable-status-codes"},
+						RetryOn:              []string{"retriable-status-codes", "connect-failure", "reset", "reset-before-request"},
 						RetriableStatusCodes: []int{500, 502, 429},
 						Targets: []models.RouteFailoverTarget{{
 							Model: "gpt-4o",
@@ -443,7 +443,8 @@ func TestLLMTransform_FailoverBlock_ConfiguredStatusCodesWireIntoRetryPolicy(t *
 	action := r.GetRoute()
 	require.NotNil(t, action)
 	require.NotNil(t, action.RetryPolicy)
-	assert.Equal(t, "retriable-status-codes", action.RetryPolicy.RetryOn, "must not also carry plain 5xx")
+	assert.Equal(t, "retriable-status-codes,connect-failure,reset,reset-before-request", action.RetryPolicy.RetryOn,
+		"explicit status codes must retain transport failover conditions")
 	assert.Equal(t, []uint32{500, 502, 429}, action.RetryPolicy.RetriableStatusCodes)
 
 	// Leaves themselves carry no outlier_detection at all now (see

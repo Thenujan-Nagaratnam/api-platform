@@ -97,7 +97,7 @@ func TestTranslateRuntimeConfig_FailoverRouteGetsRetryPolicyAndHostRewrite(t *te
 	action := routes[0].GetRoute()
 	require.NotNil(t, action)
 	require.NotNil(t, action.RetryPolicy)
-	assert.Equal(t, "5xx", action.RetryPolicy.RetryOn)
+	assert.Equal(t, "5xx,connect-failure,reset,reset-before-request", action.RetryPolicy.RetryOn)
 	assert.Nil(t, action.RetryPolicy.RetryPriority, "composite clusters own retry progression; aggregate priority plugins are incompatible")
 	require.NotNil(t, action.RetryPolicy.NumRetries, "num_retries must be set or Envoy defaults to 1, capping escalation at priority 1 regardless of chain depth")
 	assert.Equal(t, uint32(1), action.RetryPolicy.NumRetries.GetValue())
@@ -250,7 +250,7 @@ func TestTranslateRuntimeConfig_FailoverRoute_EmptyRetryOnDefaultsTo5xx(t *testi
 		}},
 	})
 
-	assert.Equal(t, "5xx", action.RetryPolicy.RetryOn)
+	assert.Equal(t, "5xx,connect-failure,reset,reset-before-request", action.RetryPolicy.RetryOn)
 }
 
 // TestTranslateRuntimeConfig_FailoverRetryPolicyNumRetriesMatchesDeepestChain asserts

@@ -323,10 +323,13 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 
 	// retryOn/retriableStatusCodes: statusCodes REPLACES the "any 5xx" default
 	// rather than extending it — see modelFailoverParams.StatusCodes.
-	retryOn := []string{"5xx"}
+	// Transport conditions remain enabled whether or not the author supplies
+	// explicit HTTP status codes. Otherwise configuring 429/5xx would silently
+	// disable failover for connection failures and resets.
+	retryOn := []string{"5xx", "connect-failure", "reset", "reset-before-request"}
 	var retriableStatusCodes []int
 	if len(params.StatusCodes) > 0 {
-		retryOn = []string{"retriable-status-codes"}
+		retryOn = []string{"retriable-status-codes", "connect-failure", "reset", "reset-before-request"}
 		retriableStatusCodes = params.StatusCodes
 	}
 

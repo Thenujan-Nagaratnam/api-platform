@@ -194,7 +194,7 @@ func TestLLMTransformer_ModelFailoverPolicy_ResolvesFailoverAndInjectsAggregateC
 		"a model-failover attachment must resolve into the route's RouteFailover")
 	require.Len(t, chatRoute.Upstream.Failover.Targets, 1)
 	assert.Equal(t, 900, chatRoute.Upstream.Failover.SuspendDurationSeconds)
-	assert.Equal(t, []string{"5xx"}, chatRoute.Upstream.Failover.RetryOn)
+	assert.Equal(t, []string{"5xx", "connect-failure", "reset", "reset-before-request"}, chatRoute.Upstream.Failover.RetryOn)
 
 	target := chatRoute.Upstream.Failover.Targets[0]
 	assert.Equal(t, "gpt-4o", target.Model)

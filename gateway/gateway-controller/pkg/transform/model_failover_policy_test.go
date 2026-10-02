@@ -110,7 +110,7 @@ func TestBuildRouteFailoverFromPolicy_InjectsAggregateClusterName(t *testing.T) 
 
 	require.NoError(t, err)
 	assert.Equal(t, 900, rf.SuspendDurationSeconds)
-	assert.Equal(t, []string{"5xx"}, rf.RetryOn)
+	assert.Equal(t, []string{"5xx", "connect-failure", "reset", "reset-before-request"}, rf.RetryOn)
 	require.Len(t, rf.Targets, 2)
 	assert.Equal(t, "upstream_main_openai_com_443", rf.Targets[0].Target.ClusterKey)
 	require.Len(t, rf.Targets[0].Fallbacks, 1)
@@ -310,7 +310,7 @@ func TestBuildRouteFailoverFromPolicy_OmittedStatusCodesDefaultsToPlain5xx(t *te
 	rf, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"5xx"}, rf.RetryOn)
+	assert.Equal(t, []string{"5xx", "connect-failure", "reset", "reset-before-request"}, rf.RetryOn)
 	assert.Empty(t, rf.RetriableStatusCodes)
 	assert.Empty(t, expanded.StatusCodes)
 }
@@ -327,7 +327,8 @@ func TestBuildRouteFailoverFromPolicy_StatusCodesReplaceDefaultRetryOn(t *testin
 	rf, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"retriable-status-codes"}, rf.RetryOn, "must not also carry plain 5xx")
+	assert.Equal(t, []string{"retriable-status-codes", "connect-failure", "reset", "reset-before-request"}, rf.RetryOn,
+		"explicit HTTP codes must not disable transport failover")
 	assert.Equal(t, []int{500, 502, 429}, rf.RetriableStatusCodes)
 	assert.Equal(t, []int{500, 502, 429}, expanded.StatusCodes, "carried through to the policy's own runtime params")
 }
