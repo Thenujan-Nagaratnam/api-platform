@@ -7,7 +7,7 @@ This directory holds locally-developed policies for testing and iteration during
 1. Create a directory under `dev-policies/` for your policy (e.g. `dev-policies/my-policy/`). It must contain at minimum:
    - `go.mod` – module definition (depend on the SDK: `github.com/wso2/api-platform/sdk`)
    - A `.go` file implementing `policy.Policy`
-   - `policy-definition.yaml` – the policy's parameter schema. If your policy knows when a backend response or connection failure is worth retrying (e.g. a credential-injection policy that can fix a 401 on the next attempt), declare it once here via the `retry:` block — see `specs/001-upstream-retry-contribution/contracts/policy-definition-schema.md` in the main `api-platform` repo for the full contract and worked examples. No separate attachment-level config is needed; the gateway merges every attached policy's `retry:` declaration into the route's retry behavior automatically.
+   - `policy-definition.yaml` – the policy's parameter schema
 
 2. Register it in `gateway/build.yaml` using a `filePath` entry:
    ```yaml

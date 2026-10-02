@@ -233,32 +233,6 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 			chain := t.buildPolicyChain(apiPolicies, op.Policies)
 			injected := utils.InjectSystemPolicies(chain, t.systemConfig, nil)
 			rdc.PolicyChains[routeKey] = sdkChainToModel(injected)
-
-			// Collect each attached policy instance's own Retry
-			// contribution (if any) into this route's RetryContributions.
-			// This also covers LLM/MCP routes: LLMTransformer.Transform
-			// (pkg/transform/llm.go) converts its source config into an
-			// api.RestAPI and delegates to this same Transform method, so
-			// their policy chains are built here too.
-			// See specs/001-upstream-retry-contribution.
-			for _, inst := range injected {
-				// inst.Version is major-only (collectAPIPolicies/buildPolicyChain
-				// store versionutil.MajorVersion(resolved), not the resolved full
-				// semver) — re-resolve to the full version t.policyDefinitions is
-				// keyed by, via the same helper those functions already use.
-				fullVersion, err := config.ResolvePolicyVersion(t.policyDefinitions, t.latestVersions, inst.Name, inst.Version)
-				if err != nil {
-					continue
-				}
-				def, ok := t.policyDefinitions[inst.Name+"|"+fullVersion]
-				if !ok || def.Retry == nil {
-					continue
-				}
-				contribution := resolveUpstreamRetryContribution(def.Retry, inst.Name, inst.Parameters, derefParams(def.Parameters))
-				if contribution != nil {
-					rdcRoute.Upstream.RetryContributions = append(rdcRoute.Upstream.RetryContributions, *contribution)
-				}
-			}
 		}
 	}
 
