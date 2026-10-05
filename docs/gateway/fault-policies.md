@@ -801,6 +801,23 @@ SOAP fault today.
 **There is no ordering requirement.** The signal is what your policy said, not where it ran — so
 you cannot break this by declaring entries after it.
 
+#### OpenAI SDK clients on LLM APIs
+
+For an `LlmProvider` or `LlmProxy` whose callers use OpenAI SDKs, attach the
+`openai-error-format` fault policy. It returns the errors the gateway produces in the OpenAI error
+envelope, `{"error":{"message","type","param","code"}}`, keeps the status code, and passes the
+backend's own errors through:
+
+```yaml
+globalFaultPolicies:
+  - name: openai-error-format
+    version: v0
+```
+
+It is opt-in per API, so existing LLM APIs keep their error bodies after an upgrade. Router
+failures reach it only when `handle_upstream_faults` is on, as for any fault policy. See the
+policy's own documentation in the policy catalogue for the field mapping.
+
 ### What counts as "authored"
 
 This is about the policy that **produced** the failure — the auth policy or guardrail that
