@@ -138,6 +138,7 @@ func getFeaturePaths() []string {
 		"features/api-with-policies.feature",
 		"features/interceptor-service.feature",
 		"features/llm-proxies.feature",
+		"features/openai-error-format-policy.feature",
 		"features/startup-db-bootstrap.feature",
 		"features/search-deployments.feature",
 		"features/policy-engine-admin.feature",
