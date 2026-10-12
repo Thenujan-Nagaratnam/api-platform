@@ -37,14 +37,6 @@
     {
       "key": "openaiCallCountAfterTrigger",
       "value": ""
-    },
-    {
-      "key": "mockAnthropicMirrorBaseUrl",
-      "value": "http://localhost:9613"
-    },
-    {
-      "key": "mockOpenaiBackupBaseUrl",
-      "value": "http://localhost:9614"
     }
   ],
   "item": [
@@ -183,9 +175,29 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"created or already exists\", function () {",
-                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
-                  "});"
+                  "// 409 means an earlier run registered this proxy; PUT the current body so",
+                  "// the proxy runs this collection's config, not a stale one. A 400 that is",
+                  "// not a duplicate is a real validation failure and must fail setup.",
+                  "var name = JSON.parse(pm.request.body.raw).metadata.name;",
+                  "var code = pm.response.code;",
+                  "var duplicate = code === 409 || (code === 400 && /already exists/i.test(pm.response.text()));",
+                  "if (duplicate) {",
+                  "    pm.sendRequest({",
+                  "        url: pm.collectionVariables.get('controllerBaseUrl') + '/llm-proxies/' + name,",
+                  "        method: 'PUT',",
+                  "        header: { 'Content-Type': 'application/json', 'Authorization': pm.collectionVariables.get('adminAuth') },",
+                  "        body: { mode: 'raw', raw: pm.request.body.raw }",
+                  "    }, function (err, res) {",
+                  "        pm.test('existing proxy updated to the current config', function () {",
+                  "            pm.expect(err).to.eql(null);",
+                  "            pm.expect(res.code, res.text()).to.eql(200);",
+                  "        });",
+                  "    });",
+                  "} else {",
+                  "    pm.test('created', function () {",
+                  "        pm.expect([200, 201], pm.response.text()).to.include(code);",
+                  "    });",
+                  "}"
                 ]
               }
             }
@@ -217,9 +229,29 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"created or already exists\", function () {",
-                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
-                  "});"
+                  "// 409 means an earlier run registered this proxy; PUT the current body so",
+                  "// the proxy runs this collection's config, not a stale one. A 400 that is",
+                  "// not a duplicate is a real validation failure and must fail setup.",
+                  "var name = JSON.parse(pm.request.body.raw).metadata.name;",
+                  "var code = pm.response.code;",
+                  "var duplicate = code === 409 || (code === 400 && /already exists/i.test(pm.response.text()));",
+                  "if (duplicate) {",
+                  "    pm.sendRequest({",
+                  "        url: pm.collectionVariables.get('controllerBaseUrl') + '/llm-proxies/' + name,",
+                  "        method: 'PUT',",
+                  "        header: { 'Content-Type': 'application/json', 'Authorization': pm.collectionVariables.get('adminAuth') },",
+                  "        body: { mode: 'raw', raw: pm.request.body.raw }",
+                  "    }, function (err, res) {",
+                  "        pm.test('existing proxy updated to the current config', function () {",
+                  "            pm.expect(err).to.eql(null);",
+                  "            pm.expect(res.code, res.text()).to.eql(200);",
+                  "        });",
+                  "    });",
+                  "} else {",
+                  "    pm.test('created', function () {",
+                  "        pm.expect([200, 201], pm.response.text()).to.include(code);",
+                  "    });",
+                  "}"
                 ]
               }
             }
@@ -251,9 +283,29 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"created or already exists\", function () {",
-                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
-                  "});"
+                  "// 409 means an earlier run registered this proxy; PUT the current body so",
+                  "// the proxy runs this collection's config, not a stale one. A 400 that is",
+                  "// not a duplicate is a real validation failure and must fail setup.",
+                  "var name = JSON.parse(pm.request.body.raw).metadata.name;",
+                  "var code = pm.response.code;",
+                  "var duplicate = code === 409 || (code === 400 && /already exists/i.test(pm.response.text()));",
+                  "if (duplicate) {",
+                  "    pm.sendRequest({",
+                  "        url: pm.collectionVariables.get('controllerBaseUrl') + '/llm-proxies/' + name,",
+                  "        method: 'PUT',",
+                  "        header: { 'Content-Type': 'application/json', 'Authorization': pm.collectionVariables.get('adminAuth') },",
+                  "        body: { mode: 'raw', raw: pm.request.body.raw }",
+                  "    }, function (err, res) {",
+                  "        pm.test('existing proxy updated to the current config', function () {",
+                  "            pm.expect(err).to.eql(null);",
+                  "            pm.expect(res.code, res.text()).to.eql(200);",
+                  "        });",
+                  "    });",
+                  "} else {",
+                  "    pm.test('created', function () {",
+                  "        pm.expect([200, 201], pm.response.text()).to.include(code);",
+                  "    });",
+                  "}"
                 ]
               }
             }
@@ -275,7 +327,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-halfopen\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Half-Open\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-halfopen\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-halfopen\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Half-Open\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-halfopen\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3,\n              \"recoverAfterSuccesses\": 1\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
             },
             "url": "{{controllerBaseUrl}}/llm-proxies"
           },
@@ -285,9 +337,29 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"created or already exists\", function () {",
-                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
-                  "});"
+                  "// 409 means an earlier run registered this proxy; PUT the current body so",
+                  "// the proxy runs this collection's config, not a stale one. A 400 that is",
+                  "// not a duplicate is a real validation failure and must fail setup.",
+                  "var name = JSON.parse(pm.request.body.raw).metadata.name;",
+                  "var code = pm.response.code;",
+                  "var duplicate = code === 409 || (code === 400 && /already exists/i.test(pm.response.text()));",
+                  "if (duplicate) {",
+                  "    pm.sendRequest({",
+                  "        url: pm.collectionVariables.get('controllerBaseUrl') + '/llm-proxies/' + name,",
+                  "        method: 'PUT',",
+                  "        header: { 'Content-Type': 'application/json', 'Authorization': pm.collectionVariables.get('adminAuth') },",
+                  "        body: { mode: 'raw', raw: pm.request.body.raw }",
+                  "    }, function (err, res) {",
+                  "        pm.test('existing proxy updated to the current config', function () {",
+                  "            pm.expect(err).to.eql(null);",
+                  "            pm.expect(res.code, res.text()).to.eql(200);",
+                  "        });",
+                  "    });",
+                  "} else {",
+                  "    pm.test('created', function () {",
+                  "        pm.expect([200, 201], pm.response.text()).to.include(code);",
+                  "    });",
+                  "}"
                 ]
               }
             }
@@ -309,7 +381,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-probes\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Probe Concurrency\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-probes\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-circuit-probes\"\n  },\n  \"spec\": {\n    \"displayName\": \"Failover Circuit - Probe Concurrency\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-circuit-probes\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3,\n              \"recoverAfterSuccesses\": 1\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
             },
             "url": "{{controllerBaseUrl}}/llm-proxies"
           },
@@ -319,9 +391,29 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"created or already exists\", function () {",
-                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
-                  "});"
+                  "// 409 means an earlier run registered this proxy; PUT the current body so",
+                  "// the proxy runs this collection's config, not a stale one. A 400 that is",
+                  "// not a duplicate is a real validation failure and must fail setup.",
+                  "var name = JSON.parse(pm.request.body.raw).metadata.name;",
+                  "var code = pm.response.code;",
+                  "var duplicate = code === 409 || (code === 400 && /already exists/i.test(pm.response.text()));",
+                  "if (duplicate) {",
+                  "    pm.sendRequest({",
+                  "        url: pm.collectionVariables.get('controllerBaseUrl') + '/llm-proxies/' + name,",
+                  "        method: 'PUT',",
+                  "        header: { 'Content-Type': 'application/json', 'Authorization': pm.collectionVariables.get('adminAuth') },",
+                  "        body: { mode: 'raw', raw: pm.request.body.raw }",
+                  "    }, function (err, res) {",
+                  "        pm.test('existing proxy updated to the current config', function () {",
+                  "            pm.expect(err).to.eql(null);",
+                  "            pm.expect(res.code, res.text()).to.eql(200);",
+                  "        });",
+                  "    });",
+                  "} else {",
+                  "    pm.test('created', function () {",
+                  "        pm.expect([200, 201], pm.response.text()).to.include(code);",
+                  "    });",
+                  "}"
                 ]
               }
             }
@@ -353,9 +445,29 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"created or already exists\", function () {",
-                  "    pm.expect([200, 201, 400, 409]).to.include(pm.response.code);",
-                  "});"
+                  "// 409 means an earlier run registered this proxy; PUT the current body so",
+                  "// the proxy runs this collection's config, not a stale one. A 400 that is",
+                  "// not a duplicate is a real validation failure and must fail setup.",
+                  "var name = JSON.parse(pm.request.body.raw).metadata.name;",
+                  "var code = pm.response.code;",
+                  "var duplicate = code === 409 || (code === 400 && /already exists/i.test(pm.response.text()));",
+                  "if (duplicate) {",
+                  "    pm.sendRequest({",
+                  "        url: pm.collectionVariables.get('controllerBaseUrl') + '/llm-proxies/' + name,",
+                  "        method: 'PUT',",
+                  "        header: { 'Content-Type': 'application/json', 'Authorization': pm.collectionVariables.get('adminAuth') },",
+                  "        body: { mode: 'raw', raw: pm.request.body.raw }",
+                  "    }, function (err, res) {",
+                  "        pm.test('existing proxy updated to the current config', function () {",
+                  "            pm.expect(err).to.eql(null);",
+                  "            pm.expect(res.code, res.text()).to.eql(200);",
+                  "        });",
+                  "    });",
+                  "} else {",
+                  "    pm.test('created', function () {",
+                  "        pm.expect([200, 201], pm.response.text()).to.include(code);",
+                  "    });",
+                  "}"
                 ]
               }
             }
@@ -1590,7 +1702,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"status is 200\", function () { pm.response.to.have.status(200); });",
-                  "pm.test(\"one successful probe closed the circuit\", function () {",
+                  "pm.test(\"one successful probe closed the circuit (recoverAfterSuccesses: 1)\", function () {",
                   "    pm.expect(pm.response.headers.get(\"X-Mock-Backend\")).to.eql(\"openai\");",
                   "});"
                 ]
@@ -1933,6 +2045,202 @@
                 "exec": [
                   "pm.test(\"15.9 and 15.10 never reached anthropic (served 15.4, failed 15.6)\", function () {",
                   "    pm.expect(pm.response.json().callCount).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "16. Deploy-Time Validation",
+      "item": [
+        {
+          "name": "16.1 Clean Up Earlier Run",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "url": "{{controllerBaseUrl}}/llm-proxies/failover-valid-allparams"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"deleted or never existed\", function () {",
+                  "    pm.expect([200, 204, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "16.2 Unknown Top-Level Param Rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-invalid-unknown\"\n  },\n  \"spec\": {\n    \"displayName\": \"failover-invalid-unknown\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-invalid-unknown\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3,\n              \"recoverAfterSuccesses\": 1,\n              \"perTryTimeoutMs\": 15000\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"deploy rejected with 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"error names the problem\", function () {",
+                  "    pm.expect(pm.response.text()).to.include(\"unknown model-failover parameter \\\\\\\"perTryTimeoutMs\\\\\\\"\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "16.3 Stale upstreamDefinition Rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-invalid-updef\"\n  },\n  \"spec\": {\n    \"displayName\": \"failover-invalid-updef\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-invalid-updef\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ],\n                  \"upstreamDefinition\": \"openai-eu\"\n                }\n              ],\n              \"suspendDuration\": 3,\n              \"recoverAfterSuccesses\": 1\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"deploy rejected with 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"error names the problem\", function () {",
+                  "    pm.expect(pm.response.text()).to.include(\"targets[0].upstreamDefinition\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "16.4 model-failover Under provider.policies Rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-invalid-upstream\"\n  },\n  \"spec\": {\n    \"displayName\": \"failover-invalid-upstream\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-invalid-upstream\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      },\n      \"policies\": [\n        {\n          \"name\": \"model-failover\",\n          \"version\": \"v0\",\n          \"params\": {}\n        }\n      ]\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3,\n              \"recoverAfterSuccesses\": 1\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"deploy rejected with 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"error names the problem\", function () {",
+                  "    pm.expect(pm.response.text()).to.include(\"attach it in operationPolicies\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "16.5 Every Param Incl. Recovery Tunables Accepted",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apiVersion\": \"gateway.api-platform.wso2.com/v1\",\n  \"kind\": \"LlmProxy\",\n  \"metadata\": {\n    \"name\": \"failover-valid-allparams\"\n  },\n  \"spec\": {\n    \"displayName\": \"failover-valid-allparams\",\n    \"version\": \"v1.0\",\n    \"context\": \"/failover-valid-allparams\",\n    \"provider\": {\n      \"id\": \"openai-provider\",\n      \"auth\": {\n        \"type\": \"api-key\",\n        \"header\": \"Authorization\",\n        \"value\": \"Bearer {{primaryApiKey}}\"\n      }\n    },\n    \"additionalProviders\": [\n      {\n        \"id\": \"anthropic-provider\",\n        \"as\": \"anthropic-upstream\",\n        \"auth\": {\n          \"type\": \"api-key\",\n          \"header\": \"X-Api-Key\",\n          \"value\": \"{{anthropicApiKey}}\"\n        },\n        \"transformer\": {\n          \"type\": \"openai-to-anthropic-transformer\",\n          \"version\": \"v0\",\n          \"params\": {\n            \"model\": \"claude-3-5-sonnet-20241022\"\n          }\n        }\n      }\n    ],\n    \"operationPolicies\": [\n      {\n        \"name\": \"llm-header-router\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"defaultProvider\": \"openai-provider\",\n              \"mappings\": [\n                {\n                  \"headerValue\": \"openai\",\n                  \"provider\": \"openai-provider\"\n                }\n              ]\n            }\n          }\n        ]\n      },\n      {\n        \"name\": \"model-failover\",\n        \"version\": \"v0\",\n        \"paths\": [\n          {\n            \"path\": \"/chat/completions\",\n            \"methods\": [\n              \"POST\"\n            ],\n            \"params\": {\n              \"targets\": [\n                {\n                  \"model\": \"gpt-4o\",\n                  \"fallbacks\": [\n                    {\n                      \"model\": \"claude-3-5-sonnet-20241022\",\n                      \"provider\": \"anthropic-upstream\"\n                    }\n                  ]\n                }\n              ],\n              \"suspendDuration\": 3,\n              \"recoverAfterSuccesses\": 2,\n              \"statusCodes\": [\n                429,\n                503\n              ],\n              \"suspendAfterFailures\": 2,\n              \"maxSuspendMultiplier\": 4,\n              \"probeTimeout\": 30,\n              \"perTryTimeout\": 10\n            }\n          }\n        ]\n      }\n    ]\n  }\n}"
+            },
+            "url": "{{controllerBaseUrl}}/llm-proxies"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"deployed\", function () {",
+                  "    pm.expect([200, 201], pm.response.text()).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "16.6 Clean Up",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuth}}"
+              }
+            ],
+            "url": "{{controllerBaseUrl}}/llm-proxies/failover-valid-allparams"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"deleted or never existed\", function () {",
+                  "    pm.expect([200, 204, 404]).to.include(pm.response.code);",
                   "});"
                 ]
               }

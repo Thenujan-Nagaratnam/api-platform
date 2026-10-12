@@ -133,7 +133,7 @@ func modelFailoverOperationPolicy() api.OperationPolicy {
 
 // modelFailoverProxy builds an LlmProxy whose additional provider authenticates
 // with oauth2 and carries an inline transformer — the two provider-scoped
-// policy kinds the design's §8 says must gain a conditioned upstreamPolicies:
+// policy kinds that must gain a conditioned per-attempt (upstream)
 // instance per failover-referenced provider.
 func modelFailoverProxy() *api.LLMProxyConfiguration {
 	oauth2Params := map[string]interface{}{
@@ -209,9 +209,9 @@ func indexOfUpstreamAttachment(t *testing.T, policies []api.Policy, name string)
 }
 
 // TestTransform_ModelFailoverPolicy_AttachedDownstreamAndUpstreamWithProviderScopedInstances
-// is the core Task 8 assertion: an operationPolicies: model-failover attachment
-// produces a second, unconditioned upstreamPolicies: instance of itself carrying
-// the same params, plus one conditioned upstreamPolicies: instance of every
+// proves an operationPolicies model-failover attachment produces a second,
+// unconditioned per-attempt (upstream) instance of itself carrying the same
+// params, plus one conditioned per-attempt instance of every
 // provider-scoped credential/transform policy for each provider the failover
 // chain references — and the model-failover upstream instance is ordered before
 // them, so the selected_provider metadata it seeds exists when their CEL
@@ -232,7 +232,7 @@ func TestTransform_ModelFailoverPolicy_AttachedDownstreamAndUpstreamWithProvider
 		"the downstream model-failover instance is unconditioned")
 
 	upstreamFailover := upstreamAttachments(policies, modelFailoverPolicyName)
-	require.Len(t, upstreamFailover, 1, "model-failover must also be attached via upstreamPolicies:")
+	require.Len(t, upstreamFailover, 1, "model-failover must also be attached as a per-attempt (upstream) policy")
 	assert.Nil(t, upstreamFailover[0].ExecutionCondition,
 		"the upstream model-failover instance is unconditioned — it is what seeds selected_provider")
 	require.NotNil(t, upstreamFailover[0].Params)
@@ -243,7 +243,7 @@ func TestTransform_ModelFailoverPolicy_AttachedDownstreamAndUpstreamWithProvider
 
 	upstreamOauth2 := upstreamAttachments(policies, constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME)
 	require.Len(t, upstreamOauth2, 1,
-		"oauth2-generator must get one conditioned upstreamPolicies: attachment for the referenced provider")
+		"oauth2-generator must get one conditioned per-attempt (upstream) attachment for the referenced provider")
 	require.NotNil(t, upstreamOauth2[0].ExecutionCondition)
 	assert.Contains(t, *upstreamOauth2[0].ExecutionCondition, "anthropic-upstream")
 	require.NotNil(t, upstreamOauth2[0].Params)
@@ -251,7 +251,7 @@ func TestTransform_ModelFailoverPolicy_AttachedDownstreamAndUpstreamWithProvider
 
 	upstreamTransformer := upstreamAttachments(policies, testTransformerPolicyName)
 	require.Len(t, upstreamTransformer, 1,
-		"an additionalProviders[].transformer must get the same conditioned upstreamPolicies: attachment")
+		"an additionalProviders[].transformer must get the same conditioned per-attempt (upstream) attachment")
 	require.NotNil(t, upstreamTransformer[0].ExecutionCondition)
 	assert.Contains(t, *upstreamTransformer[0].ExecutionCondition, "anthropic-upstream")
 
@@ -451,7 +451,7 @@ func TestTransform_ModelFailoverPolicy_ExplicitProviderOnPrimaryTargetIsReferenc
 
 // TestTransform_ModelFailoverPolicy_NoAttachment_NoUpstreamInstances is the
 // zero-cost-when-unused guard: without a model-failover attachment nothing gains
-// an upstreamPolicies: instance, so every existing LlmProxy is byte-identical.
+// a per-attempt (upstream) instance, so every existing LlmProxy is byte-identical.
 func TestTransform_ModelFailoverPolicy_NoAttachment_NoUpstreamInstances(t *testing.T) {
 	_, transformer := newFailoverAuthTestStore(t)
 
@@ -479,7 +479,7 @@ func TestTransform_ModelFailoverPolicy_NoAttachment_NoUpstreamInstances(t *testi
 
 // TestTransform_ModelFailoverPolicy_SynthesizedUpstreamInstanceIsExactlyOne
 // pins that the synthesized upstream-attempt instance never duplicates itself
-// across repeated Transform calls or otherwise. upstreamPolicies: has no
+// across repeated Transform calls or otherwise. the per-attempt list has no
 // author-facing schema field any more — there is no way for an author to have
 // pre-declared one for the controller to detect and skip — so this is the
 // only source of that instance, always exactly one.

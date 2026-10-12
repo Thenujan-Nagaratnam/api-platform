@@ -20,28 +20,6 @@ package xds
 
 import "github.com/wso2/api-platform/gateway/gateway-controller/pkg/models"
 
-// upstreamPhasePolicyNames is a legacy allowlist from when these policies
-// self-declared upstream-attempt participation natively, without an
-// explicit upstreamPolicies: attachment (see the LlmProvider/LlmProxy
-// schema). That native-participation mechanism has been removed from
-// gateway-runtime — a policy now runs per upstream attempt only when
-// attached via upstreamPolicies: (which sets Policy.Upstream, already
-// checked by clusterNeedsUpstreamPolicyFilter's caller independent of this
-// list). Matching a name here now only ever attaches an upstream filter that
-// finds nothing to run — harmless, but this list has no live purpose and is
-// kept only until it's removed along with its call site.
-var upstreamPhasePolicyNames = map[string]bool{
-	"aws-authentication":              true,
-	"openai-to-anthropic-transformer": true,
-	"oauth2-generator":                true,
-}
-
-// isUpstreamPhasePolicy reports whether name is known to implement an
-// upstream-attempt SDK interface.
-func isUpstreamPhasePolicy(name string) bool {
-	return upstreamPhasePolicyNames[name]
-}
-
 // resolveChainForRoute returns the PolicyChain a route actually uses:
 // CanonicalChainKey when set (a route pointed at a composed/shared operation
 // chain), otherwise the route's own key.
@@ -98,9 +76,9 @@ func clusterNeedsUpstreamPolicyFilter(clusterName string, rdc *models.RuntimeDep
 			continue
 		}
 		for _, p := range chain.Policies {
-			// p.Upstream: attached via upstreamPolicies, so it runs upstream regardless of
-			// whether its name is in the native-upstream allowlist.
-			if p.Upstream || isUpstreamPhasePolicy(p.Name) {
+			// p.Upstream marks a policy compiled from an upstream's policies
+			// list (or model-failover's per-attempt copy); only those run per attempt.
+			if p.Upstream {
 				return true
 			}
 		}

@@ -158,7 +158,7 @@ type RouteUpstream struct {
 // RouteFailover declares, for one route, the ordered failover chains a
 // client-requested model can match against. Populated only when the source
 // LlmProxy attaches the model-failover policy; nil otherwise. See
-// docs/superpowers/specs/2026-09-17-llm-model-failover-design.md.
+// gateway/spec/prds/llm-model-failover.md.
 type RouteFailover struct {
 	SuspendDurationSeconds int
 	Targets                []RouteFailoverTarget

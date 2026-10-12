@@ -40,7 +40,7 @@ func TestTranslateRuntimeConfig_AttachesUpstreamFilterOnlyWhereNeeded(t *testing
 			"route-plain":    {Upstream: models.RouteUpstream{ClusterKey: "openai-main"}},
 		},
 		PolicyChains: map[string]*models.PolicyChain{
-			"route-needs-it": {Policies: []models.Policy{{Name: "aws-authentication"}}},
+			"route-needs-it": {Policies: []models.Policy{{Name: "aws-authentication", Upstream: true}}},
 			"route-plain":    {Policies: []models.Policy{{Name: "prompt-decorator"}}},
 		},
 		UpstreamClusters: map[string]*models.UpstreamCluster{

@@ -401,7 +401,7 @@ func llmProxyProviderIdentities(proxy *api.LLMProxyConfiguration) []string {
 // carries a model-failover attachment. It is the one and only trigger for
 // failover resolution — a route without the attachment is left untouched.
 //
-// Two things happen per resolved route, both required by the design's §3/§5:
+// Two things happen per resolved route, both required by the design:
 //
 //   - the resolved models.RouteFailover is written onto the route, which is the
 //     unchanged trigger for aggregate-cluster/retry_policy xDS generation — the

@@ -1,45 +1,24 @@
 # LLM Model Failover — Live E2E Verification
 
-Live-verifies the full failover mechanism (config schema, xDS/Envoy wiring,
-per-attempt backend+identity resolution, downstream routing + suspension,
-request/response transformation, per-attempt auth) against a real deployed
-stack, following the same pattern `dev-policies/oauth2/TESTING.md` already
-established for the oauth2 policy.
+Live-verifies the failover mechanism against a real deployed stack: config
+validation, xDS/Envoy wiring, per-attempt provider resolution, downstream
+routing and suspension, request/response transformation and per-attempt
+auth. The design is in `gateway/spec/prds/llm-model-failover.md`.
 
 ## What's here
 
-Per-attempt upstream policy participation no longer needs a forked policy or
-an unreleased SDK field at all: a policy the controller marks for the
-upstream-attempt phase runs per upstream attempt using its own, unmodified
-`RequestPolicy`/`ResponsePolicy`/`RequestHeaderPolicy`/`ResponseHeaderPolicy`
-implementation (see `docs/superpowers/specs/2026-09-21-upstream-policy-reuse-design.md`).
-Upstream policies are authored per upstream: RestApi
-`spec.upstream.main.policies` / `spec.upstream.sandbox.policies`, LlmProvider
-`spec.upstream.policies`, and LlmProxy `spec.provider.policies` /
-`spec.additionalProviders[].policies`. Each list runs once per attempt to that
-upstream only. There is no per-policy `upstream: true` flag; the controller
-rejects it. `model-failover` is still the only policy whose upstream
-attachment is auto-synthesized (it needs controller-computed values an author
-can't hand-write).
-`build.yaml` now references the released `gomodule:` versions of every
-policy — the local `dev-policies/openai-to-anthropic-transformer/`,
-`dev-policies/oauth2-generator/`, `dev-policies/llm-upstream-provider-auth/`
-copies (and their `filePath:` overrides) that this doc used to describe have
-been removed.
+- `dev-policies/model-failover/` — the model-failover policy. It is attached
+  once, in an LlmProxy's `operationPolicies`; the controller adds the
+  per-attempt copy to each upstream itself. It is local-only until it has a
+  release in `github.com/wso2/gateway-controllers`, so `build.yaml` has a
+  temporary `filePath:` override for it — replace it with a `gomodule:` line
+  once that release exists.
 
-- `dev-policies/model-failover/` — the new model-failover policy (see
-  `docs/superpowers/specs/2026-09-21-model-failover-policy-design.md`), local-only until it has a real
-  release in `github.com/wso2/gateway-controllers`. `build.yaml` has a temporary `filePath:` override
-  for it — remove once a `gomodule:` version exists.
-
-`executionCondition` is now evaluated in the upstream-attempt phase (see
-`internal/executor/chain.go`'s `ExecuteUpstreamAttempt*` functions), so the
-released `oauth2-generator`/`openai-to-anthropic-transformer` self-gate
-correctly on which provider an attempt resolved to — attaching one instance
-per provider under `upstreamPolicies:` for a multi-provider failover chain no
-longer fires every instance on every attempt. Folders 2 and 7 below
-(cross-provider credential + translation) exercise exactly that case and are
-expected to pass against the released modules.
+The controller compiles each provider's `transformer` and `auth` into that
+provider's own per-attempt `policies` list (after any policies the author
+lists in `spec.provider.policies` / `spec.additionalProviders[].policies`),
+gated on the provider the attempt resolved to. Folders 2 and 7 below (cross-provider credential and
+translation) exercise exactly that case.
 
 - `dev-policies/mocks/mock-openai/`, `dev-policies/mocks/mock-anthropic/` —
   standalone, in-memory mock backends. Each exposes its real chat-completion
@@ -115,7 +94,14 @@ Folders 14–15 each get their own proxy (`failover-circuit-halfopen`,
 `failover-circuit-chain3`), and
 `failover-circuit-probes` backs the concurrency check `run-failover-e2e.sh`
 runs with parallel curls after newman — Postman runs requests one at a time,
-so it can't prove probe concurrency itself.
+so it can't prove probe concurrency itself. The half-open and probes proxies
+set `recoverAfterSuccesses: 1`, so one successful probe closes the circuit;
+the script's "closed" check would fail on the default of 3, which makes it a
+live check of that param.
+
+Setup upserts: a proxy that already exists from an earlier run (409) is
+updated with `PUT` to the collection's current config, and any other 400 fails
+setup instead of passing silently.
 
 Setup registers three proxies, each isolating one concern so folders never
 share suspension state or interfere with each other's assertions:
@@ -142,6 +128,7 @@ concurrency check; it exits non-zero if either fails.
 | 10. Same-Provider Fallback (Model Only) | A fallback on the primary's own provider retries the same cluster with the primary's credential, with the body rewritten to the cheaper model |
 | 14. Circuit - Half-Open Reopen And Close | After the 3s window, one probe reaches the primary; it fails, the circuit reopens with a doubled 6s window and the next request is skipped; after that window one successful probe closes it |
 | 15. Circuit - Three-Member Chain And Exhaustion | Chain `gpt-4o` → Anthropic → `gpt-4o-mini`. With the primary suspended, the request enters at the Anthropic suffix; when Anthropic fails, Envoy still retries on to `gpt-4o-mini` (body rewritten to that model) and the suspended primary is not dialed. With only `gpt-4o-mini` left, its 500 reaches the client. With every member suspended, the policy answers `503 failover_exhausted` locally and neither mock is dialed |
+| 16. Deploy-Time Validation | The controller rejects, with a 400 naming the field, an unknown top-level param (`perTryTimeoutMs`), a stale `upstreamDefinition` on a target, and model-failover under `provider.policies`; a proxy using every param, including `recoverAfterSuccesses` and `probeTimeout`, deploys |
 | Probe concurrency (script) | While half-open, 3 concurrent requests send exactly 1 to the slow, recovering primary and 2 to the fallback; once that probe closes the circuit, 3 concurrent requests all reach the primary |
 
 ## Cleanup

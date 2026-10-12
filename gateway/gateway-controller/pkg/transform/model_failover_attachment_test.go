@@ -249,7 +249,7 @@ func TestLLMTransformer_ModelFailoverPolicy_ResolvesFailoverAndInjectsAggregateC
 }
 
 // TestLLMTransformer_ModelFailoverPolicy_UnknownProviderRejected proves the
-// validation Task 7 put in parseModelFailoverParams actually runs on this path,
+// validation in parseModelFailoverParams actually runs on this path,
 // so a bad provider reference fails the deploy rather than producing an
 // aggregate cluster with a dangling member.
 func TestLLMTransformer_ModelFailoverPolicy_UnknownProviderRejected(t *testing.T) {

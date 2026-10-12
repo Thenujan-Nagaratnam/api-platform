@@ -54,7 +54,7 @@ func TestClusterNeedsUpstreamPolicyFilter_RouteWithUpstreamPhasePolicy(t *testin
 			"route-1": {Upstream: models.RouteUpstream{ClusterKey: "bedrock-fallback"}},
 		},
 		PolicyChains: map[string]*models.PolicyChain{
-			"route-1": {Policies: []models.Policy{{Name: "aws-authentication"}}},
+			"route-1": {Policies: []models.Policy{{Name: "aws-authentication", Upstream: true}}},
 		},
 	}
 
@@ -70,7 +70,7 @@ func TestClusterNeedsUpstreamPolicyFilter_UsesCanonicalChainKeyWhenSet(t *testin
 			},
 		},
 		PolicyChains: map[string]*models.PolicyChain{
-			"shared-chain": {Policies: []models.Policy{{Name: "aws-authentication"}}},
+			"shared-chain": {Policies: []models.Policy{{Name: "aws-authentication", Upstream: true}}},
 			// A stale entry keyed by the route itself must NOT be consulted
 			// once CanonicalChainKey redirects elsewhere.
 			"route-1": {Policies: []models.Policy{{Name: "prompt-decorator"}}},
@@ -92,7 +92,7 @@ func TestClusterNeedsUpstreamPolicyFilter_ORsAcrossSharedCluster(t *testing.T) {
 		},
 		PolicyChains: map[string]*models.PolicyChain{
 			"route-1": {Policies: []models.Policy{{Name: "prompt-decorator"}}},
-			"route-2": {Policies: []models.Policy{{Name: "aws-authentication"}}},
+			"route-2": {Policies: []models.Policy{{Name: "aws-authentication", Upstream: true}}},
 		},
 	}
 

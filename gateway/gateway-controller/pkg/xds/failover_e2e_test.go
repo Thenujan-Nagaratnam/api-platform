@@ -181,12 +181,12 @@ func findClusterByName(clusters []*cluster.Cluster, name string) *cluster.Cluste
 	return nil
 }
 
-// TestLLMTransform_NoFailoverBlock_OutputUnchangedFromBeforeThisFeature is the
-// concrete proof of this plan's Global Constraint: a route with no
+// TestLLMTransform_NoFailoverBlock_OutputUnchangedFromBeforeThisFeature proves
+// a route with no
 // model-failover attachment produces byte-identical xDS output to before
 // this feature existed — no aggregate cluster, no retry policy, no
 // failover-driven host rewrite, and the containing virtual host does not
-// request the attempt-count header. This is the same fixture Task 5's test
+// request the attempt-count header. This is the same fixture the test
 // (TestTranslateRuntimeConfig_FailoverRouteGetsRetryPolicyAndHostRewrite,
 // upstream_policy_filter_wiring_test.go) uses, with Upstream.Failover left
 // nil entirely (the pre-this-feature shape).

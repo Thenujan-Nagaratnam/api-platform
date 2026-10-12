@@ -145,10 +145,9 @@ func buildCompositeCluster(name string, clusterEntries []*compositev3.ClusterCon
 // is failoverLeafMaxRetries instead: the same 1024 Envoy already uses as its
 // default max_requests, since each retry is itself a request to that leaf.
 //
-// Leaves deliberately carry no outlier_detection. An earlier version of this
-// design ejected a leaf's single host after enough consecutive failures, but
-// live verification (gateway/dev-policies/run-outlier-threshold-proof.sh)
-// against a real Envoy showed this is actively harmful: envoy.clusters.
+// Leaves deliberately carry no outlier_detection. Ejecting a leaf's single
+// host after consecutive failures was verified live against a real Envoy to
+// be actively harmful: envoy.clusters.
 // composite selects purely by retry-attempt count regardless of host health
 // (confirmed via Envoy's own doc comment on ClusterConfig — "unlike the
 // standard aggregate cluster which uses health-based selection, the

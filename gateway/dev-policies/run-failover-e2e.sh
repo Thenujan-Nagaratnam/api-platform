@@ -92,7 +92,8 @@ log "newman exit code: $NEWMAN_EXIT"
 # Half-open probe concurrency can't be proven from Postman (it runs requests
 # one at a time), so it's checked here with concurrent curls against the
 # failover-circuit-probes proxy registered in the collection's setup (0.15):
-# suspendDuration=3; half-open recovery always sends exactly one probe.
+# suspendDuration=3 and recoverAfterSuccesses=1, so one successful probe
+# closes the circuit (the default of 3 would keep it half-open).
 PROXY_URL="https://localhost:8443/failover-circuit-probes/chat/completions"
 CHAT_BODY='{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
 OUT_DIR="$(mktemp -d)"

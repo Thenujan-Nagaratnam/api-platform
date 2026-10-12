@@ -19,7 +19,7 @@
 // Package modelfailover implements cross-provider LLM model failover: retry
 // a request against a declared fallback chain of {model, provider} targets
 // on upstream failure, with correct per-attempt credential injection and
-// payload translation. See docs/superpowers/specs/2026-09-21-model-failover-policy-design.md.
+// payload translation. See gateway/spec/prds/llm-model-failover.md.
 package modelfailover
 
 import (
@@ -137,8 +137,7 @@ type FailoverTarget struct {
 type FailoverTargetEntry struct {
 	FailoverTarget
 	Fallbacks []FailoverTarget `json:"fallbacks"`
-	// AggregateCluster is injected by gateway-controller — see this plan's
-	// shared params contract.
+	// AggregateCluster is injected by gateway-controller, never authored.
 	AggregateCluster string `json:"aggregateCluster"`
 }
 
@@ -537,10 +536,9 @@ func parseOptionalInt(raw map[string]interface{}, key string) (int, error) {
 }
 
 // Mode declares participation in both the downstream body phase (target
-// selection) and — when this instance is separately attached via
-// upstreamPolicies: — the upstream-attempt request/response header phases
-// (chain resolution, metadata seeding, suspension recording). See
-// docs/superpowers/specs/2026-09-21-upstream-policy-reuse-design.md: there is
+// selection) and — in the per-attempt copy the controller adds to each
+// upstream's policies — the upstream-attempt request/response header phases
+// (chain resolution, metadata seeding, suspension recording). There is
 // no separate upstream mode/interface — attachment point alone selects the
 // phase, and RequestHeaderMode/ResponseHeaderMode below govern whichever
 // phase this specific instance actually runs in (Downstream == nil tells the
@@ -993,12 +991,12 @@ func (p *Policy) backoffDuration(streak int) time.Duration {
 }
 
 // OnRequestBody's downstream invocation parses the client-requested model,
-// matches it against the configured chain, and always routes to that chain's
-// composite cluster. Envoy owns target health and skips ejected leaf clusters;
-// the downstream policy never bypasses the chain. For an
+// matches it against the configured chain, and routes to that chain's
+// composite cluster, or to a suffix of it when the leading members are
+// suspended. For an
 // upstream-attempt invocation (Downstream == nil), it instead delegates to
-// onUpstreamAttemptRequestBody — this instance is also attached via
-// upstreamPolicies: (see OnRequestHeaders), and Mode()'s RequestBodyMode
+// onUpstreamAttemptRequestBody — the controller also adds a per-attempt copy
+// of this policy to each upstream's policies (see OnRequestHeaders), and Mode()'s RequestBodyMode
 // applies to both attachments, so this method is called for every attempt too.
 func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	if reqCtx.Downstream == nil {
@@ -1028,7 +1026,7 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 	// a request enters a composite cluster, envoy.clusters.composite selects
 	// its next member purely by retry-ATTEMPT-COUNT, never by this policy's
 	// own suspension state (confirmed via that cluster type's own doc comment
-	// and via live testing — see this plan's outlier-detection investigation);
+	// and via live testing);
 	// there is no hook in the stock Envoy retry path or in this SDK's
 	// ImmediateResponse (which terminates the WHOLE client request, not just
 	// "skip this member" — see action.go) that lets a policy skip an
@@ -1038,9 +1036,8 @@ func (p *Policy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext,
 	// SUSPENDED PREFIX is skipped entirely by choosing a later entry point —
 	// but can't skip a suspended member in the MIDDLE of an otherwise-healthy
 	// suffix without combinatorial suffix generation (rejected: exponential
-	// cluster count) or a custom Envoy extension (see
-	// docs/superpowers/specs/2026-09-23-llm-model-failover-implementation-spec.md's
-	// proposal, not implemented here). Genuinely fixing this requires one of
+	// cluster count) or a custom Envoy extension (not implemented here).
+	// Genuinely fixing this requires one of
 	// those two, not a change to this file.
 	if p.allowRequest(entry.FailoverTarget) {
 		cluster := entry.AggregateCluster

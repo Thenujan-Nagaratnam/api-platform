@@ -718,19 +718,15 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 		}
 
 		// Phase 3: Process User-Defined Policies (operationPolicies + deprecated policies).
-		// LlmProvider has no upstream-attempt synthesis of its own (that's a
-		// model-failover/LlmProxy-only mechanism) and there is no author-facing
-		// upstreamPolicies: field any more, so this is always empty — kept as a
-		// variable rather than removed so orderedLLMPolicyAttachments' shared
-		// two-list signature below needs no LlmProvider-specific branch.
+		// LlmProvider has no synthesized upstream-attempt attachments (that is
+		// LlmProxy model-failover only), so only the downstream list is passed.
 		opLevelPolicies := collectOperationLevelLLMPolicies(provider.Spec.OperationPolicies, provider.Spec.Policies)
-		var upstreamPolicies []api.OperationPolicy
-		if len(opLevelPolicies) > 0 || len(upstreamPolicies) > 0 {
-			registerExplicitLLMPolicyOperations(operationRegistry, append(append([]api.OperationPolicy{}, opLevelPolicies...), upstreamPolicies...), func(path, method string) bool {
+		if len(opLevelPolicies) > 0 {
+			registerExplicitLLMPolicyOperations(operationRegistry, opLevelPolicies, func(path, method string) bool {
 				return !isDeniedByException(path, method, deniedPathMethods)
 			})
 
-			for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies, upstreamPolicies) {
+			for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies, nil) {
 				policyMethods := expandLLMPolicyMethods(attachment.pathEntry.Methods)
 
 				for _, policyMethod := range policyMethods {
@@ -827,15 +823,13 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 		}
 
 		// Phase 3: Process Policies with Dynamic Operation Creation (operationPolicies + deprecated policies).
-		// See the AllowAll branch above for why upstreamPolicies is always empty here.
 		opLevelPolicies := collectOperationLevelLLMPolicies(provider.Spec.OperationPolicies, provider.Spec.Policies)
-		var upstreamPolicies []api.OperationPolicy
-		if len(opLevelPolicies) > 0 || len(upstreamPolicies) > 0 {
-			registerExplicitLLMPolicyOperations(operationRegistry, append(append([]api.OperationPolicy{}, opLevelPolicies...), upstreamPolicies...), func(path, method string) bool {
+		if len(opLevelPolicies) > 0 {
+			registerExplicitLLMPolicyOperations(operationRegistry, opLevelPolicies, func(path, method string) bool {
 				return isAllowedByAccessControl(path, method, normalizedExceptions)
 			})
 
-			for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies, upstreamPolicies) {
+			for _, attachment := range orderedLLMPolicyAttachments(opLevelPolicies, nil) {
 				policyMethods := expandLLMPolicyMethods(attachment.pathEntry.Methods)
 
 				for _, policyMethod := range policyMethods {
