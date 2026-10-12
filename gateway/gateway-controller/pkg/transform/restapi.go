@@ -177,6 +177,15 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 		return nil, fmt.Errorf("invalid API-level resilience: %w", err)
 	}
 
+	// Per-upstream policies (upstream.main.policies / upstream.sandbox.policies),
+	// resolved once and appended to every route of that slot as upstream-phase
+	// instances, so each runs only on attempts to its own upstream.
+	mainUpstreamPolicies := t.buildUpstreamSlotPolicies(apiData.Upstream.Main.Policies)
+	var sandboxUpstreamPolicies []policyenginev1.PolicyInstance
+	if hasSandbox {
+		sandboxUpstreamPolicies = t.buildUpstreamSlotPolicies(apiData.Upstream.Sandbox.Policies)
+	}
+
 	// Build routes and policy chains for each operation
 	for i, op := range apiData.Operations {
 		// Operation-level resilience overrides API-level (per field); nil leaves the
@@ -231,6 +240,11 @@ func (t *RestAPITransformer) Transform(cfg *models.StoredConfig) (*models.Runtim
 
 			// Build policy chain: API-level + operation-level + system policies
 			chain := t.buildPolicyChain(apiPolicies, op.Policies)
+			if hasSandbox && vhost == effectiveSandboxVHost {
+				chain = append(chain, sandboxUpstreamPolicies...)
+			} else {
+				chain = append(chain, mainUpstreamPolicies...)
+			}
 			injected := utils.InjectSystemPolicies(chain, t.systemConfig, nil)
 			rdc.PolicyChains[routeKey] = sdkChainToModel(injected)
 		}
@@ -440,6 +454,27 @@ func (t *RestAPITransformer) buildPolicyChain(
 		}
 	}
 
+	return result
+}
+
+// buildUpstreamSlotPolicies converts one upstream slot's policies into
+// upstream-phase instances (Upstream: true), in list order. An unresolvable
+// version is skipped, matching buildPolicyChain's handling.
+func (t *RestAPITransformer) buildUpstreamSlotPolicies(policies *[]api.Policy) []policyenginev1.PolicyInstance {
+	if policies == nil {
+		return nil
+	}
+	result := make([]policyenginev1.PolicyInstance, 0, len(*policies))
+	for _, p := range *policies {
+		resolved, err := config.ResolvePolicyVersion(t.policyDefinitions, t.latestVersions, p.Name, p.Version)
+		if err != nil {
+			slog.Error("Failed to resolve upstream policy version", "policy_name", p.Name, "error", err)
+			continue
+		}
+		inst := convertAPIPolicyToSDK(p, policyv1alpha.LevelRoute, versionutil.MajorVersion(resolved))
+		inst.Upstream = true
+		result = append(result, inst)
+	}
 	return result
 }
 

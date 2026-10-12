@@ -57,9 +57,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var payload map[string]interface{}
 	_ = json.Unmarshal(body, &payload)
 	model, _ := payload["model"].(string)
-	// Checked in the same order as mock-anthropic: a request can land here via
-	// upstreamDefinition while carrying a DIFFERENT provider's credential
-	// convention (e.g. X-Api-Key), so this must not only look at Authorization.
+	// Checked in the same order as mock-anthropic, so a request carrying a
+	// different provider's credential convention (e.g. X-Api-Key) still shows
+	// which credential arrived.
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
 		auth = r.Header.Get("X-Api-Key")

@@ -2043,8 +2043,8 @@ func TestTransformProvider_WithUpstreamAuth(t *testing.T) {
 	assert.NotNil(t, result)
 
 	// Check that policies were added
-	require.NotEmpty(t, result.Spec.Operations)
-	for _, op := range result.Spec.Operations {
+	require.NotEmpty(t, effectiveOperations(result.Spec))
+	for _, op := range effectiveOperations(result.Spec) {
 		require.NotNil(t, op.Policies)
 		found := false
 		for _, p := range *op.Policies {
@@ -2114,8 +2114,8 @@ func TestTransformProvider_ApiKeyWithPolicyParams(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 
-	require.NotEmpty(t, result.Spec.Operations)
-	for _, op := range result.Spec.Operations {
+	require.NotEmpty(t, effectiveOperations(result.Spec))
+	for _, op := range effectiveOperations(result.Spec) {
 		require.NotNil(t, op.Policies)
 		var found *api.Policy
 		for _, p := range *op.Policies {
@@ -2199,8 +2199,8 @@ func TestTransformProvider_WithOAuth2UpstreamAuth(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 
-	require.NotEmpty(t, result.Spec.Operations)
-	for _, op := range result.Spec.Operations {
+	require.NotEmpty(t, effectiveOperations(result.Spec))
+	for _, op := range effectiveOperations(result.Spec) {
 		require.NotNil(t, op.Policies)
 		found := false
 		var foundParams *map[string]interface{}
@@ -2270,8 +2270,8 @@ func TestTransformProvider_PolicyVersionOverride(t *testing.T) {
 		transformer := newTransformer(t)
 		result, err := transformer.Transform(newProvider(stringPtr("v9.9.7")), &api.RestAPI{})
 		require.NoError(t, err)
-		require.NotEmpty(t, result.Spec.Operations)
-		for _, op := range result.Spec.Operations {
+		require.NotEmpty(t, effectiveOperations(result.Spec))
+		for _, op := range effectiveOperations(result.Spec) {
 			require.NotNil(t, op.Policies)
 			for _, p := range *op.Policies {
 				if p.Name == constants.UPSTREAM_AUTH_OAUTH2_POLICY_NAME {
@@ -2331,8 +2331,8 @@ func TestTransformProvider_OAuth2PolicyNameOverride(t *testing.T) {
 
 	result, err := transformer.Transform(provider, &api.RestAPI{})
 	require.NoError(t, err)
-	require.NotEmpty(t, result.Spec.Operations)
-	for _, op := range result.Spec.Operations {
+	require.NotEmpty(t, effectiveOperations(result.Spec))
+	for _, op := range effectiveOperations(result.Spec) {
 		require.NotNil(t, op.Policies)
 		found := false
 		for _, p := range *op.Policies {
@@ -2408,8 +2408,8 @@ func TestTransformProvider_WithOAuth2PasswordGrant(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 
-	require.NotEmpty(t, result.Spec.Operations)
-	for _, op := range result.Spec.Operations {
+	require.NotEmpty(t, effectiveOperations(result.Spec))
+	for _, op := range effectiveOperations(result.Spec) {
 		require.NotNil(t, op.Policies)
 		var foundParams *map[string]interface{}
 		for _, p := range *op.Policies {

@@ -136,6 +136,44 @@ func TestPolicyValidator_PolicyNotFound(t *testing.T) {
 	}
 }
 
+// TestPolicyValidator_AuthoredUpstreamFlagRejected: upstream is
+// controller-internal; an author attaches upstream policies under the
+// upstream's own policies list instead.
+func TestPolicyValidator_AuthoredUpstreamFlagRejected(t *testing.T) {
+	validator := NewPolicyValidator(map[string]models.PolicyDefinition{})
+
+	apiConfig := &api.RestAPI{
+		ApiVersion: api.RestAPIApiVersionGatewayApiPlatformWso2Comv1,
+		Kind:       api.RestAPIKindRestApi,
+		Spec: api.APIConfigData{
+			DisplayName: "Test API",
+			Version:     "v1.0",
+			Context:     "/test",
+			Upstream: struct {
+				Main    api.Upstream  `json:"main" yaml:"main"`
+				Sandbox *api.Upstream `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+			}{
+				Main: api.Upstream{
+					Url:      api.Ptr("http://backend.example.com"),
+					Policies: &[]api.Policy{{Name: "pii-masking", Version: "v1", Upstream: api.Ptr(true)}},
+				},
+			},
+			Policies: &[]api.Policy{{Name: "pii-masking", Version: "v1", Upstream: api.Ptr(true)}},
+		},
+	}
+
+	errors := validator.ValidateRestAPIPolicies(apiConfig)
+	if len(errors) != 2 {
+		t.Fatalf("Expected 2 validation errors, got %d: %v", len(errors), errors)
+	}
+	if errors[0].Field != "spec.policies[0].upstream" {
+		t.Errorf("Unexpected field: %s", errors[0].Field)
+	}
+	if errors[1].Field != "spec.upstream.main.policies[0].upstream" {
+		t.Errorf("Unexpected field: %s", errors[1].Field)
+	}
+}
+
 func TestPolicyValidator_InvalidParameters(t *testing.T) {
 	// Setup policy definition with schema
 	policyDefs := map[string]models.PolicyDefinition{
@@ -979,11 +1017,11 @@ func TestCoerceParamsBySchema_RenderedTemplateStrings(t *testing.T) {
 			Parameters: &map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"limit": map[string]interface{}{"type": "integer"},
-					"burst": map[string]interface{}{"type": "integer"},
+					"limit":   map[string]interface{}{"type": "integer"},
+					"burst":   map[string]interface{}{"type": "integer"},
 					"enabled": map[string]interface{}{"type": "boolean"},
-					"ratio": map[string]interface{}{"type": "number"},
-					"name": map[string]interface{}{"type": "string"},
+					"ratio":   map[string]interface{}{"type": "number"},
+					"name":    map[string]interface{}{"type": "string"},
 				},
 				"required": []interface{}{"limit"},
 			},

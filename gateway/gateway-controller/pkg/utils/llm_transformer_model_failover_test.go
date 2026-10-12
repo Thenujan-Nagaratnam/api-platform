@@ -311,13 +311,11 @@ func credentialAttachments(policies []api.Policy) []api.Policy {
 	return out
 }
 
-// TestTransform_ModelFailoverPolicy_NonReferencedProviderKeepsDownstreamAttachment
-// guards the fix's precise scope: only providers a model-failover chain
-// actually references lose their downstream attachment. A third provider used
-// solely via some other downstream selection mechanism (here simulated by just
-// not naming it in any target/fallback) keeps its ordinary downstream
-// credential/transformer instance untouched.
-func TestTransform_ModelFailoverPolicy_NonReferencedProviderKeepsDownstreamAttachment(t *testing.T) {
+// TestTransform_ModelFailoverPolicy_EveryProviderAuthAndTransformerUpstream:
+// with model-failover on the proxy, every provider's transformer and auth are
+// part of that provider's upstream policies — including a provider no chain
+// names — and none is attached downstream.
+func TestTransform_ModelFailoverPolicy_EveryProviderAuthAndTransformerUpstream(t *testing.T) {
 	db, transformer := newFailoverAuthTestStore(t)
 	saveFailoverAuthTestProvider(t, db, "mistral-provider", "/mistral-provider")
 
@@ -344,26 +342,22 @@ func TestTransform_ModelFailoverPolicy_NonReferencedProviderKeepsDownstreamAttac
 	require.NotNil(t, chatOp.Policies)
 	policies := *chatOp.Policies
 
-	// mistral-upstream is not named in the failover chain's target or
-	// fallbacks at all, so it must keep its ordinary downstream attachment.
-	// The primary also uses "set-headers" (api-key-auth) downstream, but the
-	// primary IS failover-referenced (the implicit target) so its downstream
-	// copy is skipped — leaving only mistral's own instance under this name
-	// (credentialAttachments also excludes the always-present, unrelated
-	// internal loopback marker, which shares this same policy name).
-	downstreamMistralAuth := credentialAttachments(downstreamAttachments(policies, constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME))
-	require.Len(t, downstreamMistralAuth, 1, "only mistral-upstream's own downstream credential should remain")
-	require.NotNil(t, downstreamMistralAuth[0].ExecutionCondition)
-	assert.Contains(t, *downstreamMistralAuth[0].ExecutionCondition, "mistral-upstream")
+	assert.Empty(t, credentialAttachments(downstreamAttachments(policies, constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME)),
+		"no provider credential is attached downstream")
+	assert.Empty(t, downstreamAttachments(policies, "openai-to-mistral-transformer"))
 
-	downstreamMistralTransformer := downstreamAttachments(policies, "openai-to-mistral-transformer")
-	require.Len(t, downstreamMistralTransformer, 1,
-		"mistral-upstream's transformer is untouched since it is not referenced by any model-failover chain")
+	var mistralAuth []api.Policy
+	for _, p := range credentialAttachments(upstreamAttachments(policies, constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME)) {
+		if p.ExecutionCondition != nil && strings.Contains(*p.ExecutionCondition, "mistral-upstream") {
+			mistralAuth = append(mistralAuth, p)
+		}
+	}
+	require.Len(t, mistralAuth, 1, "mistral-upstream's credential runs upstream, gated to it")
 
-	// It must NOT gain an upstream-attempt instance either — only chain-
-	// referenced providers do.
-	assert.Empty(t, upstreamAttachments(policies, "openai-to-mistral-transformer"),
-		"a non-referenced provider gains no upstream-attempt instance")
+	mistralTransformer := upstreamAttachments(policies, "openai-to-mistral-transformer")
+	require.Len(t, mistralTransformer, 1)
+	require.NotNil(t, mistralTransformer[0].ExecutionCondition)
+	assert.Equal(t, selectedProviderExecutionCondition("mistral-upstream", false), *mistralTransformer[0].ExecutionCondition)
 }
 
 // TestTransform_ModelFailoverPolicy_ExplicitProviderOnPrimaryTargetIsReferenced
@@ -443,10 +437,13 @@ func TestTransform_ModelFailoverPolicy_ExplicitProviderOnPrimaryTargetIsReferenc
 	assert.Empty(t, downstreamAttachments(policies, "openai-to-mistral-transformer"),
 		"mistral-upstream's transformer must not keep its downstream attachment either")
 
-	upstreamMistralAuth := credentialAttachments(upstreamAttachments(policies, constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME))
+	var upstreamMistralAuth []api.Policy
+	for _, p := range credentialAttachments(upstreamAttachments(policies, constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME)) {
+		if p.ExecutionCondition != nil && strings.Contains(*p.ExecutionCondition, "mistral-upstream") {
+			upstreamMistralAuth = append(upstreamMistralAuth, p)
+		}
+	}
 	require.Len(t, upstreamMistralAuth, 1, "mistral-upstream must gain an upstream-attempt credential instance")
-	require.NotNil(t, upstreamMistralAuth[0].ExecutionCondition)
-	assert.Contains(t, *upstreamMistralAuth[0].ExecutionCondition, "mistral-upstream")
 
 	upstreamMistralTransformer := upstreamAttachments(policies, "openai-to-mistral-transformer")
 	require.Len(t, upstreamMistralTransformer, 1, "mistral-upstream must gain an upstream-attempt transformer instance")

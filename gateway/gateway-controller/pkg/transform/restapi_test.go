@@ -508,6 +508,43 @@ func TestRestAPITransformer_SandboxRouteClusterHeader(t *testing.T) {
 	})
 }
 
+// TestRestAPITransformer_PerUpstreamPolicies: upstream.main.policies attach
+// (upstream-phase) only to main-vhost routes, upstream.sandbox.policies only
+// to sandbox-vhost routes, after the route's downstream policies.
+func TestRestAPITransformer_PerUpstreamPolicies(t *testing.T) {
+	defs := map[string]models.PolicyDefinition{
+		"main-only|v1.0.0":    {Name: "main-only", Version: "v1.0.0"},
+		"sandbox-only|v1.0.0": {Name: "sandbox-only", Version: "v1.0.0"},
+	}
+	transformer := NewRestAPITransformer(testRouterCfg(), &config.Config{}, defs)
+	cfg := makeRestAPIStoredConfig(nil, nil)
+	restAPI := cfg.Configuration.(api.RestAPI)
+	restAPI.Spec.Upstream.Main.Policies = &[]api.Policy{{Name: "main-only", Version: "v1"}}
+	restAPI.Spec.Upstream.Sandbox = &api.Upstream{
+		Url:      ptrStr("http://sandbox-backend:9080/sandbox"),
+		Policies: &[]api.Policy{{Name: "sandbox-only", Version: "v1"}},
+	}
+	cfg.Configuration = restAPI
+
+	rdc, err := transformer.Transform(cfg)
+	require.NoError(t, err)
+
+	upstreamNames := func(routeKey string) []string {
+		chain := rdc.PolicyChains[routeKey]
+		require.NotNil(t, chain, "chain for %s", routeKey)
+		var names []string
+		for _, p := range chain.Policies {
+			if p.Upstream {
+				names = append(names, p.Name)
+			}
+		}
+		return names
+	}
+
+	assert.Equal(t, []string{"main-only"}, upstreamNames("GET|/test/hello|main.local"))
+	assert.Equal(t, []string{"sandbox-only"}, upstreamNames("GET|/test/hello|sandbox.local"))
+}
+
 // TestRestAPITransformer_DefaultClusterReferencesRealCluster guards against the cluster-header
 // fallback pointing at a non-existent cluster. translateRuntimeConfig names Envoy clusters by the
 // rdc.UpstreamClusters map key, so every route's DefaultCluster (used when no policy sets the

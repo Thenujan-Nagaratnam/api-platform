@@ -150,13 +150,9 @@ func (t *LLMTransformer) extractLLMMetadata(cfg *models.StoredConfig) *models.LL
 // resolveFailoverEntry resolves one chain member (as authored in a
 // model-failover policy attachment's params) into a real cluster reference,
 // using rdc.UpstreamClusters (already built by RestAPITransformer) to
-// translate a named provider/upstream into a real cluster key + upstream
-// info. This is two independent questions: identity always comes from
-// t.Provider (defaulting to the primary), but the dial target defaults to
-// that same name only when t.UpstreamDefinition is empty — an explicit
-// UpstreamDefinition always wins, letting a member reuse one provider's
-// credentials against a differently-named upstream (see modelFailoverTarget's
-// own doc comment).
+// translate a named provider into a real cluster key + upstream info. The
+// member dials its provider's own upstream: t.Provider, defaulting to the
+// primary.
 //
 // An empty provider, or a provider equal to the proxy's own primaryProviderID,
 // both mean the route's OWN already-resolved primary upstream
@@ -172,10 +168,7 @@ func resolveFailoverEntry(rdc *models.RuntimeDeployConfig, r *models.Route, t mo
 		providerName = primaryProviderID
 	}
 
-	dialTarget := strings.TrimSpace(t.UpstreamDefinition)
-	if dialTarget == "" {
-		dialTarget = providerName
-	}
+	dialTarget := providerName
 
 	if dialTarget == primaryProviderID {
 		if r.Upstream.Default == nil {

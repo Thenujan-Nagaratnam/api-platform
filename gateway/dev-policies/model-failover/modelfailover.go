@@ -58,14 +58,6 @@ const PolicyName = "model-failover"
 const (
 	selectedProviderMetadataKey = "selected_provider"
 	selectedModelMetadataKey    = "selected_model"
-	// attemptStartMetadataKey stashes this attempt's OnRequestHeaders
-	// timestamp so OnResponseHeaders can self-measure latency for the
-	// latency circuit-breaking rule (LatencyThresholdMs) — the SDK exposes no
-	// latency/duration field of its own (see context.go), and SharedContext
-	// persists only within one attempt's own request->response round trip
-	// (fresh again at the next attempt), so this key never leaks across
-	// attempts or into the downstream phase.
-	attemptStartMetadataKey = "model_failover_attempt_start"
 )
 
 // ResolvedFailoverProviderHeader mirrors the header name the (now-removed)
@@ -114,16 +106,6 @@ var (
 type FailoverTarget struct {
 	Model    string `json:"model"`
 	Provider string `json:"provider,omitempty"`
-	// UpstreamDefinition is author-facing: the name of the upstream this
-	// member actually dials (a named additionalProviders[].as/.id, or any
-	// hand-declared upstreamDefinitions[].name — the controller's lookup
-	// doesn't distinguish their origin). Optional; when empty, gateway-controller
-	// resolves the dial target from Provider instead (today's default
-	// behavior — same-named provider and dial target). Decoupled from
-	// Provider so a member's credential/transform identity and its physical
-	// backend can differ — e.g. reusing one provider's credentials against a
-	// differently-named regional/load-balanced upstream.
-	UpstreamDefinition string `json:"upstreamDefinition,omitempty"`
 	// BasePath is injected by gateway-controller: the resolved upstream base
 	// path of the cluster this member dials. Every member of a chain is a
 	// loopback upstream on the SAME host:port, so auto_host_rewrite leaves
@@ -149,7 +131,7 @@ type FailoverTarget struct {
 
 // FailoverTargetEntry is one client-requested-model's primary + fallback
 // chain. FailoverTarget is embedded (not nested under a "target" key) so the
-// entry's own model/provider/upstreamDefinition sit at the same JSON level as
+// entry's own model/provider sit at the same JSON level as
 // each entry in Fallbacks — the primary slot is authored exactly like a
 // fallback slot, just without its own further fallbacks.
 type FailoverTargetEntry struct {
@@ -185,22 +167,18 @@ type ModelFailoverParams struct {
 	// to 1 (suspend on the very first qualifying failure, this policy's
 	// original behavior).
 	SuspendAfterFailures int `json:"suspendAfterFailures,omitempty"`
-
-	// ─── Aggregate circuit criteria (ECI #18469 asks 3-4) ───
-	// Additive to SuspendAfterFailures: any one trigger suspends the target
-	// via the same backoffDuration escalation. Both rules evaluate over a
-	// fixed 60s rolling window and need circuitMinimumSamples attempts in it
-	// before they can fire (see the circuit* constants).
-
-	// FailureRateThresholdPercent (1-100) suspends the target once its failure
-	// rate across the rolling window reaches this value. <=0 (default)
-	// disables the rate rule.
-	FailureRateThresholdPercent int `json:"failureRateThresholdPercent,omitempty"`
-	// LatencyThresholdMs suspends the target once the p95 of its attempt
-	// latencies (this attempt's OnRequestHeaders to its OnResponseHeaders)
-	// across the rolling window reaches this many milliseconds. <=0 (default)
-	// disables the latency rule.
-	LatencyThresholdMs int `json:"latencyThresholdMs,omitempty"`
+	// MaxSuspendMultiplier caps the doubling backoff of a target that keeps
+	// re-failing right after recovery, as a multiple of SuspendDuration.
+	// Omitted/<=0 defaults to defaultMaxSuspendMultiplier; 1 disables doubling.
+	MaxSuspendMultiplier int `json:"maxSuspendMultiplier,omitempty"`
+	// RecoverAfterSuccesses is how many successful half-open probes in a row
+	// close a suspended target's circuit. Omitted/<=0 defaults to
+	// defaultRecoverAfterSuccesses.
+	RecoverAfterSuccesses int `json:"recoverAfterSuccesses,omitempty"`
+	// ProbeTimeout is how long, in seconds, a half-open probe may go without
+	// a recorded outcome before it counts as failed. Omitted/<=0 defaults to
+	// defaultProbeTimeout.
+	ProbeTimeout int `json:"probeTimeout,omitempty"`
 
 	// RequestModel says where the client-requested model lives and where a
 	// fallback's own resolved model must be written — see RequestModelConfig.
@@ -238,12 +216,6 @@ type suspensionState struct {
 	// same incident).
 	streakExpiresAt map[string]time.Time
 
-	// rateWindows/latencyWindows hold the rolling-bucket state for the
-	// aggregate/rolling circuit criteria (FailureRateThresholdPercent,
-	// LatencyThresholdMs) — populated lazily, only for a key that has
-	// actually recorded an outcome while the corresponding rule is enabled.
-	rateWindows    map[string]*rollingWindow
-	latencyWindows map[string]*rollingWindow
 	// probes holds half-open controlled-recovery bookkeeping (see
 	// allowRequest/completeProbe) — populated only while a key is actually in
 	// a half-open recovery cycle (its suspension window already expired);
@@ -251,7 +223,7 @@ type suspensionState struct {
 	// reopens.
 	//
 	// Every map keyed by target identity in this struct (suspended,
-	// failureCounts, ..., rateWindows, latencyWindows, probes) is naturally
+	// failureCounts, ..., probes) is naturally
 	// bounded: keys come from this chain's own configured Targets/Fallbacks —
 	// static policy config, not per-request user input — so there is no
 	// per-key growth to bound here. The whole *suspensionState itself can
@@ -274,134 +246,40 @@ func (s *suspensionState) markUsed(now time.Time) {
 // whether its single probe is in flight. See allowRequest/completeProbe.
 type probeState struct {
 	inFlight  bool
-	grantedAt time.Time // when the in-flight probe was granted, for circuitProbeLease
+	grantedAt time.Time // when the in-flight probe was granted, for probeLease
 	successes int
 }
 
-// Fixed circuit-breaker tuning. Only the thresholds that decide WHEN a target
-// is unhealthy (suspendAfterFailures, failureRateThresholdPercent,
-// latencyThresholdMs) are author-facing; how the policy measures and recovers
-// is not, so a route author never has to fill in a dozen knobs.
+// Circuit-breaker defaults for params an author may leave unset.
 const (
-	// circuitWindow is the rolling lookback for the rate and latency rules,
-	// split into circuitBuckets equal buckets that rotate lazily.
-	circuitWindow  = 60 * time.Second
-	circuitBuckets = 10
-	// circuitMinimumSamples is how many attempts the window needs before
-	// either rule is evaluated, so one or two unlucky calls never suspend a
-	// target. At 20, p95 is the second-slowest sample, so a single outlier
-	// never trips the latency rule on its own.
-	circuitMinimumSamples = 20
-	// circuitLatencyPercentile is compared against LatencyThresholdMs.
-	circuitLatencyPercentile = 95
-	// circuitMaxSuspendMultiplier caps backoff at this multiple of SuspendDuration.
-	circuitMaxSuspendMultiplier = 8
-	// circuitProbeLease frees a half-open probe slot whose outcome never
+	// defaultMaxSuspendMultiplier caps backoff at this multiple of
+	// SuspendDuration when MaxSuspendMultiplier is unset.
+	defaultMaxSuspendMultiplier = 8
+	// defaultProbeTimeout frees a half-open probe slot whose outcome never
 	// arrived (a transport failure or client cancel never reaches
 	// recordOutcome), so a lost probe can't hold a target half-open forever.
-	circuitProbeLease = 60 * time.Second
-	// Require a few consecutive successful probes before normal traffic is
-	// restored. Kept internal so the user-facing policy stays simple.
-	circuitProbeSuccessesToClose = 3
+	defaultProbeTimeout = 60 * time.Second
+	// defaultRecoverAfterSuccesses is how many consecutive successful probes
+	// restore normal traffic when RecoverAfterSuccesses is unset.
+	defaultRecoverAfterSuccesses = 3
 )
-const maxLatencySamplesPerBucket = 200 // bounds memory; ample for percentile accuracy at normal traffic
 
-// rollingBucket is one time-slice of a rolling window: attempt/failure counts
-// for the failure-rate rule and a bounded latency sample set for the latency
-// rule. Both rules share one rolling window per key so a target's failure
-// rate and its latency are always sampled from the exact same attempts.
-type rollingBucket struct {
-	start     time.Time
-	attempts  int
-	failures  int
-	latencies []int // milliseconds
+// probeLease is the configured probe timeout, defaulted at the point of use
+// like requestModelLocation, so a hand-built Policy behaves like a parsed one.
+func (p *Policy) probeLease() time.Duration {
+	if p.params.ProbeTimeout <= 0 {
+		return defaultProbeTimeout
+	}
+	return time.Duration(p.params.ProbeTimeout) * time.Second
 }
 
-// rollingWindow is a ring of fixed-duration buckets, lazily rotated on each
-// record — no background sweep, matching this file's existing
-// isSuspended/streakExpiresAt lazy-expiry style.
-type rollingWindow struct {
-	bucketDuration time.Duration
-	buckets        []rollingBucket
-	cursor         int // index of the current (most recent) bucket
-}
-
-func newRollingWindow() *rollingWindow {
-	bucketDuration := circuitWindow / circuitBuckets
-	now := time.Now()
-	buckets := make([]rollingBucket, circuitBuckets)
-	for i := range buckets {
-		buckets[i].start = now
+// recoverAfterSuccesses is the configured close quorum, defaulted at the
+// point of use.
+func (p *Policy) recoverAfterSuccesses() int {
+	if p.params.RecoverAfterSuccesses <= 0 {
+		return defaultRecoverAfterSuccesses
 	}
-	return &rollingWindow{bucketDuration: bucketDuration, buckets: buckets}
-}
-
-// advance rotates the ring forward to the bucket "now" belongs in, clearing
-// every bucket it passes through so a bucket that aged out never carries
-// stale counts into the new window.
-func (w *rollingWindow) advance(now time.Time) {
-	elapsed := now.Sub(w.buckets[w.cursor].start)
-	if elapsed < w.bucketDuration {
-		return
-	}
-	steps := int(elapsed / w.bucketDuration)
-	if steps > len(w.buckets) {
-		steps = len(w.buckets) // never rotate more than one full lap
-	}
-	for i := 0; i < steps; i++ {
-		w.cursor = (w.cursor + 1) % len(w.buckets)
-		w.buckets[w.cursor] = rollingBucket{start: now}
-	}
-}
-
-func (w *rollingWindow) recordOutcome(now time.Time, failed bool) {
-	w.advance(now)
-	b := &w.buckets[w.cursor]
-	b.attempts++
-	if failed {
-		b.failures++
-	}
-}
-
-func (w *rollingWindow) recordLatency(now time.Time, latencyMs int) {
-	w.advance(now)
-	b := &w.buckets[w.cursor]
-	if len(b.latencies) < maxLatencySamplesPerBucket {
-		b.latencies = append(b.latencies, latencyMs)
-	}
-}
-
-// totals sums attempts/failures across every LIVE bucket. Callers that need
-// this to reflect "now" must call advance(now) first (recordOutcome already
-// does, on the same window, immediately before this is read).
-func (w *rollingWindow) totals() (attempts, failures int) {
-	for _, b := range w.buckets {
-		attempts += b.attempts
-		failures += b.failures
-	}
-	return attempts, failures
-}
-
-// latencyPercentile returns the given percentile across every LIVE bucket's
-// latency samples, and false while the window holds fewer than minSamples.
-// Callers that need this to reflect "now" must call advance(now) first
-// (recordLatency does).
-func (w *rollingWindow) latencyPercentile(percentile, minSamples int) (int, bool) {
-	var all []int
-	for _, b := range w.buckets {
-		all = append(all, b.latencies...)
-	}
-	if len(all) == 0 || len(all) < minSamples {
-		return 0, false
-	}
-	sort.Ints(all)
-	// Nearest-rank: the smallest sample with at least percentile% of samples
-	// at or below it.
-	idx := (percentile*len(all)+99)/100 - 1
-	if idx < 0 {
-		idx = 0
-	}
-	return all[idx], true
+	return p.params.RecoverAfterSuccesses
 }
 
 // sharedSuspensionRegistry maps an aggregate-cluster-derived key to the one
@@ -483,8 +361,6 @@ func newSuspensionState() *suspensionState {
 		failureCounts:    make(map[string]int),
 		suspensionStreak: make(map[string]int),
 		streakExpiresAt:  make(map[string]time.Time),
-		rateWindows:      make(map[string]*rollingWindow),
-		latencyWindows:   make(map[string]*rollingWindow),
 		probes:           make(map[string]*probeState),
 	}
 }
@@ -528,6 +404,24 @@ func GetPolicy(_ policy.PolicyMetadata, rawParams map[string]interface{}) (polic
 	return &Policy{params: params, susp: sharedSuspensionStateFor(params)}, nil
 }
 
+// inheritFallbackLocations fills each fallback authored without `provider:`
+// from its own chain's target, so an omitted provider means "same as the
+// entry above" rather than the primary provider. gateway-controller already
+// applies this before handing params over (its own inheritFallbackLocations);
+// repeating it here keeps the policy correct on raw, unexpanded params.
+func inheritFallbackLocations(targets []FailoverTargetEntry) {
+	for i := range targets {
+		entry := &targets[i]
+		for j := range entry.Fallbacks {
+			fb := &entry.Fallbacks[j]
+			if strings.TrimSpace(fb.Provider) != "" {
+				continue
+			}
+			fb.Provider = entry.Provider
+		}
+	}
+}
+
 func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 	var params ModelFailoverParams
 
@@ -550,6 +444,7 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 	if len(params.Targets) == 0 {
 		return params, fmt.Errorf("'targets' must have at least one entry")
 	}
+	inheritFallbackLocations(params.Targets)
 	if pp, ok := raw["primaryProvider"].(string); ok {
 		params.PrimaryProvider = pp
 	}
@@ -563,10 +458,13 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 	if params.SuspendAfterFailures, err = parseOptionalInt(raw, "suspendAfterFailures"); err != nil {
 		return params, err
 	}
-	if params.FailureRateThresholdPercent, err = parseOptionalInt(raw, "failureRateThresholdPercent"); err != nil {
+	if params.MaxSuspendMultiplier, err = parseOptionalInt(raw, "maxSuspendMultiplier"); err != nil {
 		return params, err
 	}
-	if params.LatencyThresholdMs, err = parseOptionalInt(raw, "latencyThresholdMs"); err != nil {
+	if params.RecoverAfterSuccesses, err = parseOptionalInt(raw, "recoverAfterSuccesses"); err != nil {
+		return params, err
+	}
+	if params.ProbeTimeout, err = parseOptionalInt(raw, "probeTimeout"); err != nil {
 		return params, err
 	}
 
@@ -764,15 +662,35 @@ func replacePathParam(rawPath, regexPattern, newValue string) string {
 	return updated
 }
 
+// wildcardModel as an entry's model makes that entry the catch-all chain for
+// any requested model no other entry names. As any member's model it means
+// "keep the client's requested model": the member is dialed without a model
+// rewrite, which is what region/backend failover for every model needs.
+const wildcardModel = "*"
+
 // findEntry returns the target entry whose own Model matches the requested
-// model, or nil.
+// model, else the wildcard entry, or nil. An exact match always wins over the
+// wildcard regardless of declaration order.
 func (p *Policy) findEntry(model string) *FailoverTargetEntry {
+	var wildcard *FailoverTargetEntry
 	for i := range p.params.Targets {
+		if p.params.Targets[i].Model == wildcardModel {
+			if wildcard == nil {
+				wildcard = &p.params.Targets[i]
+			}
+			continue
+		}
 		if strings.EqualFold(p.params.Targets[i].Model, model) {
 			return &p.params.Targets[i]
 		}
 	}
-	return nil
+	return wildcard
+}
+
+// rewritesModel reports whether dialing m must replace the client's requested
+// model with m's own. A wildcard member passes the client's model through.
+func rewritesModel(m FailoverTarget) bool {
+	return m.Model != "" && m.Model != wildcardModel
 }
 
 // suspensionKey matches model-round-robin's own key shape
@@ -780,17 +698,8 @@ func (p *Policy) findEntry(model string) *FailoverTargetEntry {
 // through GetPolicy — this policy instance is already route-scoped by
 // attachment, the same way model-round-robin's own instance is, so the key
 // only needs model+provider).
-// suspensionKey includes upstreamDefinition alongside model+provider: two
-// entry/fallback members can author the identical (model, provider) pair yet
-// dial genuinely different physical backends via a distinct
-// UpstreamDefinition (a named additionalProviders[].as/.id, or a hand-declared
-// upstreamDefinitions[].name — see FailoverTarget.UpstreamDefinition's doc
-// comment), and validation-time duplicate-member detection
-// (gateway-controller's canonicalMember) already keys on all three. A
-// model+provider-only key here would incorrectly pool two distinct physical
-// targets' health under one shared suspension entry.
-func suspensionKey(model, provider, upstreamDefinition string) string {
-	return model + "|" + provider + "|" + upstreamDefinition
+func suspensionKey(model, provider string) string {
+	return model + "|" + provider
 }
 
 // resolvedProvider returns the member's provider identity, defaulting an
@@ -828,7 +737,7 @@ func (p *Policy) requestModelIdentifier() string {
 // provider identity exactly the way every other member-identity decision in
 // this file does.
 func (p *Policy) keyFor(m FailoverTarget) string {
-	return suspensionKey(m.Model, p.resolvedProvider(m), m.UpstreamDefinition)
+	return suspensionKey(m.Model, p.resolvedProvider(m))
 }
 
 // isFailureStatus reports whether a response status counts as this target's
@@ -851,10 +760,10 @@ func (p *Policy) isFailureStatus(status int) bool {
 // isSuspended reports whether the circuit is OPEN or HALF_OPEN. Expiry does
 // not delete the entry: allowRequest must retain it while controlled probes
 // decide whether the target is healthy enough to close.
-func (p *Policy) isSuspended(model, provider, upstreamDefinition string) bool {
+func (p *Policy) isSuspended(model, provider string) bool {
 	p.susp.mu.Lock()
 	defer p.susp.mu.Unlock()
-	key := suspensionKey(model, provider, upstreamDefinition)
+	key := suspensionKey(model, provider)
 	_, ok := p.susp.suspended[key]
 	if !ok {
 		return false
@@ -862,18 +771,18 @@ func (p *Policy) isSuspended(model, provider, upstreamDefinition string) bool {
 	return true
 }
 
-// suspend immediately marks (model, provider, upstreamDefinition) suspended
+// suspend immediately marks (model, provider) suspended
 // for the base SuspendDuration, bypassing the SuspendAfterFailures threshold
 // and backoff streak entirely — a direct, unconditional primitive kept for
 // tests and for any future caller that wants "suspend this right now" without
 // going through recordOutcome's bookkeeping.
-func (p *Policy) suspend(model, provider, upstreamDefinition string) {
+func (p *Policy) suspend(model, provider string) {
 	if p.params.SuspendDuration <= 0 {
 		return
 	}
 	p.susp.mu.Lock()
 	defer p.susp.mu.Unlock()
-	p.susp.suspended[suspensionKey(model, provider, upstreamDefinition)] = time.Now().Add(time.Duration(p.params.SuspendDuration) * time.Second)
+	p.susp.suspended[suspensionKey(model, provider)] = time.Now().Add(time.Duration(p.params.SuspendDuration) * time.Second)
 }
 
 // allowRequest is the ROUTING decision for whether target may be dispatched
@@ -919,7 +828,7 @@ func (p *Policy) allowRequest(target FailoverTarget) bool {
 		p.susp.probes[key] = ps
 	}
 	now := time.Now()
-	if ps.inFlight && now.Sub(ps.grantedAt) < circuitProbeLease {
+	if ps.inFlight && now.Sub(ps.grantedAt) < p.probeLease() {
 		return false // a probe is already in flight — still treated as blocked
 	}
 	if ps.inFlight {
@@ -956,9 +865,9 @@ func (p *Policy) completeProbe(key string, failed bool, now time.Time) {
 	ps.inFlight = false
 	ps.grantedAt = time.Time{}
 	ps.successes++
-	if ps.successes < circuitProbeSuccessesToClose {
+	if required := p.recoverAfterSuccesses(); ps.successes < required {
 		circuitLogger().Info("model-failover half-open probe succeeded", "target", key,
-			"successes", ps.successes, "required", circuitProbeSuccessesToClose)
+			"successes", ps.successes, "required", required)
 		return
 	}
 	delete(p.susp.probes, key)
@@ -972,9 +881,8 @@ func (p *Policy) completeProbe(key string, failed bool, now time.Time) {
 // triggerSuspensionLocked applies the shared backoff-streak escalation
 // (identical to recordOutcome's original inline logic) to suspend key right
 // now — the common suspension primitive every trigger (consecutive-failure
-// count, rolling failure-rate, latency, a reopened half-open probe) funnels
-// through, so they all escalate backoff consistently rather than each
-// re-implementing their own window math. Caller must hold p.susp.mu. reason
+// count, a reopened half-open probe) funnels through, so they all escalate
+// backoff consistently. Caller must hold p.susp.mu. reason
 // is purely for observability (ECI #18469 finding #8) — it never affects
 // behavior.
 func (p *Policy) triggerSuspensionLocked(key string, now time.Time, reason string) {
@@ -988,57 +896,24 @@ func (p *Policy) triggerSuspensionLocked(key string, now time.Time, reason strin
 	base := time.Duration(p.params.SuspendDuration) * time.Second
 	p.susp.streakExpiresAt[key] = now.Add(duration + base)
 
-	// Judge the target afresh once it recovers: samples from before this
-	// suspension would otherwise re-trip the rate/latency rule on the very
-	// first attempt after it closes.
-	delete(p.susp.rateWindows, key)
-	delete(p.susp.latencyWindows, key)
-
 	circuitLogger().Warn("model-failover circuit suspended", "target", key, "reason", reason,
 		"streak", p.susp.suspensionStreak[key], "durationSeconds", duration.Seconds())
 }
 
-// rateWindowFor/latencyWindowFor lazily create the rolling window for key.
-// Caller must hold p.susp.mu.
-func (p *Policy) rateWindowFor(key string) *rollingWindow {
-	if w, ok := p.susp.rateWindows[key]; ok {
-		return w
-	}
-	w := newRollingWindow()
-	p.susp.rateWindows[key] = w
-	return w
-}
-
-func (p *Policy) latencyWindowFor(key string) *rollingWindow {
-	if w, ok := p.susp.latencyWindows[key]; ok {
-		return w
-	}
-	w := newRollingWindow()
-	p.susp.latencyWindows[key] = w
-	return w
-}
-
-// recordOutcome updates every configured circuit-breaking signal for one
-// attempt's outcome against target: the original consecutive-qualifying-
-// failure counter (SuspendAfterFailures), the rolling failure-rate rule
-// (FailureRateThresholdPercent), and the latency rule (LatencyThresholdMs)
-// — any one of them independently suspends the target via the shared
-// triggerSuspensionLocked escalation. hasLatency/latencyMs come from this
-// attempt's own OnRequestHeaders->OnResponseHeaders elapsed time (see
-// OnRequestHeaders' SharedContext stash); hasLatency is false when that stash
-// is unavailable (e.g. OnRequestHeaders never ran for this attempt).
+// recordOutcome updates the consecutive-qualifying-failure counter
+// (SuspendAfterFailures) for one attempt's outcome against target, suspending
+// it via triggerSuspensionLocked once the threshold is reached.
 //
 // A success (failed == false) resets the consecutive-failure counter and the
 // backoff streak — a target that recovers even once starts the next incident
-// fresh — but still feeds the rolling rate/latency windows: a rate rule needs
-// TOTAL attempts, not just failures, and a slow success is still slow.
+// fresh.
 //
 // If target is currently in a half-open recovery cycle (completeProbe would
 // find an active probes[] entry), this delegates to completeProbe instead of
-// the ordinary counters — failed probes reopen immediately, while the small
+// the ordinary counter — failed probes reopen immediately, while the small
 // successful-probe quorum closes the circuit regardless of
 // SuspendAfterFailures.
-func (p *Policy) recordOutcome(target FailoverTarget, failed bool, hasLatency bool, latencyMs int) {
+func (p *Policy) recordOutcome(target FailoverTarget, failed bool) {
 	if p.params.SuspendDuration <= 0 {
 		return // suspension disabled entirely; nothing to track
 	}
@@ -1057,12 +932,6 @@ func (p *Policy) recordOutcome(target FailoverTarget, failed bool, hasLatency bo
 	if p.susp.streakExpiresAt == nil {
 		p.susp.streakExpiresAt = map[string]time.Time{}
 	}
-	if p.susp.rateWindows == nil {
-		p.susp.rateWindows = map[string]*rollingWindow{}
-	}
-	if p.susp.latencyWindows == nil {
-		p.susp.latencyWindows = map[string]*rollingWindow{}
-	}
 	if p.susp.probes == nil {
 		p.susp.probes = map[string]*probeState{}
 	}
@@ -1078,64 +947,29 @@ func (p *Policy) recordOutcome(target FailoverTarget, failed bool, hasLatency bo
 		return
 	}
 
-	consecutiveBreached := false
 	if !failed {
 		delete(p.susp.failureCounts, key)
 		delete(p.susp.suspensionStreak, key)
 		delete(p.susp.streakExpiresAt, key)
-	} else {
-		threshold := p.params.SuspendAfterFailures
-		if threshold <= 0 {
-			threshold = 1
-		}
-		p.susp.failureCounts[key]++
-		if p.susp.failureCounts[key] >= threshold {
-			p.susp.failureCounts[key] = 0
-			consecutiveBreached = true
-		}
+		return
 	}
-
-	// Rolling failure-rate rule — additive to the consecutive-failure trigger
-	// above; either can independently suspend the target.
-	failureRateBreached := false
-	if p.params.FailureRateThresholdPercent > 0 {
-		w := p.rateWindowFor(key)
-		w.recordOutcome(now, failed)
-		attempts, failures := w.totals()
-		if attempts >= circuitMinimumSamples && failures*100/attempts >= p.params.FailureRateThresholdPercent {
-			failureRateBreached = true
-		}
+	threshold := p.params.SuspendAfterFailures
+	if threshold <= 0 {
+		threshold = 1
 	}
-
-	// Latency rule — every attempt (success or failure) has a latency, so
-	// this is tracked regardless of the failed/success branch above.
-	latencyBreached := false
-	if hasLatency && p.params.LatencyThresholdMs > 0 {
-		w := p.latencyWindowFor(key)
-		w.recordLatency(now, latencyMs)
-		if pct, ok := w.latencyPercentile(circuitLatencyPercentile, circuitMinimumSamples); ok && pct >= p.params.LatencyThresholdMs {
-			latencyBreached = true
-		}
-	}
-
-	// One attempt may breach several rules, but opening the circuit is one
-	// state transition and must advance backoff only once.
-	switch {
-	case consecutiveBreached:
+	p.susp.failureCounts[key]++
+	if p.susp.failureCounts[key] >= threshold {
+		p.susp.failureCounts[key] = 0
 		p.triggerSuspensionLocked(key, now, "consecutive_failures")
-	case failureRateBreached:
-		p.triggerSuspensionLocked(key, now, "failure_rate_threshold")
-	case latencyBreached:
-		p.triggerSuspensionLocked(key, now, "latency_threshold")
 	}
 }
 
 // backoffDuration computes the suspend window for the nth consecutive
 // suspend-then-immediately-refail cycle of the same target (streak == 1 is
 // the first cycle, i.e. exactly the base SuspendDuration). Each further
-// cycle doubles the window, capped at circuitMaxSuspendMultiplier times the
-// base so a chronically broken target's window grows but
-// never runs away unbounded.
+// cycle doubles the window, capped at MaxSuspendMultiplier times the base
+// (defaultMaxSuspendMultiplier when unset) so a chronically broken target's
+// window grows but never runs away unbounded.
 func (p *Policy) backoffDuration(streak int) time.Duration {
 	base := time.Duration(p.params.SuspendDuration) * time.Second
 	if streak < 1 {
@@ -1147,7 +981,11 @@ func (p *Policy) backoffDuration(streak int) time.Duration {
 	}
 	duration := base * time.Duration(int64(1)<<uint(shift))
 
-	cap := base * circuitMaxSuspendMultiplier
+	multiplier := p.params.MaxSuspendMultiplier
+	if multiplier <= 0 {
+		multiplier = defaultMaxSuspendMultiplier
+	}
+	cap := base * time.Duration(multiplier)
 	if duration > cap {
 		duration = cap
 	}
@@ -1290,7 +1128,7 @@ func (p *Policy) onUpstreamAttemptRequestBody(reqCtx *policy.RequestContext) pol
 		return policy.UpstreamRequestModifications{}
 	}
 	member := match.member
-	if member.Model == "" || reqCtx.Body == nil || !reqCtx.Body.Present || len(reqCtx.Body.Content) == 0 {
+	if !rewritesModel(*member) || reqCtx.Body == nil || !reqCtx.Body.Present || len(reqCtx.Body.Content) == 0 {
 		return policy.UpstreamRequestModifications{}
 	}
 
@@ -1549,9 +1387,13 @@ func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeade
 	if reqCtx.SharedContext.Metadata == nil {
 		reqCtx.SharedContext.Metadata = map[string]interface{}{}
 	}
-	reqCtx.SharedContext.Metadata[selectedModelMetadataKey] = member.Model
+	// A wildcard member keeps the client's model, which this header phase
+	// can't see for a payload-located model, so it seeds no selected_model
+	// rather than the literal "*".
+	if rewritesModel(*member) {
+		reqCtx.SharedContext.Metadata[selectedModelMetadataKey] = member.Model
+	}
 	reqCtx.SharedContext.Metadata[selectedProviderMetadataKey] = p.resolvedProvider(*member)
-	reqCtx.SharedContext.Metadata[attemptStartMetadataKey] = time.Now()
 
 	// The kernel resolves an attempt's backend by xds.cluster_name, which for
 	// an aggregate-routed attempt is the aggregate's own name and therefore
@@ -1590,7 +1432,7 @@ func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeade
 	// attempt.
 	mods := policy.UpstreamRequestHeaderModifications{}
 	changed := false
-	if member.Model != "" {
+	if rewritesModel(*member) {
 		switch p.requestModelLocation() {
 		case requestModelLocationHeader:
 			current := ""
@@ -1646,9 +1488,8 @@ func withQueryFrom(stalePath, newPath string) string {
 // composite-cluster selection has no host-health awareness of its own — see
 // the outlier-detection investigation this design's history records — so
 // there is no second, Envoy-native mechanism to fall back on). A qualifying
-// failure counts toward SuspendAfterFailures/the rolling failure-rate/latency
-// rules and, once any of them trips, suspends the target for a
-// backoff-computed window; a non-qualifying response resets the
+// failure counts toward SuspendAfterFailures and, once it trips, suspends the
+// target for a backoff-computed window; a non-qualifying response resets the
 // consecutive-failure bookkeeping instead (see recordOutcome).
 //
 // KNOWN LIMITATION (ECI #18469 finding #3): this is the ONLY place an outcome
@@ -1677,14 +1518,7 @@ func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHe
 	}
 	member, index := match.member, match.index
 
-	hasLatency, latencyMs := false, 0
-	if respCtx.SharedContext != nil && respCtx.SharedContext.Metadata != nil {
-		if startedAt, ok := respCtx.SharedContext.Metadata[attemptStartMetadataKey].(time.Time); ok {
-			hasLatency = true
-			latencyMs = int(time.Since(startedAt).Milliseconds())
-		}
-	}
-	p.recordOutcome(*member, p.isFailureStatus(int(respCtx.ResponseStatus)), hasLatency, latencyMs)
+	p.recordOutcome(*member, p.isFailureStatus(int(respCtx.ResponseStatus)))
 
 	mods := policy.DownstreamResponseHeaderModifications{
 		// Record the selected target for every completed response, including
@@ -1692,9 +1526,13 @@ func (p *Policy) OnResponseHeaders(_ context.Context, respCtx *policy.ResponseHe
 		// internal routing header to clients on the normal primary path.
 		AnalyticsMetadata: map[string]any{
 			"model_failover_chain_position": index,
-			"model_failover_resolved_model": member.Model,
 			"model_failover_provider":       p.resolvedProvider(*member),
 		},
+	}
+	// A wildcard member served the client's own model, which analytics
+	// already records; "*" is not a model name.
+	if rewritesModel(*member) {
+		mods.AnalyticsMetadata["model_failover_resolved_model"] = member.Model
 	}
 	if index > 1 {
 		mods.HeadersToSet = map[string]string{ResolvedFailoverProviderHeader: p.resolvedProvider(*member)}

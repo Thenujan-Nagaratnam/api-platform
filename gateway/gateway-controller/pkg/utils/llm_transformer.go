@@ -38,10 +38,9 @@ type llmPolicyAttachment struct {
 	policy    api.OperationPolicy
 	pathEntry api.OperationPolicyPath
 	// upstream marks an attachment the policy engine runs in the
-	// upstream-attempt phase instead of the downstream one — either an author
-	// set operationPolicies:'s own upstream: true on this entry, or (model-
-	// failover's synthesized attachments only) it was appended via the
-	// second, controller-only upstreamPolicies parameter to
+	// upstream-attempt phase instead of the downstream one. Only
+	// model-failover's synthesized attachments set it, via the second,
+	// controller-only upstreamPolicies parameter to
 	// orderedLLMPolicyAttachments.
 	upstream bool
 }
@@ -278,153 +277,130 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 		}
 	}
 
-	// Step 3.4b: determine, before building any downstream provider-scoped
-	// policy, which providers a model-failover chain references (if one is
-	// attached at all). Moved ahead of Step 3.5 so it can be consulted there:
-	// a provider a failover chain references must NOT also get a downstream
-	// attachment (see Step 3.5's skip below for why).
-	//
-	// upstreamPolicies has no author-facing schema field any more — there is
-	// no operator-facing upstream-attempt attachment point — so it starts
-	// empty and is populated purely by Step 3.6's synthesis below.
+	// Step 3.4b: collect the operation-level policies and the model-failover
+	// attachment (if any). There is no author-facing upstream-attempt
+	// attachment point on operation policies, so upstreamPolicies starts empty
+	// and only ever carries model-failover's synthesized upstream copy.
 	opLevelPolicies := collectOperationLevelLLMPolicies(proxy.Spec.OperationPolicies, proxy.Spec.Policies)
 	var upstreamPolicies []api.OperationPolicy
 	modelFailoverAttachments := operationPoliciesNamed(opLevelPolicies, modelFailoverPolicyName)
-	var failoverReferencedProviders []string
-	failoverReferencedProviderSet := map[string]bool{}
 	if len(modelFailoverAttachments) > 0 {
-		var err error
-		failoverReferencedProviders, err = modelFailoverReferencedProviders(modelFailoverAttachments, proxy.Spec.Provider.Id)
-		if err != nil {
+		// Validates that every chain member names a provider of this proxy.
+		if _, err := modelFailoverReferencedProviders(modelFailoverAttachments, proxy.Spec.Provider.Id); err != nil {
 			return nil, fmt.Errorf("%s: %w", modelFailoverPolicyName, err)
-		}
-		for _, id := range failoverReferencedProviders {
-			failoverReferencedProviderSet[id] = true
 		}
 	}
 
-	// Step 3.5: Apply proxy-level provider auth for proxy->provider loopback upstream
-	// and inline translators declared per additional provider. Both are attached as
-	// conditional policies so they run only when their provider is selected downstream
-	// (the model-round-robin/single-provider path - ExecutionCondition is never
-	// evaluated for the upstream-attempt phase, see below) — EXCEPT for a provider a
-	// model-failover chain references: that provider gets ONLY the upstream-attempt
-	// instance Step 3.6 synthesizes (see the skip below for why).
-	var upstreamAuthPolicies []api.Policy
-	var transformerPolicies []api.Policy
-	// providerAuthPolicyByID/providerTransformerPolicyByID capture the built
-	// provider-scoped policies by provider identity, so Step 3.6 can re-attach
-	// the exact same content as an upstream-attempt instance instead of
-	// constructing it a second, divergent way. Populated unconditionally — even
-	// for a provider skipped below — since Step 3.6 always needs the content.
-	providerAuthPolicyByID := map[string]api.Policy{}
-	providerTransformerPolicyByID := map[string]api.Policy{}
+	// Each provider's transformer and auth are part of that provider's
+	// upstream policies: they run in the upstream-attempt phase, gated on the
+	// provider, after the author's own entries. That needs the upstream phase
+	// to know which provider an attempt is for. model-failover's upstream copy
+	// seeds selected_provider on every attempt; a single-provider proxy needs
+	// no seed (the primary gate matches when nothing is selected). A
+	// multi-provider proxy without model-failover routes downstream and the
+	// upstream phase starts with empty metadata, so there the transformer and
+	// auth stay downstream, gated on the downstream selection — moving them
+	// would apply the primary's credential to every provider's attempts.
+	hasAdditionalProviders := proxy.Spec.AdditionalProviders != nil && len(*proxy.Spec.AdditionalProviders) > 0
+	providerIdentifiableUpstream := len(modelFailoverAttachments) > 0 || !hasAdditionalProviders
+
+	// Step 3.5: build each provider's auth and transformer policy.
+	type proxyProvider struct {
+		name        string
+		isPrimary   bool
+		policies    *[]api.Policy
+		transformer *api.Policy
+		auth        *api.Policy
+	}
+	providers := []proxyProvider{{name: proxy.Spec.Provider.Id, isPrimary: true, policies: proxy.Spec.Provider.Policies}}
 	if proxy.Spec.Provider.Auth != nil {
 		pol, err := t.proxyUpstreamAuthPolicy(proxy.Spec.Provider.Auth, apiKeyAuthValuePrefix(providerConfig.Spec.GlobalPolicies), proxy.Spec.Provider.Id, "provider.auth")
 		if err != nil {
 			return nil, err
 		}
 		// "other"/"none" auth yield no policy - nothing to attach.
-		if pol != nil {
-			condition := selectedProviderExecutionCondition(proxy.Spec.Provider.Id, true)
-			pol.ExecutionCondition = &condition
-			providerAuthPolicyByID[proxy.Spec.Provider.Id] = *pol
-			// A provider a model-failover chain references gets its credential
-			// attached ONLY via Step 3.6's upstream-attempt instance, which
-			// already covers every attempt including the first (Envoy's
-			// upstream ext_proc phase runs on attempt 1 too, not just
-			// retries). Attaching it here as well would inject it
-			// unconditionally, before model-failover's own routing decision
-			// even runs — and if a later attempt resolves to a DIFFERENT
-			// provider whose credential uses a different header name, nothing
-			// removes this one: it would leak alongside the correct one.
-			if !failoverReferencedProviderSet[proxy.Spec.Provider.Id] {
-				upstreamAuthPolicies = append(upstreamAuthPolicies, *pol)
-			}
-		}
+		providers[0].auth = pol
 	}
-	if proxy.Spec.AdditionalProviders != nil {
+	if hasAdditionalProviders {
 		for _, ap := range *proxy.Spec.AdditionalProviders {
 			name := ap.Id
 			if ap.As != nil && *ap.As != "" {
 				name = *ap.As
 			}
-
+			p := proxyProvider{name: name, policies: ap.Policies}
 			if ap.Auth != nil {
 				pol, err := t.proxyUpstreamAuthPolicy(ap.Auth, additionalValuePrefixByID[ap.Id], name, fmt.Sprintf("additionalProviders[%s].auth", name))
 				if err != nil {
 					return nil, err
 				}
-				// "other"/"none" auth yield no policy - nothing to attach.
-				if pol != nil {
-					condition := selectedProviderExecutionCondition(name, false)
-					pol.ExecutionCondition = &condition
-					providerAuthPolicyByID[name] = *pol
-					// See the primary-provider skip above for why.
-					if !failoverReferencedProviderSet[name] {
-						upstreamAuthPolicies = append(upstreamAuthPolicies, *pol)
-					}
-				}
+				p.auth = pol
 			}
-
 			if ap.Transformer != nil {
 				pol, err := t.proxyTransformerPolicy(ap.Transformer, name, fmt.Sprintf("additionalProviders[%s].transformer", name))
 				if err != nil {
 					return nil, err
 				}
-				providerTransformerPolicyByID[name] = *pol
-				if !failoverReferencedProviderSet[name] {
-					transformerPolicies = append(transformerPolicies, *pol)
-				}
+				p.transformer = pol
 			}
+			providers = append(providers, p)
 		}
 	}
 
-	// Step 3.6: model-failover policy attachments. A model-failover entry under
-	// operationPolicies: is the one and only way a proxy declares failover
-	// chains. When one is present the controller synthesizes two further
-	// attachments:
-	//
-	//  a) a second, unconditioned instance of model-failover itself, carrying
-	//     the exact same params — it is what resolves each attempt's chain
-	//     position and seeds selected_provider/selected_model into the shared
-	//     request metadata during the upstream-attempt phase. There is no
-	//     author-facing upstreamPolicies: field for an author to have already
-	//     written this instance themselves, so it is always appended fresh.
-	//  b) one upstream-attempt instance of every provider-scoped
-	//     credential/transform policy, per provider the chain references, each
-	//     gated by the same selectedProviderExecutionCondition CEL expression
-	//     that already gates its downstream counterpart — except a referenced
-	//     provider now has NO downstream counterpart (Step 3.5 skipped it), so
-	//     this is that provider's ONLY credential/transform attachment on this
-	//     route. The policies themselves need no code changes — only the
-	//     attachment point and the condition differ (design doc §8).
-	//
-	// (a) is appended to upstreamPolicies below, so it flows through the
-	// ordinary Phase 2 attachment loop and therefore lands ahead of every
-	// provider-scoped attachment appended in Phase 3 — the ordering the metadata
-	// hand-off requires (design doc §9).
-	//
-	// opLevelPolicies/upstreamPolicies/modelFailoverAttachments/
-	// failoverReferencedProviders were all resolved in Step 3.4b above, before
-	// Step 3.5 needed to consult failoverReferencedProviderSet.
-	var modelFailoverProviderPolicies []api.Policy
+	// Step 3.6: model-failover. A model-failover entry under operationPolicies
+	// is the one way a proxy declares failover chains. The controller adds a
+	// second, unconditioned upstream instance of it with the same params: it
+	// resolves each attempt's chain position and seeds
+	// selected_provider/selected_model for the provider gates below. It flows
+	// through the Phase 2 attachment loop, so it lands ahead of every
+	// provider's upstream policies (Phase 3).
 	if len(modelFailoverAttachments) > 0 {
 		upstreamPolicies = append(upstreamPolicies, modelFailoverAttachments...)
+	}
 
-		for _, providerID := range failoverReferencedProviders {
-			condition := selectedProviderExecutionCondition(providerID, false)
-			// Translators must run before upstream auth so the request is
-			// rewritten into the selected provider's shape before its key is
-			// added — the same order Phase 3 applies downstream.
-			for _, base := range providerScopedPoliciesFor(providerID, providerTransformerPolicyByID, providerAuthPolicyByID) {
-				instance := base
-				instance.Params = copyPolicyParams(base.Params)
-				instance.Upstream = upstreamFlag(true)
-				instance.ExecutionCondition = &condition
-				modelFailoverProviderPolicies = append(modelFailoverProviderPolicies, instance)
+	// Step 3.7: each provider's upstream policies. Per provider, in order: the
+	// author's provider.policies / additionalProviders[].policies, then the
+	// transformer (so the request is in the provider's shape before its key is
+	// added), then auth (last, so no upstream policy sees the key). Every entry
+	// is gated on the provider, so per attempt only the selected provider's
+	// list runs: model-failover -> provider policies -> transformer -> auth.
+	var providerUpstreamPolicies []api.Policy
+	// Downstream fallback only (see providerIdentifiableUpstream): every
+	// transformer runs before any auth, so the request is rewritten into the
+	// selected provider's shape before its key is added.
+	var transformerPolicies, upstreamAuthPolicies []api.Policy
+	for _, p := range providers {
+		list := []api.Policy{}
+		if p.policies != nil {
+			list = append(list, *p.policies...)
+		}
+		if providerIdentifiableUpstream {
+			// providerUpstreamPolicyInstances adds the provider gate; drop the
+			// one proxyTransformerPolicy already set so it is not doubled.
+			if p.transformer != nil {
+				pol := *p.transformer
+				pol.ExecutionCondition = nil
+				list = append(list, pol)
+			}
+			if p.auth != nil {
+				pol := *p.auth
+				pol.ExecutionCondition = nil
+				list = append(list, pol)
+			}
+		} else {
+			condition := selectedProviderExecutionCondition(p.name, p.isPrimary)
+			if p.transformer != nil {
+				pol := *p.transformer
+				pol.ExecutionCondition = &condition
+				transformerPolicies = append(transformerPolicies, pol)
+			}
+			if p.auth != nil {
+				pol := *p.auth
+				pol.ExecutionCondition = &condition
+				upstreamAuthPolicies = append(upstreamAuthPolicies, pol)
 			}
 		}
+		providerUpstreamPolicies = append(providerUpstreamPolicies,
+			providerUpstreamPolicyInstances(&list, p.name, p.isPrimary)...)
 	}
 
 	// Step 4: Build operations (AllowAll mode without exceptions)
@@ -516,16 +492,13 @@ func (t *LLMProviderTransformer) transformProxy(proxy *api.LLMProxyConfiguration
 			}
 		}
 	}
-	// The provider-scoped upstream-attempt instances the model-failover
-	// attachment synthesized (Step 3.6b). Appended after the downstream
-	// attachments above and after Phase 2 — which already emitted
-	// model-failover's own upstream instance — so the metadata that instance
-	// seeds exists before any of these conditions is evaluated.
-	if len(modelFailoverProviderPolicies) > 0 {
-		for i := range ops {
-			for _, modelFailoverProviderPolicy := range modelFailoverProviderPolicies {
-				appendOperationPolicy(&ops[i], modelFailoverProviderPolicy)
-			}
+	// Each provider's upstream policies (Step 3.7). Appended after Phase 2,
+	// which already emitted model-failover's own upstream instance, so the
+	// metadata that instance seeds exists before any provider gate is
+	// evaluated.
+	for i := range ops {
+		for _, providerUpstreamPolicy := range providerUpstreamPolicies {
+			appendOperationPolicy(&ops[i], providerUpstreamPolicy)
 		}
 	}
 	// Phase 4: Attach loopback marker policy to all operations so the gateway can identify
@@ -592,6 +565,9 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 			Url: provider.Spec.Upstream.Url,
 		}
 	}
+	// upstream.policies: carried onto the derived RestApi's main upstream, where
+	// the RestApi transform attaches them as upstream-phase instances.
+	spec.Upstream.Main.Policies = provider.Spec.Upstream.Policies
 	spec.UpstreamDefinitions = provider.Spec.UpstreamDefinitions
 	if provider.Spec.Vhost != nil {
 		spec.Vhosts = &struct {
@@ -915,16 +891,16 @@ func (t *LLMProviderTransformer) transformProvider(provider *api.LLMProviderConf
 	}
 
 	ops = sortOperationsBySpecificity(ops)
+	// Upstream auth is part of the upstream's policies: appended after the
+	// author's upstream.policies so it runs last in the upstream-attempt
+	// phase, once per attempt, and no upstream policy sees the key.
 	if upstreamAuthPolicy != nil {
-		for i := range ops {
-			if ops[i].Policies == nil {
-				ops[i].Policies = &[]api.Policy{*upstreamAuthPolicy}
-			} else {
-				existing := *ops[i].Policies
-				existing = append(existing, *upstreamAuthPolicy)
-				ops[i].Policies = &existing
-			}
+		mainPolicies := []api.Policy{}
+		if spec.Upstream.Main.Policies != nil {
+			mainPolicies = append(mainPolicies, *spec.Upstream.Main.Policies...)
 		}
+		mainPolicies = append(mainPolicies, *upstreamAuthPolicy)
+		spec.Upstream.Main.Policies = &mainPolicies
 	}
 	// Attach API-level resilience to every traffic-forwarding route, skipping the deny routes.
 	applyResilienceToTrafficRoutes(ops, provider.Spec.Resilience, denyOpKeys)
@@ -1124,6 +1100,31 @@ func (t *LLMProviderTransformer) proxyTransformerPolicy(transformer *api.LLMProx
 	}, nil
 }
 
+// providerUpstreamPolicyInstances turns one LlmProxy provider's policies into
+// upstream-attempt instances gated to that provider. isPrimary also matches an
+// attempt with no selected_provider (no model-failover on the route), the same
+// default the primary's auth uses. An author's own executionCondition is
+// ANDed with the provider gate.
+func providerUpstreamPolicyInstances(policies *[]api.Policy, providerName string, isPrimary bool) []api.Policy {
+	if policies == nil {
+		return nil
+	}
+	gate := selectedProviderExecutionCondition(providerName, isPrimary)
+	out := make([]api.Policy, 0, len(*policies))
+	for _, p := range *policies {
+		instance := p
+		instance.Params = copyPolicyParams(p.Params)
+		instance.Upstream = upstreamFlag(true)
+		condition := gate
+		if p.ExecutionCondition != nil && strings.TrimSpace(*p.ExecutionCondition) != "" {
+			condition = fmt.Sprintf("(%s) && (%s)", gate, *p.ExecutionCondition)
+		}
+		instance.ExecutionCondition = &condition
+		out = append(out, instance)
+	}
+	return out
+}
+
 // operationPoliciesNamed returns every attachment of the named policy, in
 // declaration order.
 func operationPoliciesNamed(policies []api.OperationPolicy, name string) []api.OperationPolicy {
@@ -1132,21 +1133,6 @@ func operationPoliciesNamed(policies []api.OperationPolicy, name string) []api.O
 		if p.Name == name {
 			out = append(out, p)
 		}
-	}
-	return out
-}
-
-// providerScopedPoliciesFor returns the provider-scoped policies attached for
-// providerID, translator first and credential second — the same relative order
-// the downstream Phase 3 attachment applies, so the request is rewritten into
-// the selected provider's shape before its key is added.
-func providerScopedPoliciesFor(providerID string, transformers, auths map[string]api.Policy) []api.Policy {
-	var out []api.Policy
-	if pol, ok := transformers[providerID]; ok {
-		out = append(out, pol)
-	}
-	if pol, ok := auths[providerID]; ok {
-		out = append(out, pol)
 	}
 	return out
 }
@@ -1404,15 +1390,11 @@ func collectOperationLevelLLMPolicies(operationPolicies *[]api.OperationPolicy, 
 
 func orderedLLMPolicyAttachments(policies, upstreamPolicies []api.OperationPolicy) []llmPolicyAttachment {
 	attachments := make([]llmPolicyAttachment, 0)
+	// Authored operation policies always run downstream; upstream-attempt
+	// policies are authored only under an upstream's own policies list.
 	for _, llmPol := range policies {
-		// An author can mark an operationPolicies: entry upstream: true
-		// directly (OperationPolicy.Upstream) — the same per-attempt
-		// execution mechanism model-failover's own synthesis uses, now also
-		// available hand-authored and path/method-scoped, mirroring what
-		// globalPolicies:'s Policy.Upstream already allowed API-wide.
-		authoredUpstream := llmPol.Upstream != nil && *llmPol.Upstream
 		for _, pathEntry := range llmPol.Paths {
-			attachments = append(attachments, llmPolicyAttachment{policy: llmPol, pathEntry: pathEntry, upstream: authoredUpstream})
+			attachments = append(attachments, llmPolicyAttachment{policy: llmPol, pathEntry: pathEntry})
 		}
 	}
 	for _, llmPol := range upstreamPolicies {

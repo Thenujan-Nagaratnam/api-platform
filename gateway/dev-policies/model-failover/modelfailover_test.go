@@ -95,7 +95,7 @@ func TestOnRequestBody_SuspendedPrimaryBypassesToOnlyFallbacksSuffix(t *testing.
 			}},
 		},
 		susp: &suspensionState{suspended: map[string]time.Time{
-			suspensionKey("gpt-4o", "", ""): time.Now().Add(time.Hour),
+			suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour),
 		}},
 	}
 	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
@@ -120,7 +120,7 @@ func TestOnRequestBody_SuspendedPrimaryBypassesToSameProviderFallbackSuffix(t *t
 				AggregateCluster: "failover_agg_chat_0",
 			}},
 		},
-		susp: &suspensionState{suspended: map[string]time.Time{suspensionKey("gpt-4o", "", ""): time.Now().Add(time.Hour)}},
+		susp: &suspensionState{suspended: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)}},
 	}
 	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
@@ -141,7 +141,7 @@ func TestOnRequestBody_FallbackWithoutSuffixClusterCountsAsBlocked(t *testing.T)
 				AggregateCluster: "failover_agg_chat_0",
 			}},
 		},
-		susp: &suspensionState{suspended: map[string]time.Time{suspensionKey("gpt-4o", "", ""): time.Now().Add(time.Hour)}},
+		susp: &suspensionState{suspended: map[string]time.Time{suspensionKey("gpt-4o", ""): time.Now().Add(time.Hour)}},
 	}
 	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 
@@ -211,11 +211,11 @@ func TestSuspension_ConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		wg.Add(2)
-		go func() { defer wg.Done(); p.suspend("gpt-4o", "", "") }()
-		go func() { defer wg.Done(); _ = p.isSuspended("gpt-4o", "", "") }()
+		go func() { defer wg.Done(); p.suspend("gpt-4o", "") }()
+		go func() { defer wg.Done(); _ = p.isSuspended("gpt-4o", "") }()
 	}
 	wg.Wait()
-	assert.True(t, p.isSuspended("gpt-4o", "", ""))
+	assert.True(t, p.isSuspended("gpt-4o", ""))
 }
 
 // ─── Upstream-attempt member resolution (host-metadata based) ───────────────
@@ -315,7 +315,7 @@ func TestOnResponseHeaders_RecordsSuspensionOn5xx(t *testing.T) {
 	require.True(t, ok)
 	assert.Empty(t, mods.HeadersToSet, "primary attempt sets no client-visible resolved-provider header")
 	assert.Equal(t, 1, mods.AnalyticsMetadata["model_failover_chain_position"])
-	assert.True(t, p.isSuspended("gpt-4o", "", ""))
+	assert.True(t, p.isSuspended("gpt-4o", ""))
 }
 
 func TestOnResponseHeaders_FallbackMemberSetsResolvedProviderHeader(t *testing.T) {
@@ -331,7 +331,7 @@ func TestOnResponseHeaders_FallbackMemberSetsResolvedProviderHeader(t *testing.T
 	mods, ok := action.(policy.DownstreamResponseHeaderModifications)
 	require.True(t, ok)
 	assert.Equal(t, "anthropic-upstream", mods.HeadersToSet[ResolvedFailoverProviderHeader])
-	assert.False(t, p.isSuspended("claude-sonnet-4-5-20250929", "anthropic-upstream", ""))
+	assert.False(t, p.isSuspended("claude-sonnet-4-5-20250929", "anthropic-upstream"))
 }
 
 func TestOnResponseHeaders_UnknownClusterIsNoop(t *testing.T) {
@@ -343,7 +343,7 @@ func TestOnResponseHeaders_UnknownClusterIsNoop(t *testing.T) {
 	}
 
 	assert.Nil(t, p.OnResponseHeaders(context.Background(), respCtx, nil))
-	assert.False(t, p.isSuspended("gpt-4o", "", ""))
+	assert.False(t, p.isSuspended("gpt-4o", ""))
 }
 
 func primaryResolvingPolicy() *Policy {
@@ -377,8 +377,8 @@ func TestOnResponseHeaders_5xxSuspendsUnderResolvedKeyAndDownstreamSeesIt(t *tes
 	}
 	p.OnResponseHeaders(context.Background(), respCtx, nil)
 
-	assert.True(t, p.isSuspended("gpt-4o", "openai-primary", ""))
-	assert.False(t, p.isSuspended("gpt-4o", "", ""), "must not be recorded under the empty key")
+	assert.True(t, p.isSuspended("gpt-4o", "openai-primary"))
+	assert.False(t, p.isSuspended("gpt-4o", ""), "must not be recorded under the empty key")
 
 	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 	mods, ok := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
@@ -410,7 +410,7 @@ func threeMemberChainPolicy() *Policy {
 
 func TestOnRequestBody_SuspendedPrimaryBypassesToFirstFallbacksSuffix(t *testing.T) {
 	p := threeMemberChainPolicy()
-	p.susp.suspended[suspensionKey("gpt-4o", "", "")] = time.Now().Add(time.Hour)
+	p.susp.suspended[suspensionKey("gpt-4o", "")] = time.Now().Add(time.Hour)
 
 	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 	mods, ok := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
@@ -423,8 +423,8 @@ func TestOnRequestBody_SuspendedPrimaryBypassesToFirstFallbacksSuffix(t *testing
 
 func TestOnRequestBody_TwoSuspendedMembersBypassesToLastMembersOwnSuffix(t *testing.T) {
 	p := threeMemberChainPolicy()
-	p.susp.suspended[suspensionKey("gpt-4o", "", "")] = time.Now().Add(time.Hour)
-	p.susp.suspended[suspensionKey("gpt-4o-mini", "", "")] = time.Now().Add(time.Hour)
+	p.susp.suspended[suspensionKey("gpt-4o", "")] = time.Now().Add(time.Hour)
+	p.susp.suspended[suspensionKey("gpt-4o-mini", "")] = time.Now().Add(time.Hour)
 
 	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
 	mods, ok := p.OnRequestBody(context.Background(), reqCtx, nil).(policy.UpstreamRequestModifications)
@@ -446,7 +446,7 @@ func TestOnResponseHeaders_4xxDoesNotSuspend(t *testing.T) {
 
 	p.OnResponseHeaders(context.Background(), respCtx, nil)
 
-	assert.False(t, p.isSuspended("gpt-4o", "", ""), "a 4xx is the client's problem, not a failing target")
+	assert.False(t, p.isSuspended("gpt-4o", ""), "a 4xx is the client's problem, not a failing target")
 }
 
 func TestOnResponseHeaders_ZeroSuspendDurationDoesNotSuspend(t *testing.T) {
@@ -460,7 +460,7 @@ func TestOnResponseHeaders_ZeroSuspendDurationDoesNotSuspend(t *testing.T) {
 
 	p.OnResponseHeaders(context.Background(), respCtx, nil)
 
-	assert.False(t, p.isSuspended("gpt-4o", "", ""), "suspendDuration 0 disables suspension entirely")
+	assert.False(t, p.isSuspended("gpt-4o", ""), "suspendDuration 0 disables suspension entirely")
 }
 
 // ─── Per-attempt :path correction ────────────────────────────────────────────
@@ -748,7 +748,7 @@ func TestOnResponseHeaders_BypassClusterSuspendsAndAttributes(t *testing.T) {
 
 	action := p.OnResponseHeaders(context.Background(), respCtx, nil)
 
-	assert.True(t, p.isSuspended("claude-sonnet-4-5-20250929", "anthropic-upstream", ""))
+	assert.True(t, p.isSuspended("claude-sonnet-4-5-20250929", "anthropic-upstream"))
 	mods, ok := action.(policy.DownstreamResponseHeaderModifications)
 	require.True(t, ok, "a bypass dispatch IS an escalation past the primary")
 	assert.Equal(t, "anthropic-upstream", mods.HeadersToSet[ResolvedFailoverProviderHeader])
@@ -917,7 +917,7 @@ func TestOnResponseHeaders_ConfiguredStatusCodeSuspendsANonDefault4xx(t *testing
 
 	p.OnResponseHeaders(context.Background(), respCtx, nil)
 
-	assert.True(t, p.isSuspended("gpt-4o", "", ""), "429 is configured as a failure status for this chain")
+	assert.True(t, p.isSuspended("gpt-4o", ""), "429 is configured as a failure status for this chain")
 }
 
 func TestOnResponseHeaders_ConfiguredStatusCodesExcludeDefault5xx(t *testing.T) {
@@ -931,32 +931,7 @@ func TestOnResponseHeaders_ConfiguredStatusCodesExcludeDefault5xx(t *testing.T) 
 
 	p.OnResponseHeaders(context.Background(), respCtx, nil)
 
-	assert.False(t, p.isSuspended("gpt-4o", "", ""), "500 was replaced out of the trigger set by an explicit statusCodes list")
-}
-
-// ─── UpstreamDefinition (author-facing dial-target override) ────────────────
-
-func TestParseParams_CarriesUpstreamDefinition(t *testing.T) {
-	params, err := parseParams(map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{
-				"model": "gpt-4o",
-				"fallbacks": []interface{}{
-					map[string]interface{}{
-						"model":              "claude",
-						"provider":           "anthropic-upstream",
-						"upstreamDefinition": "anthropic-eu-west",
-					},
-				},
-			},
-		},
-	})
-
-	require.NoError(t, err)
-	assert.Equal(t, "anthropic-eu-west", params.Targets[0].Fallbacks[0].UpstreamDefinition)
-	// Provider stays the credential/transform identity, independent of which
-	// physical upstream was named — the whole point of the split.
-	assert.Equal(t, "anthropic-upstream", params.Targets[0].Fallbacks[0].Provider)
+	assert.False(t, p.isSuspended("gpt-4o", ""), "500 was replaced out of the trigger set by an explicit statusCodes list")
 }
 
 // ─── Suspension state shared across GetPolicy() calls for the same chain ────
@@ -1000,10 +975,10 @@ func TestGetPolicy_SharesSuspensionStateAcrossInstancesOfTheSameChain(t *testing
 
 	// The upstream instance records a suspension (as OnResponseHeaders would
 	// on a 5xx)...
-	upstreamPolicy.suspend("gpt-4o", "", "")
+	upstreamPolicy.suspend("gpt-4o", "")
 
 	// ...and the DOWNSTREAM instance — a different Go object — must see it.
-	assert.True(t, downstreamPolicy.isSuspended("gpt-4o", "", ""),
+	assert.True(t, downstreamPolicy.isSuspended("gpt-4o", ""),
 		"suspension recorded by one *Policy instance of a chain must be visible to another instance of the SAME chain")
 }
 
@@ -1024,9 +999,9 @@ func TestGetPolicy_NoAggregateClusterMeansPrivateUnsharedState(t *testing.T) {
 
 	aPolicy, bPolicy := a.(*Policy), b.(*Policy)
 	aPolicy.params.SuspendDuration = 900
-	aPolicy.suspend("gpt-4o", "", "")
+	aPolicy.suspend("gpt-4o", "")
 
-	assert.False(t, bPolicy.isSuspended("gpt-4o", "", ""),
+	assert.False(t, bPolicy.isSuspended("gpt-4o", ""),
 		"without an aggregate cluster key, instances must not accidentally share suspension state")
 }
 
@@ -1159,15 +1134,13 @@ func TestOnRequestBody_UpstreamInvocationNilUpstreamIsNoop(t *testing.T) {
 
 func TestParseParams_CarriesCircuitThresholds(t *testing.T) {
 	params, err := parseParams(map[string]interface{}{
-		"targets":                     []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}}},
-		"suspendAfterFailures":        float64(3),
-		"failureRateThresholdPercent": float64(50),
-		"latencyThresholdMs":          float64(2000),
+		"targets":              []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{}}},
+		"suspendAfterFailures": float64(3),
+		"maxSuspendMultiplier": float64(4),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 3, params.SuspendAfterFailures)
-	assert.Equal(t, 50, params.FailureRateThresholdPercent)
-	assert.Equal(t, 2000, params.LatencyThresholdMs)
+	assert.Equal(t, 4, params.MaxSuspendMultiplier)
 }
 
 func TestParseParams_SuspendAfterFailuresRejectsNonNumber(t *testing.T) {
@@ -1181,41 +1154,41 @@ func TestParseParams_SuspendAfterFailuresRejectsNonNumber(t *testing.T) {
 func TestRecordOutcome_DefaultThresholdSuspendsOnFirstFailure(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60}, susp: newSuspensionState()}
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0)
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true)
 
-	assert.True(t, p.isSuspended("gpt-4o", "", ""), "SuspendAfterFailures unset must default to 1 (today's original behavior)")
+	assert.True(t, p.isSuspended("gpt-4o", ""), "SuspendAfterFailures unset must default to 1 (today's original behavior)")
 }
 
 func TestRecordOutcome_ConfiguredThresholdRequiresConsecutiveFailures(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, SuspendAfterFailures: 3}, susp: newSuspensionState()}
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0)
-	assert.False(t, p.isSuspended("gpt-4o", "", ""), "1 of 3 required failures must not suspend yet")
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true)
+	assert.False(t, p.isSuspended("gpt-4o", ""), "1 of 3 required failures must not suspend yet")
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0)
-	assert.False(t, p.isSuspended("gpt-4o", "", ""), "2 of 3 required failures must not suspend yet")
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true)
+	assert.False(t, p.isSuspended("gpt-4o", ""), "2 of 3 required failures must not suspend yet")
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0)
-	assert.True(t, p.isSuspended("gpt-4o", "", ""), "the 3rd consecutive failure must suspend")
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true)
+	assert.True(t, p.isSuspended("gpt-4o", ""), "the 3rd consecutive failure must suspend")
 }
 
 func TestRecordOutcome_SuccessResetsTheConsecutiveFailureCounter(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, SuspendAfterFailures: 3}, susp: newSuspensionState()}
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0)
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0)
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, false, false, 0) // success — counter must reset to zero
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0)
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true)
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true)
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, false) // success — counter must reset to zero
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true)
 
-	assert.False(t, p.isSuspended("gpt-4o", "", ""), "only 1 consecutive failure since the last success — must not suspend")
+	assert.False(t, p.isSuspended("gpt-4o", ""), "only 1 consecutive failure since the last success — must not suspend")
 }
 
 func TestRecordOutcome_ZeroSuspendDurationNeverTracksOrSuspends(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 0, SuspendAfterFailures: 1}, susp: newSuspensionState()}
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0)
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true)
 
-	assert.False(t, p.isSuspended("gpt-4o", "", ""))
+	assert.False(t, p.isSuspended("gpt-4o", ""))
 	assert.Empty(t, p.susp.failureCounts, "suspension disabled entirely means no bookkeeping at all, not just no suspension")
 }
 
@@ -1232,7 +1205,7 @@ func TestBackoffDuration_DoublesEachStreak(t *testing.T) {
 	assert.Equal(t, 480*time.Second, p.backoffDuration(4))
 }
 
-func TestBackoffDuration_CapIsEightTimesBase(t *testing.T) {
+func TestBackoffDuration_CapDefaultsToEightTimesBase(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60}}
 
 	// streak 4 (8x) is exactly the cap; streak 5+ (16x, uncapped) must clamp
@@ -1242,24 +1215,39 @@ func TestBackoffDuration_CapIsEightTimesBase(t *testing.T) {
 	assert.Equal(t, 480*time.Second, p.backoffDuration(10))
 }
 
+func TestBackoffDuration_CapFollowsMaxSuspendMultiplier(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, MaxSuspendMultiplier: 3}}
+
+	assert.Equal(t, 120*time.Second, p.backoffDuration(2))
+	assert.Equal(t, 180*time.Second, p.backoffDuration(3), "4x would exceed the 3x cap")
+	assert.Equal(t, 180*time.Second, p.backoffDuration(10))
+}
+
+func TestBackoffDuration_MultiplierOfOneDisablesDoubling(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60, MaxSuspendMultiplier: 1}}
+
+	assert.Equal(t, 60*time.Second, p.backoffDuration(1))
+	assert.Equal(t, 60*time.Second, p.backoffDuration(5))
+}
+
 func TestRecordOutcome_ImmediateResuspensionAfterExpiryDoublesTheWindow(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60}, susp: newSuspensionState()}
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0) // 1st suspension: streak 1, ~60s window
-	require.True(t, p.isSuspended("gpt-4o", "", ""))
-	firstUntil := p.susp.suspended[suspensionKey("gpt-4o", "", "")]
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true) // 1st suspension: streak 1, ~60s window
+	require.True(t, p.isSuspended("gpt-4o", ""))
+	firstUntil := p.susp.suspended[suspensionKey("gpt-4o", "")]
 	assert.WithinDuration(t, time.Now().Add(60*time.Second), firstUntil, 2*time.Second)
 
 	// Force the window to have already expired (isSuspended's lazy-expiry
 	// pattern), then fail again immediately — simulating "still broken the
 	// moment it came back".
 	p.susp.mu.Lock()
-	p.susp.suspended[suspensionKey("gpt-4o", "", "")] = time.Now().Add(-time.Second)
+	p.susp.suspended[suspensionKey("gpt-4o", "")] = time.Now().Add(-time.Second)
 	p.susp.mu.Unlock()
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0) // 2nd consecutive cycle: streak 2, ~120s window
-	require.True(t, p.isSuspended("gpt-4o", "", ""))
-	secondUntil := p.susp.suspended[suspensionKey("gpt-4o", "", "")]
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true) // 2nd consecutive cycle: streak 2, ~120s window
+	require.True(t, p.isSuspended("gpt-4o", ""))
+	secondUntil := p.susp.suspended[suspensionKey("gpt-4o", "")]
 	assert.WithinDuration(t, time.Now().Add(120*time.Second), secondUntil, 2*time.Second,
 		"a target that fails again immediately after its window expires must get a longer window, not the same flat one")
 }
@@ -1267,14 +1255,14 @@ func TestRecordOutcome_ImmediateResuspensionAfterExpiryDoublesTheWindow(t *testi
 func TestRecordOutcome_SuccessResetsTheBackoffStreak(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 60}, susp: newSuspensionState()}
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0) // streak 1
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true) // streak 1
 	p.susp.mu.Lock()
-	p.susp.suspended[suspensionKey("gpt-4o", "", "")] = time.Now().Add(-time.Second) // force-expire
+	p.susp.suspended[suspensionKey("gpt-4o", "")] = time.Now().Add(-time.Second) // force-expire
 	p.susp.mu.Unlock()
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, false, false, 0) // success in between — must reset the streak, not just the counter
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, false) // success in between — must reset the streak, not just the counter
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0) // a fresh incident: must be back to streak 1, not streak 2
-	until := p.susp.suspended[suspensionKey("gpt-4o", "", "")]
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true) // a fresh incident: must be back to streak 1, not streak 2
+	until := p.susp.suspended[suspensionKey("gpt-4o", "")]
 	assert.WithinDuration(t, time.Now().Add(60*time.Second), until, 2*time.Second,
 		"an intervening success must reset backoff back to the base duration for the next incident")
 }
@@ -1291,43 +1279,22 @@ func TestRecordOutcome_SuccessResetsTheBackoffStreak(t *testing.T) {
 func TestRecordOutcome_LongGapWithNoSuccessAlsoResetsTheStreak(t *testing.T) {
 	p := &Policy{params: ModelFailoverParams{SuspendDuration: 5}, susp: newSuspensionState()}
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0) // streak 1, ~5s window
-	firstUntil := p.susp.suspended[suspensionKey("gpt-4o", "", "")]
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true) // streak 1, ~5s window
+	firstUntil := p.susp.suspended[suspensionKey("gpt-4o", "")]
 	assert.WithinDuration(t, time.Now().Add(5*time.Second), firstUntil, time.Second)
 
 	// Simulate real time passing well beyond the streak's hot window (base +
 	// duration) with NO success and NO further failures for this key — e.g.
 	// an unrelated test scenario ran in between, never touching this target.
 	p.susp.mu.Lock()
-	p.susp.suspended[suspensionKey("gpt-4o", "", "")] = time.Now().Add(-time.Hour)
-	p.susp.streakExpiresAt[suspensionKey("gpt-4o", "", "")] = time.Now().Add(-time.Hour)
+	p.susp.suspended[suspensionKey("gpt-4o", "")] = time.Now().Add(-time.Hour)
+	p.susp.streakExpiresAt[suspensionKey("gpt-4o", "")] = time.Now().Add(-time.Hour)
 	p.susp.mu.Unlock()
 
-	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true, false, 0) // a genuinely new, unrelated incident
-	secondUntil := p.susp.suspended[suspensionKey("gpt-4o", "", "")]
+	p.recordOutcome(FailoverTarget{Model: "gpt-4o"}, true) // a genuinely new, unrelated incident
+	secondUntil := p.susp.suspended[suspensionKey("gpt-4o", "")]
 	assert.WithinDuration(t, time.Now().Add(5*time.Second), secondUntil, time.Second,
 		"a failure long after the streak went cold must get the base window, not a compounded one")
-}
-
-// ─── ECI #18469 finding #6: suspension key includes upstreamDefinition ──────
-
-func TestSuspensionKey_DistinguishesUpstreamDefinition(t *testing.T) {
-	assert.NotEqual(t,
-		suspensionKey("gpt-4o", "openai", "us-east"),
-		suspensionKey("gpt-4o", "openai", "us-west"),
-		"identical model+provider but different physical upstream must not share a suspension entry")
-}
-
-func TestRecordOutcome_SuspendsOnlyTheFailingUpstreamDefinitionNotItsSibling(t *testing.T) {
-	p := &Policy{params: ModelFailoverParams{SuspendDuration: 30}, susp: newSuspensionState()}
-	failing := FailoverTarget{Model: "gpt-4o", Provider: "openai", UpstreamDefinition: "us-east"}
-	sibling := FailoverTarget{Model: "gpt-4o", Provider: "openai", UpstreamDefinition: "us-west"}
-
-	p.recordOutcome(failing, true, false, 0)
-
-	assert.True(t, p.isSuspended(failing.Model, failing.Provider, failing.UpstreamDefinition))
-	assert.False(t, p.isSuspended(sibling.Model, sibling.Provider, sibling.UpstreamDefinition),
-		"a distinct upstreamDefinition is a distinct physical target — its health must be independent")
 }
 
 // ─── ECI #18469 finding #2: all-suspended returns ImmediateResponse ─────────
@@ -1345,8 +1312,8 @@ func TestOnRequestBody_AllMembersSuspendedReturnsImmediateResponseExhaustion(t *
 			}},
 		},
 		susp: &suspensionState{suspended: map[string]time.Time{
-			suspensionKey("gpt-4o", "", ""):                   time.Now().Add(time.Hour),
-			suspensionKey("claude", "anthropic-upstream", ""): time.Now().Add(time.Hour),
+			suspensionKey("gpt-4o", ""):                   time.Now().Add(time.Hour),
+			suspensionKey("claude", "anthropic-upstream"): time.Now().Add(time.Hour),
 		}},
 	}
 	reqCtx := &policy.RequestContext{Downstream: &policy.DownstreamContext{}, Body: &policy.Body{Content: []byte(`{"model":"gpt-4o"}`), Present: true}}
@@ -1357,146 +1324,6 @@ func TestOnRequestBody_AllMembersSuspendedReturnsImmediateResponseExhaustion(t *
 	require.True(t, ok, "every member suspended must short-circuit the chain, not dispatch to the full composite")
 	assert.Equal(t, 503, resp.StatusCode)
 	assert.NotEmpty(t, resp.Body)
-}
-
-// ─── ECI #18469 finding #4: rolling failure-rate rule ───────────────────────
-
-// rateOnlyPolicy disables the consecutive-count trigger so only the rolling
-// rules are under test.
-func rateOnlyPolicy(params ModelFailoverParams) *Policy {
-	params.SuspendDuration = 30
-	params.SuspendAfterFailures = 1000
-	return &Policy{params: params, susp: newSuspensionState()}
-}
-
-func TestRecordOutcome_RollingFailureRateSuspendsOnceThresholdAndMinimumSamplesAreMet(t *testing.T) {
-	p := rateOnlyPolicy(ModelFailoverParams{FailureRateThresholdPercent: 50})
-	target := FailoverTarget{Model: "gpt-4o"}
-
-	for i := 0; i < circuitMinimumSamples-1; i++ {
-		p.recordOutcome(target, i%2 == 0, false, 0) // more than half failing, but below the minimum samples
-	}
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition), "below minimum samples — must not evaluate the rate yet")
-
-	p.recordOutcome(target, true, false, 0) // minimum samples met, rate over 50%
-	assert.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
-}
-
-func TestRecordOutcome_SeveralBreachedRulesOpenCircuitOnlyOnce(t *testing.T) {
-	p := &Policy{
-		params: ModelFailoverParams{
-			SuspendDuration:             30,
-			SuspendAfterFailures:        1,
-			FailureRateThresholdPercent: 50,
-			LatencyThresholdMs:          100,
-		},
-		susp: newSuspensionState(),
-	}
-	target := FailoverTarget{Model: "gpt-4o"}
-	key := p.keyFor(target)
-	now := time.Now()
-
-	// Prime both rolling rules to breach on the same failing attempt that
-	// also breaches the consecutive-failure rule.
-	rateWindow := p.rateWindowFor(key)
-	latencyWindow := p.latencyWindowFor(key)
-	for i := 0; i < circuitMinimumSamples-1; i++ {
-		rateWindow.recordOutcome(now, true)
-		latencyWindow.recordLatency(now, 200)
-	}
-
-	p.recordOutcome(target, true, true, 200)
-
-	assert.Equal(t, 1, p.susp.suspensionStreak[key],
-		"one attempt is one circuit transition even when several rules breach")
-	assert.WithinDuration(t, time.Now().Add(30*time.Second), p.susp.suspended[key], 2*time.Second,
-		"the first open must use the base suspension, not multiply it once per breached rule")
-}
-
-func TestRecordOutcome_RollingFailureRateBelowThresholdDoesNotSuspend(t *testing.T) {
-	p := rateOnlyPolicy(ModelFailoverParams{FailureRateThresholdPercent: 50})
-	target := FailoverTarget{Model: "gpt-4o"}
-
-	for i := 0; i < circuitMinimumSamples*2; i++ {
-		p.recordOutcome(target, i%4 == 0, false, 0) // 25% failing
-	}
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
-}
-
-func TestRecordOutcome_RollingFailureRateDisabledWhenThresholdUnset(t *testing.T) {
-	p := rateOnlyPolicy(ModelFailoverParams{})
-	target := FailoverTarget{Model: "gpt-4o"}
-
-	for i := 0; i < circuitMinimumSamples*2; i++ {
-		p.recordOutcome(target, true, false, 0)
-	}
-
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition),
-		"FailureRateThresholdPercent<=0 must disable the rate rule entirely")
-	assert.Empty(t, p.susp.rateWindows, "a disabled rule keeps no window at all")
-}
-
-func TestRecordOutcome_SuspensionClearsTheWindowsSoRecoveryIsJudgedAfresh(t *testing.T) {
-	p := rateOnlyPolicy(ModelFailoverParams{FailureRateThresholdPercent: 50})
-	target := FailoverTarget{Model: "gpt-4o"}
-	key := p.keyFor(target)
-
-	for i := 0; i < circuitMinimumSamples; i++ {
-		p.recordOutcome(target, true, false, 0)
-	}
-	require.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
-
-	// The window expires and the configured successful-probe quorum closes the circuit.
-	p.susp.suspended[key] = time.Now().Add(-time.Second)
-	for i := 0; i < circuitProbeSuccessesToClose; i++ {
-		require.True(t, p.allowRequest(target))
-		p.recordOutcome(target, false, false, 0)
-	}
-	require.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
-
-	// One more success must not re-trip the rule off the pre-suspension failures.
-	p.recordOutcome(target, false, false, 0)
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition),
-		"failures from before the suspension must not count against the recovered target")
-}
-
-// ─── ECI #18469 finding #4: latency rule ────────────────────────────────────
-
-func TestRecordOutcome_LatencySuspendsOnceP95BreachesAcrossTheWindow(t *testing.T) {
-	p := rateOnlyPolicy(ModelFailoverParams{LatencyThresholdMs: 100})
-	target := FailoverTarget{Model: "gpt-4o"}
-
-	for i := 0; i < circuitMinimumSamples-1; i++ {
-		p.recordOutcome(target, false, true, 200) // slow, but below the minimum samples
-	}
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition), "below minimum samples — must not evaluate p95 yet")
-
-	p.recordOutcome(target, false, true, 200)
-	assert.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition),
-		"p95 of ten 200ms samples breaches the 100ms threshold — a slow success still suspends")
-}
-
-func TestRecordOutcome_LatencyOccasionalSlowAttemptDoesNotSuspend(t *testing.T) {
-	p := rateOnlyPolicy(ModelFailoverParams{LatencyThresholdMs: 100})
-	target := FailoverTarget{Model: "gpt-4o"}
-
-	p.recordOutcome(target, false, true, 5000) // one outlier
-	for i := 0; i < 30; i++ {
-		p.recordOutcome(target, false, true, 50)
-	}
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition),
-		"one slow attempt out of 31 sits above p95 — it must not suspend the target")
-}
-
-func TestRecordOutcome_NoLatencySampleNeverFeedsTheLatencyRule(t *testing.T) {
-	p := rateOnlyPolicy(ModelFailoverParams{LatencyThresholdMs: 1})
-	target := FailoverTarget{Model: "gpt-4o"}
-
-	for i := 0; i < circuitMinimumSamples; i++ {
-		p.recordOutcome(target, false, false, 0) // hasLatency=false — must be ignored entirely
-	}
-
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
 }
 
 // ─── ECI #18469 finding #5: half-open controlled recovery ──────────────────
@@ -1510,14 +1337,14 @@ func TestAllowRequest_HalfOpenAllowsOneProbeAtATimeAndClosesOnSuccessQuorum(t *t
 	assert.True(t, p.allowRequest(target), "first probe must be granted")
 	assert.False(t, p.allowRequest(target), "a probe is already in flight — a second concurrent request must be blocked")
 
-	for i := 0; i < circuitProbeSuccessesToClose; i++ {
-		p.recordOutcome(target, false, false, 0)
-		if i < circuitProbeSuccessesToClose-1 {
-			assert.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition), "the circuit stays half-open until the success quorum")
+	for i := 0; i < defaultRecoverAfterSuccesses; i++ {
+		p.recordOutcome(target, false)
+		if i < defaultRecoverAfterSuccesses-1 {
+			assert.True(t, p.isSuspended(target.Model, target.Provider), "the circuit stays half-open until the success quorum")
 			require.True(t, p.allowRequest(target), "the next controlled probe should be admitted")
 		}
 	}
-	assert.False(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition), "the success quorum must close the circuit")
+	assert.False(t, p.isSuspended(target.Model, target.Provider), "the success quorum must close the circuit")
 	assert.True(t, p.allowRequest(target), "circuit is closed — no longer gated by the probe")
 	assert.True(t, p.allowRequest(target))
 }
@@ -1529,9 +1356,9 @@ func TestAllowRequest_HalfOpenReopensOnFailedProbe(t *testing.T) {
 	p.susp.suspended[key] = time.Now().Add(-time.Second) // already expired -> half-open
 
 	require.True(t, p.allowRequest(target))
-	p.recordOutcome(target, true, false, 0) // the probe fails
+	p.recordOutcome(target, true) // the probe fails
 
-	assert.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition), "a failed probe must reopen (re-suspend) the circuit")
+	assert.True(t, p.isSuspended(target.Model, target.Provider), "a failed probe must reopen (re-suspend) the circuit")
 	assert.False(t, p.allowRequest(target), "freshly reopened — the new suspension window has not expired yet")
 }
 
@@ -1545,10 +1372,51 @@ func TestAllowRequest_LostProbeIsReleasedAfterItsLease(t *testing.T) {
 	require.False(t, p.allowRequest(target))
 
 	// The probe's outcome never arrives (transport failure, client cancel).
-	p.susp.probes[key].grantedAt = time.Now().Add(-circuitProbeLease - time.Second)
+	p.susp.probes[key].grantedAt = time.Now().Add(-defaultProbeTimeout - time.Second)
 
 	assert.False(t, p.allowRequest(target), "a lost probe must reopen the circuit instead of racing a replacement")
-	assert.True(t, p.isSuspended(target.Model, target.Provider, target.UpstreamDefinition))
+	assert.True(t, p.isSuspended(target.Model, target.Provider))
+}
+
+func TestAllowRequest_ConfiguredRecoverAfterSuccessesClosesSooner(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 30, RecoverAfterSuccesses: 1}, susp: newSuspensionState()}
+	target := FailoverTarget{Model: "gpt-4o"}
+	p.susp.suspended[p.keyFor(target)] = time.Now().Add(-time.Second)
+
+	require.True(t, p.allowRequest(target))
+	p.recordOutcome(target, false)
+
+	assert.False(t, p.isSuspended(target.Model, target.Provider), "recoverAfterSuccesses: 1 closes on the first good probe")
+}
+
+func TestAllowRequest_ConfiguredProbeTimeoutReleasesLostProbe(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 30, ProbeTimeout: 5}, susp: newSuspensionState()}
+	target := FailoverTarget{Model: "gpt-4o"}
+	key := p.keyFor(target)
+	p.susp.suspended[key] = time.Now().Add(-time.Second)
+
+	require.True(t, p.allowRequest(target))
+	p.susp.probes[key].grantedAt = time.Now().Add(-4 * time.Second)
+	assert.False(t, p.allowRequest(target), "still inside the 5s probe timeout")
+	_, stillProbing := p.susp.probes[key]
+	assert.True(t, stillProbing)
+
+	p.susp.probes[key].grantedAt = time.Now().Add(-6 * time.Second)
+	assert.False(t, p.allowRequest(target))
+	_, stillProbing = p.susp.probes[key]
+	assert.False(t, stillProbing, "past the 5s probe timeout the lost probe reopens the circuit")
+}
+
+func TestParseParams_RecoveryParams(t *testing.T) {
+	params, err := parseParams(map[string]interface{}{
+		"targets":               []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}}}},
+		"recoverAfterSuccesses": float64(2),
+		"probeTimeout":          float64(10),
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, params.RecoverAfterSuccesses)
+	assert.Equal(t, 10, params.ProbeTimeout)
 }
 
 // ─── ECI #18469 finding #7: idle registry eviction ──────────────────────────
@@ -1720,43 +1588,4 @@ func TestParseParams_ReadsAndDefaultsRequestModel(t *testing.T) {
 	_, err = parseParams(map[string]interface{}{"targets": targets,
 		"requestModel": map[string]interface{}{"location": "cookie", "identifier": "m"}})
 	assert.Error(t, err)
-}
-
-// ─── rolling window bucket rotation ────────────────────────────────────────
-
-func TestRollingWindow_AgedOutBucketsStopCounting(t *testing.T) {
-	w := newRollingWindow()
-	now := w.buckets[0].start
-	bucket := circuitWindow / circuitBuckets
-
-	w.recordOutcome(now, true)
-	w.recordOutcome(now.Add(bucket+time.Second), false) // next bucket
-	attempts, failures := w.totals()
-	assert.Equal(t, 2, attempts)
-	assert.Equal(t, 1, failures)
-
-	w.recordOutcome(now.Add(circuitWindow+2*bucket), false) // a full lap later: everything older is gone
-	attempts, failures = w.totals()
-	assert.Equal(t, 1, attempts)
-	assert.Equal(t, 0, failures, "a failure from outside the window must not keep counting toward the rate")
-}
-
-func TestRollingWindow_LatencyPercentileSpansTheWholeWindow(t *testing.T) {
-	w := newRollingWindow()
-	now := w.buckets[0].start
-	bucket := circuitWindow / circuitBuckets
-
-	for i := 0; i < 20; i++ {
-		w.recordLatency(now.Add(time.Duration(i%circuitBuckets)*bucket), 100*(i+1)) // spread over every bucket
-	}
-	pct, ok := w.latencyPercentile(95, 20)
-	require.True(t, ok)
-	assert.Equal(t, 1900, pct, "nearest-rank p95 of 100..2000 is the 19th sample")
-
-	_, ok = w.latencyPercentile(95, 21)
-	assert.False(t, ok, "too few samples must not be evaluated")
-
-	w.recordLatency(now.Add(circuitWindow+circuitWindow), 50) // everything older aged out
-	_, ok = w.latencyPercentile(95, 20)
-	assert.False(t, ok)
 }

@@ -46,14 +46,6 @@ const maxFailoverChainLength = 10
 type modelFailoverTarget struct {
 	Model    string `json:"model"`
 	Provider string `json:"provider,omitempty"`
-	// UpstreamDefinition is author-facing: the name of the upstream this
-	// member actually dials (a named additionalProviders[].as/.id, or any
-	// hand-declared upstreamDefinitions[].name — resolveFailoverEntry's lookup
-	// doesn't distinguish their origin). Optional; when empty, the dial target
-	// defaults to Provider (today's behavior). Kept separate from Provider so
-	// a member's credential/transform identity and its physical backend can
-	// differ.
-	UpstreamDefinition string `json:"upstreamDefinition,omitempty"`
 	// BasePath is injected by the controller (never authored): the resolved
 	// upstream base path of the cluster this member dials. Every member of a
 	// chain on an LlmProxy is a loopback upstream on the SAME host:port, so
@@ -77,7 +69,7 @@ type modelFailoverTarget struct {
 }
 
 // modelFailoverTargetEntry embeds modelFailoverTarget (not nested under a
-// "target" key) so the entry's own model/provider/upstreamDefinition sit at
+// "target" key) so the entry's own model/provider sit at
 // the same JSON level as each entry in Fallbacks.
 type modelFailoverTargetEntry struct {
 	modelFailoverTarget
@@ -112,20 +104,22 @@ type modelFailoverParams struct {
 	// eject/avoid a host on its own timeline, fighting the policy's suspend/
 	// resume decisions rather than reflecting them. Omitted/<=0 means 1.
 	SuspendAfterFailures int `json:"suspendAfterFailures,omitempty"`
-	// PerTryTimeoutMs bounds each individual chain-member attempt (design
-	// §9.2), in milliseconds. Omitted/0 leaves Envoy's own default (the
-	// route's overall timeout) in effect. Pure xDS config — never round-
-	// tripped to the runtime policy's own wire params.
-	PerTryTimeoutMs int `json:"perTryTimeoutMs,omitempty"`
+	// PerTryTimeout bounds each individual chain-member attempt (design
+	// §9.2), in seconds — the same unit as SuspendDuration. Omitted/0 leaves
+	// Envoy's own default (the route's overall timeout) in effect. Pure xDS
+	// config — never round-tripped to the runtime policy's own wire params.
+	PerTryTimeout int `json:"perTryTimeout,omitempty"`
 
-	// FailureRateThresholdPercent (1-100) also suspends a target once that
-	// share of its attempts over the policy's fixed 60s rolling window failed.
-	// Omitted/0 disables the rule. LatencyThresholdMs likewise suspends once
-	// the window's p95 response time reaches it. Both are passed through to
-	// the runtime policy, which owns the window, sample minimum and half-open
-	// recovery as fixed internal defaults rather than author-facing knobs.
-	FailureRateThresholdPercent int `json:"failureRateThresholdPercent,omitempty"`
-	LatencyThresholdMs          int `json:"latencyThresholdMs,omitempty"`
+	// MaxSuspendMultiplier caps the runtime policy's doubling suspension
+	// backoff as a multiple of SuspendDuration. Passed through to the runtime
+	// policy; omitted/0 means its default (8), 1 disables doubling.
+	MaxSuspendMultiplier int `json:"maxSuspendMultiplier,omitempty"`
+
+	// RecoverAfterSuccesses and ProbeTimeout (seconds) tune half-open
+	// recovery. Passed through to the runtime policy; omitted/0 means its
+	// defaults (3 probes, 60 seconds).
+	RecoverAfterSuccesses int `json:"recoverAfterSuccesses,omitempty"`
+	ProbeTimeout          int `json:"probeTimeout,omitempty"`
 
 	// Note: this struct deliberately has NO requestModel field. requestModel
 	// (where the model lives in the request — payload JSONPath, header,
@@ -159,6 +153,7 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 	if len(params.Targets) == 0 {
 		return nil, fmt.Errorf("model-failover: 'targets' must have at least one entry")
 	}
+	inheritFallbackLocations(params.Targets)
 
 	allowed := make(map[string]bool, len(availableProviders)+1)
 	allowed[primaryProviderID] = true
@@ -208,12 +203,12 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 		}
 
 		// design §12: "a chain contains the same canonical member twice" — a
-		// canonical member is identified by resolved provider + model +
-		// upstreamDefinition, comparing the primary against every fallback and
-		// every fallback against every other one.
-		type canonicalMember struct{ provider, model, upstreamDefinition string }
+		// canonical member is identified by resolved provider + model,
+		// comparing the primary against every fallback and every fallback
+		// against every other one.
+		type canonicalMember struct{ provider, model string }
 		toCanonical := func(t modelFailoverTarget) canonicalMember {
-			return canonicalMember{provider: resolveProvider(t), model: strings.ToLower(strings.TrimSpace(t.Model)), upstreamDefinition: t.UpstreamDefinition}
+			return canonicalMember{provider: resolveProvider(t), model: strings.ToLower(strings.TrimSpace(t.Model))}
 		}
 		seenMembers := map[canonicalMember]bool{toCanonical(entry.modelFailoverTarget): true}
 		for _, fb := range entry.Fallbacks {
@@ -248,17 +243,38 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 	if params.SuspendAfterFailures < 0 {
 		return nil, fmt.Errorf("model-failover: suspendAfterFailures must not be negative")
 	}
-	if params.PerTryTimeoutMs < 0 {
-		return nil, fmt.Errorf("model-failover: perTryTimeoutMs must not be negative")
+	if params.PerTryTimeout < 0 {
+		return nil, fmt.Errorf("model-failover: perTryTimeout must not be negative")
 	}
-	if params.FailureRateThresholdPercent < 0 || params.FailureRateThresholdPercent > 100 {
-		return nil, fmt.Errorf("model-failover: failureRateThresholdPercent must be between 0 and 100")
+	if params.MaxSuspendMultiplier < 0 {
+		return nil, fmt.Errorf("model-failover: maxSuspendMultiplier must not be negative")
 	}
-	if params.LatencyThresholdMs < 0 {
-		return nil, fmt.Errorf("model-failover: latencyThresholdMs must not be negative")
+	if params.RecoverAfterSuccesses < 0 {
+		return nil, fmt.Errorf("model-failover: recoverAfterSuccesses must not be negative")
+	}
+	if params.ProbeTimeout < 0 {
+		return nil, fmt.Errorf("model-failover: probeTimeout must not be negative")
 	}
 
 	return &params, nil
+}
+
+// inheritFallbackLocations fills each fallback authored without `provider:`
+// from its own chain's target, so an omitted provider means "same as the
+// entry above" rather than the proxy's primary provider. A target that itself omits provider still resolves
+// to the primary, so its fallbacks do too. Mirrored by the runtime policy's
+// parseParams.
+func inheritFallbackLocations(targets []modelFailoverTargetEntry) {
+	for i := range targets {
+		entry := &targets[i]
+		for j := range entry.Fallbacks {
+			fb := &entry.Fallbacks[j]
+			if strings.TrimSpace(fb.Provider) != "" {
+				continue
+			}
+			fb.Provider = entry.Provider
+		}
+	}
 }
 
 // buildRouteFailoverFromPolicy resolves a model-failover policy's params into
@@ -277,14 +293,13 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 	}
 
 	expanded := &modelFailoverParams{
-		SuspendDuration:             params.SuspendDuration,
-		StatusCodes:                 params.StatusCodes,
-		PrimaryProvider:             primaryProviderID,
-		OperationPath:               r.OperationPath,
-		SuspendAfterFailures:        params.SuspendAfterFailures,
-		FailureRateThresholdPercent: params.FailureRateThresholdPercent,
-		LatencyThresholdMs:          params.LatencyThresholdMs,
-		Targets:                     make([]modelFailoverTargetEntry, len(params.Targets)),
+		SuspendDuration:      params.SuspendDuration,
+		StatusCodes:          params.StatusCodes,
+		PrimaryProvider:      primaryProviderID,
+		OperationPath:        r.OperationPath,
+		SuspendAfterFailures: params.SuspendAfterFailures,
+		MaxSuspendMultiplier: params.MaxSuspendMultiplier,
+		Targets:              make([]modelFailoverTargetEntry, len(params.Targets)),
 	}
 	targets := make([]models.RouteFailoverTarget, 0, len(params.Targets))
 	for i, entry := range params.Targets {
@@ -338,18 +353,18 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 	// route timeout — the platform's own default overall timeout is resolved
 	// later, in the xDS translator (a different package, with no dependency
 	// from here), so there is nothing to compare against otherwise.
-	if params.PerTryTimeoutMs > 0 && r.Timeout != nil && r.Timeout.Timeout != nil {
+	if params.PerTryTimeout > 0 && r.Timeout != nil && r.Timeout.Timeout != nil {
 		chainLength := 1 + len(targets[len(targets)-1].Fallbacks)
 		for _, target := range targets {
 			if l := 1 + len(target.Fallbacks); l > chainLength {
 				chainLength = l
 			}
 		}
-		perTryBudget := time.Duration(params.PerTryTimeoutMs) * time.Millisecond * time.Duration(chainLength)
+		perTryBudget := time.Duration(params.PerTryTimeout) * time.Second * time.Duration(chainLength)
 		if perTryBudget > *r.Timeout.Timeout {
 			return nil, nil, fmt.Errorf(
-				"model-failover: route %q's perTryTimeoutMs (%dms) x its longest chain (%d members) = %s, which exceeds the route's overall timeout of %s — later fallbacks would never be reachable",
-				routeKey, params.PerTryTimeoutMs, chainLength, perTryBudget, *r.Timeout.Timeout)
+				"model-failover: route %q's perTryTimeout (%ds) x its longest chain (%d members) = %s, which exceeds the route's overall timeout of %s — later fallbacks would never be reachable",
+				routeKey, params.PerTryTimeout, chainLength, perTryBudget, *r.Timeout.Timeout)
 		}
 	}
 
@@ -359,7 +374,7 @@ func buildRouteFailoverFromPolicy(rdc *models.RuntimeDeployConfig, r *models.Rou
 		RetryOn:                retryOn,
 		RetriableStatusCodes:   retriableStatusCodes,
 		SuspendAfterFailures:   params.SuspendAfterFailures,
-		PerTryTimeoutMs:        params.PerTryTimeoutMs,
+		PerTryTimeoutMs:        params.PerTryTimeout * 1000,
 	}, expanded, nil
 }
 

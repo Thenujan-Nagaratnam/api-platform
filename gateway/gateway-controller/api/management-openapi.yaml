@@ -3133,6 +3133,16 @@ components:
             `auto` delegates host rewriting to Envoy, which rewrites the Host header
             using the upstream cluster host. `manual` disables automatic rewriting
             and expects explicit configuration.
+        policies:
+          type: array
+          description: >
+            Upstream policies for this upstream. They run in the upstream-attempt
+            phase (once per attempt to this upstream, including retries), after
+            every downstream policy, in the order listed. They see only traffic
+            routed to this upstream (e.g. upstream.main.policies never run for
+            sandbox traffic).
+          items:
+            $ref: "#/components/schemas/Policy"
 
     Operation:
       type: object
@@ -3255,12 +3265,12 @@ components:
         upstream:
           type: boolean
           description: >
-            Internal: set by the Gateway Controller on a policy instance it has
-            synthesized for the upstream-attempt phase, so the policy engine runs
-            it once per Envoy attempt (including retries to a different backend)
-            instead of once downstream. Never set by an author directly — there
-            is no operator-facing attachment point for this phase. Has no effect
-            when set on any other attachment.
+            Internal: set only by the Gateway Controller on the policy instances
+            it compiles from an upstream's `policies` list (and model-failover's
+            per-attempt copies), so the policy engine runs them once per Envoy
+            attempt instead of once downstream. Rejected on authored input — to
+            run a policy against an upstream, list it under that upstream's
+            `policies`.
         params:
           type: object
           description: Arbitrary parameters for the policy (free-form key/value structure)
@@ -4605,6 +4615,15 @@ components:
           example: wso2-openai-provider
         auth:
           $ref: '#/components/schemas/LLMUpstreamAuth'
+        policies:
+          type: array
+          description: >
+            Upstream policies for this provider. They run in the upstream-attempt
+            phase, only on attempts that go to this provider (including a
+            model-failover retry that lands here), after model-failover and
+            before this provider's transformer and auth, in the order listed.
+          items:
+            $ref: "#/components/schemas/Policy"
 
     LLMProxyAdditionalProvider:
       type: object
@@ -4633,6 +4652,15 @@ components:
           $ref: '#/components/schemas/LLMUpstreamAuth'
         transformer:
           $ref: '#/components/schemas/LLMProxyTransformer'
+        policies:
+          type: array
+          description: >
+            Upstream policies for this provider. They run in the upstream-attempt
+            phase, only on attempts that go to this provider (including a
+            model-failover retry that lands here), after model-failover and
+            before this provider's transformer and auth, in the order listed.
+          items:
+            $ref: "#/components/schemas/Policy"
 
     LLMProxyTransformer:
       type: object
@@ -4759,15 +4787,6 @@ components:
         executionCondition:
           type: string
           description: Expression controlling conditional execution of the policy
-        upstream:
-          type: boolean
-          description: >
-            Runs this attachment in the upstream-attempt phase instead of the
-            downstream phase — once per Envoy attempt to a backend, including
-            retries to a different one, rather than once per client request.
-            executionCondition IS evaluated in this phase, gated against
-            whatever metadata a phase-aware policy (e.g. model-failover) seeds
-            into the shared request metadata for that specific attempt.
         paths:
           type: array
           items:

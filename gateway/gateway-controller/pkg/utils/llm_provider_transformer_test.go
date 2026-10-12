@@ -242,8 +242,8 @@ func TestTransform_FullProvider(t *testing.T) {
 	assert.Equal(t, "https://api.openai.com", *spec.Upstream.Main.Url)
 
 	// Verify auth policy is attached to all operations
-	require.NotEmpty(t, spec.Operations)
-	for _, op := range spec.Operations {
+	require.NotEmpty(t, effectiveOperations(spec))
+	for _, op := range effectiveOperations(spec) {
 		require.NotNil(t, op.Policies, "Operation %s %s should have policies", op.EffectiveMethod(), op.EffectivePath())
 		require.NotEmpty(t, *op.Policies, "Operation %s %s should have at least one policy", op.EffectiveMethod(), op.EffectivePath())
 
@@ -508,8 +508,8 @@ func TestTransform_ApiKeyAuth(t *testing.T) {
 	spec := result.Spec
 
 	// Verify auth policy is attached to all operations
-	require.NotEmpty(t, spec.Operations)
-	for _, op := range spec.Operations {
+	require.NotEmpty(t, effectiveOperations(spec))
+	for _, op := range effectiveOperations(spec) {
 		require.NotNil(t, op.Policies, "Operation %s %s should have policies", op.EffectiveMethod(), op.EffectivePath())
 		require.NotEmpty(t, *op.Policies, "Operation %s %s should have at least one policy", op.EffectiveMethod(), op.EffectivePath())
 
@@ -1759,12 +1759,12 @@ func TestTransform_AuthWithAllowAll(t *testing.T) {
 	assert.Nil(t, spec.Policies)
 
 	// Should have 1 exception + 6 catch-all operations (one per HTTP method) = 7 total
-	require.Len(t, spec.Operations, 7)
+	require.Len(t, effectiveOperations(spec), 7)
 
 	// Exception operation should have respond policy
 	foundException := false
 	catchAllCount := 0
-	for _, op := range spec.Operations {
+	for _, op := range effectiveOperations(spec) {
 		if op.EffectivePath() == "/admin" {
 			foundException = true
 			require.NotNil(t, op.Policies)
@@ -2295,9 +2295,9 @@ func TestTransform_UpstreamAuth_Plus_APILevelPolicy_AllowAll(t *testing.T) {
 	assert.Nil(t, spec.Policies, "API-level policies should not exist")
 
 	// Verify 6 catch-all operations with GlobalRateLimit attached
-	require.Len(t, spec.Operations, 6, "Should have 6 catch-all operations")
+	require.Len(t, effectiveOperations(spec), 6, "Should have 6 catch-all operations")
 
-	for _, op := range spec.Operations {
+	for _, op := range effectiveOperations(spec) {
 		assert.Equal(t, "/*", op.EffectivePath())
 		require.NotNil(t, op.Policies, "Operation should have policies")
 		require.Len(t, *op.Policies, 2, "Each operation should have GlobalRateLimit and upstream auth")
@@ -2377,11 +2377,11 @@ func TestTransform_UpstreamAuth_Plus_APILevelPolicy_DenyAll(t *testing.T) {
 	assert.Nil(t, spec.Policies, "API-level policies should not exist")
 
 	// Verify operations exist for all HTTP methods on /api/v1/*
-	require.Len(t, spec.Operations, len(constants.WILDCARD_HTTP_METHODS),
+	require.Len(t, effectiveOperations(spec), len(constants.WILDCARD_HTTP_METHODS),
 		"Should have operations for all HTTP methods")
 
 	methodsFound := make(map[string]bool)
-	for _, op := range spec.Operations {
+	for _, op := range effectiveOperations(spec) {
 		assert.Equal(t, "/api/v1/*", op.EffectivePath(), "All operations should be for /api/v1/*")
 		methodsFound[op.EffectiveMethod()] = true
 		require.NotNil(t, op.Policies, "All methods should have upstream auth policy")
@@ -3526,7 +3526,7 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_AllowAll(t *testing.T)
 	assert.Nil(t, spec.Policies, "API-level policies should not exist")
 
 	// Verify catch-all operations (6) have GlobalRateLimit
-	for _, op := range spec.Operations {
+	for _, op := range effectiveOperations(spec) {
 		if op.EffectivePath() == "/*" {
 			require.NotNil(t, op.Policies, "Catch-all operation should have policies")
 			require.Len(t, *op.Policies, 2, "Should have GlobalRateLimit and upstream auth")
@@ -3540,7 +3540,7 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_AllowAll(t *testing.T)
 	}
 
 	// Verify /chat/completions POST has GlobalRateLimit and TokenLimit
-	chatOp := findOperation(spec.Operations, "/chat/completions", "POST")
+	chatOp := findOperation(effectiveOperations(spec), "/chat/completions", "POST")
 	require.NotNil(t, chatOp, "/chat/completions POST should exist")
 	require.NotNil(t, chatOp.Policies, "Operation should have policies")
 	require.Len(t, *chatOp.Policies, 3, "Should have 3 policies")
@@ -3554,7 +3554,7 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_AllowAll(t *testing.T)
 	assert.True(t, chatPolicies[constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME], "Should have upstream auth")
 
 	// Verify exception operation /admin/delete DELETE has no policies
-	adminOp := findOperation(spec.Operations, "/admin/delete", "DELETE")
+	adminOp := findOperation(effectiveOperations(spec), "/admin/delete", "DELETE")
 	require.NotNil(t, adminOp, "/admin/delete DELETE should exist")
 	if adminOp.Policies != nil {
 		assert.Len(t, *adminOp.Policies, 2, "/admin/delete should have Deny policy and upstream auth")
@@ -3568,7 +3568,7 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_AllowAll(t *testing.T)
 
 	// Verify total operations count
 	totalOps := 0
-	for _, _ = range spec.Operations {
+	for _, _ = range effectiveOperations(spec) {
 		totalOps++
 	}
 	// 6 catch-all + 1 /chat/completions POST + 1 /admin/delete DELETE = 8 operations
@@ -3648,10 +3648,10 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_DenyAll(t *testing.T) 
 	assert.Nil(t, spec.Policies, "API-level policies should not exist")
 
 	// Verify exactly 2 operations exist (from exceptions)
-	require.Len(t, spec.Operations, 2, "Should have exactly 2 operations from exceptions")
+	require.Len(t, effectiveOperations(spec), 2, "Should have exactly 2 operations from exceptions")
 
 	// Verify /chat/completions POST operation has GlobalAuth and ContentGuard
-	chatOp := findOperation(spec.Operations, "/chat/completions", "POST")
+	chatOp := findOperation(effectiveOperations(spec), "/chat/completions", "POST")
 	require.NotNil(t, chatOp, "/chat/completions POST should exist")
 	require.NotNil(t, chatOp.Policies, "Operation should have policies")
 	require.Len(t, *chatOp.Policies, 3, "Should have 3 policies attached")
@@ -3665,7 +3665,7 @@ func TestTransform_Auth_Plus_APILevel_Plus_OperationLevel_DenyAll(t *testing.T) 
 	assert.True(t, chatPolicyNames[constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME], "Upstream auth should be attached")
 
 	// Verify /health GET operation has only GlobalAuth
-	healthOp := findOperation(spec.Operations, "/health", "GET")
+	healthOp := findOperation(effectiveOperations(spec), "/health", "GET")
 	require.NotNil(t, healthOp, "/health GET should exist")
 	require.NotNil(t, healthOp.Policies, "Operation should have policies")
 	require.Len(t, *healthOp.Policies, 2, "Should have 2 policies attached")
@@ -3978,7 +3978,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 
 	// Verify catch-all operations (6) have GlobalSecurity and GlobalLogging (for POST/PUT/DELETE)
 	catchAllCount := 0
-	for _, op := range spec.Operations {
+	for _, op := range effectiveOperations(spec) {
 		if op.EffectivePath() == "/*" {
 			catchAllCount++
 			require.NotNil(t, op.Policies, "Catch-all operation should have policies")
@@ -4002,7 +4002,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 	assert.Equal(t, len(constants.WILDCARD_HTTP_METHODS), catchAllCount, "Should have 6 catch-all operations")
 
 	// Verify /chat/* POST has GlobalSecurity, GlobalLogging (for POST), and ChatGuardrail
-	chatWildOp := findOperation(spec.Operations, "/chat/*", "POST")
+	chatWildOp := findOperation(effectiveOperations(spec), "/chat/*", "POST")
 	require.NotNil(t, chatWildOp, "/chat/* POST should exist")
 	require.NotNil(t, chatWildOp.Policies, "Operation should have policies")
 	require.Len(t, *chatWildOp.Policies, 4, "Should have 4 policies")
@@ -4016,7 +4016,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 	assert.True(t, chatWildPolicies["ChatGuardrail"], "Should have ChatGuardrail")
 
 	// Verify /chat/completions POST has GlobalSecurity, GlobalLogging, ChatGuardrail, and SpecificLimit
-	chatCompletionOp := findOperation(spec.Operations, "/chat/completions", "POST")
+	chatCompletionOp := findOperation(effectiveOperations(spec), "/chat/completions", "POST")
 	require.NotNil(t, chatCompletionOp, "/chat/completions POST should exist")
 	require.NotNil(t, chatCompletionOp.Policies, "Operation should have policies")
 	require.Len(t, *chatCompletionOp.Policies, 5, "Should have 5 policies")
@@ -4032,7 +4032,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 
 	// Verify /api/* operations (6 HTTP methods) have GlobalSecurity, GlobalLogging (for POST/PUT/DELETE), and APIMonitoring
 	apiWildcardCount := 0
-	for _, op := range spec.Operations {
+	for _, op := range effectiveOperations(spec) {
 		if op.EffectivePath() == "/api/*" {
 			apiWildcardCount++
 			require.NotNil(t, op.Policies, "Operation should have policies")
@@ -4057,7 +4057,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 	assert.Equal(t, len(constants.WILDCARD_HTTP_METHODS), apiWildcardCount, "Should have 6 /api/* operations")
 
 	// Verify /admin/* exception operations (DELETE and POST only) have deny policy
-	adminDeleteOp := findOperation(spec.Operations, "/admin/*", "DELETE")
+	adminDeleteOp := findOperation(effectiveOperations(spec), "/admin/*", "DELETE")
 	require.NotNil(t, adminDeleteOp, "/admin/* DELETE should exist")
 	require.NotNil(t, adminDeleteOp.Policies, "Operation should have policies")
 	require.Len(t, *adminDeleteOp.Policies, 2, "Should have deny policy and upstream auth")
@@ -4068,7 +4068,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 	assert.True(t, adminDeletePolicyNames[constants.ACCESS_CONTROL_DENY_POLICY_NAME])
 	assert.True(t, adminDeletePolicyNames[constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME])
 
-	adminPostOp := findOperation(spec.Operations, "/admin/*", "POST")
+	adminPostOp := findOperation(effectiveOperations(spec), "/admin/*", "POST")
 	require.NotNil(t, adminPostOp, "/admin/* POST should exist")
 	require.NotNil(t, adminPostOp.Policies, "Operation should have policies")
 	require.Len(t, *adminPostOp.Policies, 2, "Should have deny policy and upstream auth")
@@ -4080,7 +4080,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 	assert.True(t, adminPostPolicyNames[constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME])
 
 	// Verify /internal/health GET exception has deny policy
-	healthOp := findOperation(spec.Operations, "/internal/health", "GET")
+	healthOp := findOperation(effectiveOperations(spec), "/internal/health", "GET")
 	require.NotNil(t, healthOp, "/internal/health GET should exist")
 	require.NotNil(t, healthOp.Policies, "Operation should have policies")
 	require.Len(t, *healthOp.Policies, 2, "Should have deny policy and upstream auth")
@@ -4093,7 +4093,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_AllowAll
 
 	// Verify total operations count
 	// 6 catch-all + 6 /api/* + 1 /chat/* + 1 /chat/completions + 2 /admin/* (DELETE, POST) + 1 /internal/health = 17 operations
-	assert.Len(t, spec.Operations, 17, "Should have 22 total operations")
+	assert.Len(t, effectiveOperations(spec), 17, "Should have 22 total operations")
 }
 
 func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_DenyAll(t *testing.T) {
@@ -4199,10 +4199,10 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_DenyAll(
 	assert.Nil(t, spec.Policies, "API-level policies should not exist")
 
 	// Verify exactly 5 operations exist
-	require.Len(t, spec.Operations, 5, "Should have exactly 5 operations")
+	require.Len(t, effectiveOperations(spec), 5, "Should have exactly 5 operations")
 
 	// Verify /chat/* POST operation has GlobalAuth and ChatPolicies and CompletionLimit
-	chatWildcardOp := findOperation(spec.Operations, "/chat/*", "POST")
+	chatWildcardOp := findOperation(effectiveOperations(spec), "/chat/*", "POST")
 	require.NotNil(t, chatWildcardOp, "/chat/* POST should exist")
 	require.NotNil(t, chatWildcardOp.Policies, "Operation should have policies")
 	require.Len(t, *chatWildcardOp.Policies, 3, "Should have 3 policies including upstream auth")
@@ -4215,7 +4215,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_DenyAll(
 	assert.True(t, chatWildcardPolicies["ChatPolicies"], "ChatPolicies should be attached")
 
 	// Verify /api/models GET operation has GlobalAuth and ModelAudit
-	modelsGetOp := findOperation(spec.Operations, "/api/models", "GET")
+	modelsGetOp := findOperation(effectiveOperations(spec), "/api/models", "GET")
 	require.NotNil(t, modelsGetOp, "/api/models GET should exist")
 	require.NotNil(t, modelsGetOp.Policies, "Operation should have policies")
 	require.Len(t, *modelsGetOp.Policies, 3, "Should have 3 policies including upstream auth")
@@ -4228,7 +4228,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_DenyAll(
 	assert.True(t, modelsGetPolicies["ModelAudit"], "ModelAudit should be attached")
 
 	// Verify /api/models POST operation has GlobalAuth and ModelAudit
-	modelsPostOp := findOperation(spec.Operations, "/api/models", "POST")
+	modelsPostOp := findOperation(effectiveOperations(spec), "/api/models", "POST")
 	require.NotNil(t, modelsPostOp, "/api/models POST should exist")
 	require.NotNil(t, modelsPostOp.Policies, "Operation should have policies")
 	require.Len(t, *modelsPostOp.Policies, 3, "Should have 3 policies including upstream auth")
@@ -4241,14 +4241,14 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_DenyAll(
 	assert.True(t, modelsPostPolicies["ModelAudit"], "ModelAudit should be attached")
 
 	// Verify /health GET operation has only GlobalAuth
-	healthOp := findOperation(spec.Operations, "/health", "GET")
+	healthOp := findOperation(effectiveOperations(spec), "/health", "GET")
 	require.NotNil(t, healthOp, "/health GET should exist")
 	require.NotNil(t, healthOp.Policies, "Operation should have policies")
 	require.Len(t, *healthOp.Policies, 2, "Should have 2 policies including upstream auth")
 	assert.Equal(t, "GlobalAuth", (*healthOp.Policies)[0].Name)
 
 	// Verify /chat/completions POST operation has GlobalAuth and ChatPolicies and CompletionLimit
-	chatCompletionOp := findOperation(spec.Operations, "/chat/completions", "POST")
+	chatCompletionOp := findOperation(effectiveOperations(spec), "/chat/completions", "POST")
 	require.NotNil(t, chatCompletionOp, "/chat/completions POST should exist")
 	require.NotNil(t, chatCompletionOp.Policies, "Operation should have policies")
 	require.Len(t, *chatCompletionOp.Policies, 4, "Should have 4 policies including upstream auth")
@@ -4263,7 +4263,7 @@ func TestTransform_AllPolicyTypes_WildcardExceptions_WildcardOperations_DenyAll(
 
 	// Verify NO catch-all operations in DenyAll mode
 	catchAllCount := 0
-	for _, operation := range spec.Operations {
+	for _, operation := range effectiveOperations(spec) {
 		if operation.EffectivePath() == "/*" {
 			catchAllCount++
 		}
@@ -5415,7 +5415,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	// ===== Catch-All Operations =====
 	// Verify 6 catch-all operations (/*) have both GlobalAuth and GlobalRateLimit
 	catchAllCount := 0
-	for _, op := range spec.Operations {
+	for _, op := range effectiveOperations(spec) {
 		if op.EffectivePath() == "/*" {
 			catchAllCount++
 			require.NotNil(t, op.Policies, "Catch-all operation should have policies")
@@ -5433,7 +5433,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 
 	// ===== API Nested Wildcard Operations =====
 	// Verify api/* GET operations (method-restricted) have GlobalAuth, GlobalRateLimit, and APIPolicy
-	apiGetOp := findOperation(spec.Operations, "api/*", "GET")
+	apiGetOp := findOperation(effectiveOperations(spec), "api/*", "GET")
 	require.NotNil(t, apiGetOp, "api/* GET should exist")
 	require.NotNil(t, apiGetOp.Policies, "Operation should have policies")
 	require.Len(t, *apiGetOp.Policies, 4, "Should have 4 policies")
@@ -5447,7 +5447,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	assert.True(t, apiGetPolicies["APIPolicy"], "Should have APIPolicy (api/* GET match)")
 
 	// Verify api/* POST has APIPolicy (method-restricted to GET, POST)
-	apiPostOp := findOperation(spec.Operations, "api/*", "POST")
+	apiPostOp := findOperation(effectiveOperations(spec), "api/*", "POST")
 	require.NotNil(t, apiPostOp, "api/* POST should exist")
 	require.NotNil(t, apiPostOp.Policies, "Operation should have policies")
 	require.Len(t, *apiPostOp.Policies, 4, "Should have 4 policies")
@@ -5459,11 +5459,11 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	assert.True(t, apiPostPolicies["APIPolicy"], "Should have APIPolicy (api/* POST match)")
 
 	// Verify api/* DELETE does NOT exist (method restriction: only GET, POST)
-	apiDeleteOp := findOperation(spec.Operations, "api/*", "DELETE")
+	apiDeleteOp := findOperation(effectiveOperations(spec), "api/*", "DELETE")
 	require.Nil(t, apiDeleteOp, "api/* DELETE should exist")
 
 	// Verify api/models/* GET has GlobalAuth, GlobalRateLimit, APIPolicy, and APIModelsPolicy
-	apiModelsGetOp := findOperation(spec.Operations, "api/models/*", "GET")
+	apiModelsGetOp := findOperation(effectiveOperations(spec), "api/models/*", "GET")
 	require.NotNil(t, apiModelsGetOp, "api/models/* GET should exist")
 	require.NotNil(t, apiModelsGetOp.Policies, "Operation should have policies")
 	require.Len(t, *apiModelsGetOp.Policies, 5, "Should have 5 policies")
@@ -5478,7 +5478,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	assert.True(t, apiModelsGetPolicies["APIModelsPolicy"], "Should have APIModelsPolicy (api/models/* GET match)")
 
 	// Verify api/models/gpt4 GET has all 5 policies (most specific)
-	apiModelsGPT4Op := findOperation(spec.Operations, "api/models/gpt4", "GET")
+	apiModelsGPT4Op := findOperation(effectiveOperations(spec), "api/models/gpt4", "GET")
 	require.NotNil(t, apiModelsGPT4Op, "api/models/gpt4 GET should exist")
 	require.NotNil(t, apiModelsGPT4Op.Policies, "Operation should have policies")
 	require.Len(t, *apiModelsGPT4Op.Policies, 6, "Should have 6 policies")
@@ -5495,7 +5495,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 
 	// ===== Chat Nested Wildcard Operations =====
 	// Verify chat/* GET has GlobalAuth, GlobalRateLimit, and ChatPolicy
-	chatGetOp := findOperation(spec.Operations, "chat/*", "GET")
+	chatGetOp := findOperation(effectiveOperations(spec), "chat/*", "GET")
 	require.NotNil(t, chatGetOp, "chat/* GET should exist")
 	require.NotNil(t, chatGetOp.Policies, "Operation should have policies")
 	require.Len(t, *chatGetOp.Policies, 4, "Should have 4 policies")
@@ -5509,7 +5509,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	assert.True(t, chatGetPolicies["ChatPolicy"], "Should have ChatPolicy (chat/* match)")
 
 	// Verify chat/* POST has ChatPolicy
-	chatPostOp := findOperation(spec.Operations, "chat/*", "POST")
+	chatPostOp := findOperation(effectiveOperations(spec), "chat/*", "POST")
 	require.NotNil(t, chatPostOp, "chat/* POST should exist")
 	require.NotNil(t, chatPostOp.Policies, "Operation should have policies")
 	require.Len(t, *chatPostOp.Policies, 4, "Should have 4 policies")
@@ -5521,7 +5521,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	assert.True(t, chatPostPolicies["ChatPolicy"], "Should have ChatPolicy")
 
 	// Verify chat/completions/* POST has GlobalAuth, GlobalRateLimit, ChatPolicy, and ChatCompletionsPolicy
-	chatCompletionsWildcardOp := findOperation(spec.Operations, "chat/completions/*", "POST")
+	chatCompletionsWildcardOp := findOperation(effectiveOperations(spec), "chat/completions/*", "POST")
 	require.NotNil(t, chatCompletionsWildcardOp, "chat/completions/* POST should exist")
 	require.NotNil(t, chatCompletionsWildcardOp.Policies, "Operation should have policies")
 	require.Len(t, *chatCompletionsWildcardOp.Policies, 5, "Should have 5 policies")
@@ -5536,7 +5536,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	assert.True(t, chatCompWildPolicies["ChatCompletionsPolicy"], "Should have ChatCompletionsPolicy (chat/completions/* match)")
 
 	// Verify chat/completions POST has all 4 policies (most specific)
-	chatCompletionsOp := findOperation(spec.Operations, "chat/completions", "POST")
+	chatCompletionsOp := findOperation(effectiveOperations(spec), "chat/completions", "POST")
 	require.NotNil(t, chatCompletionsOp, "chat/completions POST should exist")
 	require.NotNil(t, chatCompletionsOp.Policies, "Operation should have policies")
 	require.Len(t, *chatCompletionsOp.Policies, 5, "Should have 5 policies")
@@ -5553,7 +5553,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	// ===== Exception Operations (Denied) =====
 	// Verify admin/* ALL methods (6) have ONLY deny policy
 	for _, method := range constants.WILDCARD_HTTP_METHODS {
-		op := findOperation(spec.Operations, "admin/*", method)
+		op := findOperation(effectiveOperations(spec), "admin/*", method)
 		require.NotNil(t, op, "admin/* operation should exist for method %s", method)
 		require.NotNil(t, op.Policies, "Operation should have policies")
 		require.Len(t, *op.Policies, 2, "Should have deny policy and upstream auth for admin/* %s", method)
@@ -5566,7 +5566,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	}
 
 	// Verify internal/debug/* GET has ONLY deny policy
-	internalDebugGetOp := findOperation(spec.Operations, "internal/debug/*", "GET")
+	internalDebugGetOp := findOperation(effectiveOperations(spec), "internal/debug/*", "GET")
 	require.NotNil(t, internalDebugGetOp, "internal/debug/* GET should exist")
 	require.NotNil(t, internalDebugGetOp.Policies, "Operation should have policies")
 	require.Len(t, *internalDebugGetOp.Policies, 2, "Should have deny policy and upstream auth")
@@ -5578,7 +5578,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	assert.True(t, internalDebugGetPolicyNames[constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME])
 
 	// Verify internal/debug/* POST has ONLY deny policy
-	internalDebugPostOp := findOperation(spec.Operations, "internal/debug/*", "POST")
+	internalDebugPostOp := findOperation(effectiveOperations(spec), "internal/debug/*", "POST")
 	require.NotNil(t, internalDebugPostOp, "internal/debug/* POST should exist")
 	require.NotNil(t, internalDebugPostOp.Policies, "Operation should have policies")
 	require.Len(t, *internalDebugPostOp.Policies, 2, "Should have deny policy and upstream auth")
@@ -5590,7 +5590,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	assert.True(t, internalDebugPostPolicyNames[constants.UPSTREAM_AUTH_APIKEY_POLICY_NAME])
 
 	// Verify system/health DELETE has ONLY deny policy
-	systemHealthDeleteOp := findOperation(spec.Operations, "system/health", "DELETE")
+	systemHealthDeleteOp := findOperation(effectiveOperations(spec), "system/health", "DELETE")
 	require.NotNil(t, systemHealthDeleteOp, "system/health DELETE should exist")
 	require.NotNil(t, systemHealthDeleteOp.Policies, "Operation should have policies")
 	require.Len(t, *systemHealthDeleteOp.Policies, 2, "Should have deny policy and upstream auth")
@@ -5603,7 +5603,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 
 	// ===== Exception Precedence Verification =====
 	// Verify AdminPolicy is NOT attached to admin/* operations (exception takes precedence)
-	adminGetOp := findOperation(spec.Operations, "admin/*", "GET")
+	adminGetOp := findOperation(effectiveOperations(spec), "admin/*", "GET")
 	require.NotNil(t, adminGetOp, "admin/* GET should exist")
 	for _, p := range *adminGetOp.Policies {
 		assert.NotEqual(t, "AdminPolicy", p.Name, "AdminPolicy should NOT be attached to admin/* (exception blocks it)")
@@ -5613,7 +5613,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_AllowAll(t *testing.T) {
 	// 6 catch-all + 2 api/* {"GET", "POST"} + 1 api/models/* GET + 1 api/models/gpt4 GET +
 	// 6 chat/* + 1 chat/completions/* POST + 1 chat/completions POST +
 	// 6 admin/* (all methods) + 2 internal/debug/* (GET, POST) + 1 system/health DELETE = 27 operations
-	assert.Len(t, spec.Operations, 27, "Should have 27 total operations")
+	assert.Len(t, effectiveOperations(spec), 27, "Should have 27 total operations")
 }
 
 func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
@@ -5714,7 +5714,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 	assert.Nil(t, spec.Policies, "API-level policies should not exist")
 
 	// Verify api/v1/models GET has all applicable policies
-	modelsOp := findOperation(spec.Operations, "api/v1/models", "GET")
+	modelsOp := findOperation(effectiveOperations(spec), "api/v1/models", "GET")
 	require.NotNil(t, modelsOp, "api/v1/models GET should exist")
 	require.NotNil(t, modelsOp.Policies, "Operation should have policies")
 
@@ -5729,7 +5729,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 	assert.True(t, modelsPolicies["ModelsSpecificPolicy"], "Should have ModelsSpecificPolicy (exact match)")
 
 	// Verify chat/completions/* POST has nested policies
-	chatCompletionsWildcardOp := findOperation(spec.Operations, "chat/completions/*", "POST")
+	chatCompletionsWildcardOp := findOperation(effectiveOperations(spec), "chat/completions/*", "POST")
 	require.NotNil(t, chatCompletionsWildcardOp, "chat/completions/* POST should exist")
 	require.NotNil(t, chatCompletionsWildcardOp.Policies, "Operation should have policies")
 
@@ -5744,7 +5744,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 
 	// Verify chat/* operations exist for all methods with ChatRootPolicy and global policies
 	for _, method := range constants.WILDCARD_HTTP_METHODS {
-		op := findOperation(spec.Operations, "chat/*", method)
+		op := findOperation(effectiveOperations(spec), "chat/*", method)
 		require.NotNil(t, op, "chat/* operation should exist for method %s", method)
 		require.NotNil(t, op.Policies, "chat/* %s should have policies", method)
 
@@ -5759,7 +5759,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 
 	// Verify api/* GET and POST operations with APIRootPolicy and global policies
 	for _, method := range []string{"GET", "POST"} {
-		op := findOperation(spec.Operations, "api/*", method)
+		op := findOperation(effectiveOperations(spec), "api/*", method)
 		require.NotNil(t, op, "api/* operation should exist for method %s", method)
 		require.NotNil(t, op.Policies, "api/* %s should have policies", method)
 
@@ -5774,7 +5774,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 
 	// Verify api/v1/* operations exist for all methods with APIV1Policy and APIRootPolicy (for GET/POST)
 	for _, method := range constants.WILDCARD_HTTP_METHODS {
-		op := findOperation(spec.Operations, "api/v1/*", method)
+		op := findOperation(effectiveOperations(spec), "api/v1/*", method)
 		require.NotNil(t, op, "api/v1/* operation should exist for method %s", method)
 		require.NotNil(t, op.Policies, "api/v1/* %s should have policies", method)
 
@@ -5793,7 +5793,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 	}
 
 	// Verify health GET operation has only GlobalSecurity and GlobalMonitoring
-	healthOp := findOperation(spec.Operations, "health", "GET")
+	healthOp := findOperation(effectiveOperations(spec), "health", "GET")
 	require.NotNil(t, healthOp, "health GET should exist")
 	require.NotNil(t, healthOp.Policies, "health GET should have policies")
 	require.Len(t, *healthOp.Policies, 3, "health GET should have exactly 3 policies")
@@ -5807,7 +5807,7 @@ func TestTransform_ComplexCombined_MaximumComplexity_DenyAll(t *testing.T) {
 
 	// Verify NO catch-all operations in DenyAll mode
 	catchAllCount := 0
-	for _, op := range spec.Operations {
+	for _, op := range effectiveOperations(spec) {
 		if op.EffectivePath() == "/*" {
 			catchAllCount++
 		}
@@ -8496,75 +8496,4 @@ func TestTransform_Provider_UpstreamUrl_Unchanged(t *testing.T) {
 	assert.Equal(t, "https://api.openai.com", *res.Spec.Upstream.Main.Url)
 	assert.Nil(t, res.Spec.Upstream.Main.Ref)
 	assert.Nil(t, res.Spec.UpstreamDefinitions)
-}
-
-// TestTransform_OperationPolicies_AuthoredUpstreamFlagIsHonored pins the
-// author-facing upstream: true field on an operationPolicies: entry
-// (mirroring globalPolicies:'s Policy.Upstream): a plain, hand-attached
-// policy with no model-failover involvement still runs in the
-// upstream-attempt phase when explicitly marked, path/method scoping intact.
-func TestTransform_OperationPolicies_AuthoredUpstreamFlagIsHonored(t *testing.T) {
-	transformer, _ := setupTestTransformer(t)
-
-	downstream := []api.OperationPolicy{{
-		Name:    "content-length-guardrail",
-		Version: "v0.1.0",
-		Paths: []api.OperationPolicyPath{{
-			Path:    "/chat/completions",
-			Methods: []api.OperationPolicyPathMethods{api.OperationPolicyPathMethodsPOST},
-			Params:  map[string]interface{}{"maxRequestBodySize": 1024},
-		}},
-	}}
-	upstream := []api.OperationPolicy{{
-		Name:     "content-length-guardrail",
-		Version:  "v0.1.0",
-		Upstream: api.Ptr(true),
-		Paths: []api.OperationPolicyPath{{
-			Path:    "/chat/completions",
-			Methods: []api.OperationPolicyPathMethods{api.OperationPolicyPathMethodsPOST},
-			Params:  map[string]interface{}{"maxRequestBodySize": 2048},
-		}},
-	}}
-
-	provider := &api.LLMProviderConfiguration{
-		ApiVersion: "gateway.api-platform.wso2.com/v1",
-		Kind:       "LlmProvider",
-		Metadata:   api.Metadata{Name: "openai-provider"},
-		Spec: api.LLMProviderConfigData{
-			DisplayName:       "test",
-			Version:           "v1.0",
-			Template:          "openai",
-			Upstream:          api.LLMProviderConfigData_Upstream{Url: stringPtr("https://api.example.com")},
-			AccessControl:     api.LLMAccessControl{Mode: api.AllowAll},
-			OperationPolicies: api.Ptr(append(append([]api.OperationPolicy{}, downstream...), upstream...)),
-		},
-	}
-
-	result, err := transformer.Transform(provider, &api.RestAPI{})
-	require.NoError(t, err)
-
-	var op *api.Operation
-	for i := range result.Spec.Operations {
-		if result.Spec.Operations[i].EffectivePath() == "/chat/completions" {
-			op = &result.Spec.Operations[i]
-		}
-	}
-	require.NotNil(t, op)
-	require.NotNil(t, op.Policies)
-
-	var flagged, unflagged int
-	for _, p := range *op.Policies {
-		if p.Name != "content-length-guardrail" {
-			continue
-		}
-		if p.Upstream != nil && *p.Upstream {
-			flagged++
-			assert.EqualValues(t, 2048, (*p.Params)["maxRequestBodySize"])
-		} else {
-			unflagged++
-			assert.EqualValues(t, 1024, (*p.Params)["maxRequestBodySize"])
-		}
-	}
-	assert.Equal(t, 1, flagged, "the entry with upstream: true must be flagged upstream")
-	assert.Equal(t, 1, unflagged, "the entry without it must stay downstream")
 }

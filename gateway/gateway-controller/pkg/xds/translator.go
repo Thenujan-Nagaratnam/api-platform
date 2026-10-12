@@ -414,14 +414,14 @@ func (t *Translator) createRouteFromRDC(routeKey string, rdcRoute *models.Route,
 		}
 		// RetryOn is expected non-empty by the time it reaches here —
 		// buildRouteFailoverFromPolicy (pkg/transform/model_failover_policy.go)
-		// defaults it to ["5xx"] — but default defensively here too, so a
-		// RouteFailover built any other
-		// way never produces an empty retry_on (which Envoy treats as "never
-		// retry", silently defeating the whole feature). Envoy's retry_on
-		// accepts a comma-separated list of conditions in one string.
+		// defaults it to 5xx plus the transport conditions — but default
+		// defensively here too, to the same value, so a RouteFailover built
+		// any other way never produces an empty retry_on (which Envoy treats
+		// as "never retry", silently defeating the whole feature). Envoy's
+		// retry_on accepts a comma-separated list of conditions in one string.
 		retryOn := rdcRoute.Upstream.Failover.RetryOn
 		if len(retryOn) == 0 {
-			retryOn = []string{"5xx"}
+			retryOn = []string{"5xx", "connect-failure", "reset", "reset-before-request"}
 		}
 		retryPolicy := &route.RetryPolicy{
 			RetryOn:    strings.Join(retryOn, ","),

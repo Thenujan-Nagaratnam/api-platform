@@ -466,7 +466,7 @@ tracked exactly as the pre-this-redesign POC tracked it:
   increments a per-key consecutive-failure counter; a success clears it.
 - Once the counter reaches `suspendAfterFailures` (default `1`), the key is suspended for
   `backoffDuration`'s computed window — `suspendDuration` on the first suspension, doubling on each
-  further suspend-then-immediately-refail cycle, capped at 8x
+  further suspend-then-immediately-refail cycle, capped at `maxSuspendMultiplier` (default 8) x
   `suspendDuration`. The streak resets if a success intervenes, or if the previous suspension
   window plus one base `suspendDuration` has elapsed with no new qualifying failure — this bounds
   how long two otherwise-unrelated failures, far apart in time, can compound backoff (see
@@ -874,23 +874,18 @@ against members already known to be failing. It now returns `policy.ImmediateRes
 directly from the downstream phase instead, short-circuiting the whole policy chain without
 dispatching to Envoy's router at all.
 
-**#4/#5 — rolling failure-rate, latency, and half-open recovery.** `ModelFailoverParams` gained two
-optional thresholds, `failureRateThresholdPercent` and `latencyThresholdMs`, each opt-in
-(`<=0`/omitted disables that rule) and additive to the original `suspendAfterFailures`
-consecutive-count trigger — any one of them can independently suspend a target via the same shared
-backoff-streak escalation (`triggerSuspensionLocked`). Everything about how the rules measure is fixed
-rather than author-facing, so a route author only states when a target is unhealthy: a 60s window in
-10 lazily-rotated buckets (`rollingWindow`, matching this file's no-background-sweep, lazy-expiry
-style), at least 20 attempts in the window before either rule is evaluated, and p95 (nearest-rank)
-for latency — at 20 samples that is the second-slowest, so one outlier never trips it. A suspension
-clears the target's windows, so it is judged afresh once it recovers. Latency is self-measured,
-stashing an `OnRequestHeaders` timestamp into `SharedContext.Metadata` and reading it back in
-`OnResponseHeaders` of the *same* upstream attempt — the SDK has no latency/duration field of its own.
-Half-open recovery is always on: when a suspension expires, exactly one request is let through as a
-probe (`allowRequest`/`completeProbe`) while every other request still skips the target; its success
-closes the circuit, its failure reopens it with the window doubled. A probe whose outcome never
-arrives (a transport failure or client cancel never reaches `recordOutcome`) is released after a 60s
-lease, so it can't hold a target half-open forever.
+**#4/#5 — rolling failure-rate, latency, and half-open recovery.** A rolling failure-rate rule
+(`failureRateThresholdPercent`) and a p95 latency rule (`latencyThresholdMs`) were implemented and
+then removed (2026-10-08). The rate rule only evaluates at 20+ attempts per minute per gateway
+replica, so it does nothing on low-traffic routes; the latency rule trips on legitimately long
+non-streaming generations (response time tracks prompt size and `max_tokens`, not backend health),
+and a hung attempt is already cut off by `perTryTimeout`. Suspension is triggered by
+`suspendAfterFailures` (consecutive failures) alone. Half-open recovery is always on: when a
+suspension expires, probe requests are let through one at a time (`allowRequest`/`completeProbe`)
+while every other request still skips the target; a small quorum of consecutive successful probes
+closes the circuit, and any failed probe reopens it with the window doubled. A probe whose outcome
+never arrives (a transport failure or client cancel never reaches `recordOutcome`) is released after
+a 60s lease, so it can't hold a target half-open forever.
 
 **#6 — suspension key granularity.** `suspensionKey` was `model|provider`; validation-time duplicate-
 member detection (`canonicalMember` in `gateway-controller`) already includes `upstreamDefinition`
@@ -953,8 +948,8 @@ this needs an Envoy/go-control-plane capability this deployment doesn't have —
 `modelfailover.go`.
 
 **Schema note.** The author-facing circuit fields are deliberately few and flat: `suspendDuration`,
-`suspendAfterFailures`, `failureRateThresholdPercent`, `latencyThresholdMs`, plus `perTryTimeoutMs`
-for Envoy's per-attempt budget. Window length, sample minimum, percentile, backoff cap (8x), half-open
+`suspendAfterFailures`, `maxSuspendMultiplier` (backoff cap, default 8x), plus `perTryTimeout` (seconds, like `suspendDuration`)
+for Envoy's per-attempt budget. The half-open
 probe count, retry backoff (Envoy's 25ms default) and the per-leaf retry ceiling (1024) are fixed
 internal defaults. `2026-09-23-llm-model-failover-implementation-spec.md` proposed a nested
 `failurePolicy`/`latencyPolicy`/`recoveryPolicy` shape exposing all of these; that is superseded.** These 11 new fields use a flat naming style

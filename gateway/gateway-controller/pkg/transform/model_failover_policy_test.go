@@ -344,17 +344,15 @@ func TestBuildRouteFailoverFromPolicy_CarriesPerTryTimeoutAndCircuitThresholds(t
 			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
 			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 		}},
-		PerTryTimeoutMs:             5000,
-		FailureRateThresholdPercent: 50,
-		LatencyThresholdMs:          2000,
+		PerTryTimeout:        5,
+		MaxSuspendMultiplier: 4,
 	}
 
 	rf, expanded, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
 
 	require.NoError(t, err)
 	assert.Equal(t, 5000, rf.PerTryTimeoutMs)
-	assert.Equal(t, 50, expanded.FailureRateThresholdPercent, "passed through to the runtime policy")
-	assert.Equal(t, 2000, expanded.LatencyThresholdMs, "passed through to the runtime policy")
+	assert.Equal(t, 4, expanded.MaxSuspendMultiplier, "passed through to the runtime policy")
 }
 
 // TestBuildRouteFailoverFromPolicy_RejectsUnreachableFallbacksGivenExplicitOverallTimeout
@@ -371,7 +369,7 @@ func TestBuildRouteFailoverFromPolicy_RejectsUnreachableFallbacksGivenExplicitOv
 			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
 			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 		}},
-		PerTryTimeoutMs: 5000,
+		PerTryTimeout: 5,
 	}
 
 	_, _, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
@@ -389,7 +387,7 @@ func TestBuildRouteFailoverFromPolicy_AllowsPerTryTimeoutWhenNoExplicitOverallTi
 			modelFailoverTarget: modelFailoverTarget{Model: "gpt-4o"},
 			Fallbacks:           []modelFailoverTarget{{Model: "claude-sonnet-4-5-20250929", Provider: "anthropic-upstream"}},
 		}},
-		PerTryTimeoutMs: 5000,
+		PerTryTimeout: 5,
 	}
 
 	_, _, err := buildRouteFailoverFromPolicy(rdc, route, params, "POST|/chat/completions|main", "openai-primary")
@@ -421,9 +419,7 @@ func TestParseModelFailoverParams_ValidatesCircuitFields(t *testing.T) {
 		return raw
 	}
 	rejected := map[string]map[string]interface{}{
-		"rate threshold above 100":   {"failureRateThresholdPercent": float64(101)},
-		"negative rate threshold":    {"failureRateThresholdPercent": float64(-1)},
-		"negative latency threshold": {"latencyThresholdMs": float64(-1)},
+		"negative suspend multiplier": {"maxSuspendMultiplier": float64(-1)},
 	}
 	for name, extra := range rejected {
 		t.Run("rejects "+name, func(t *testing.T) {
@@ -432,14 +428,12 @@ func TestParseModelFailoverParams_ValidatesCircuitFields(t *testing.T) {
 		})
 	}
 
-	t.Run("accepts both thresholds on their own", func(t *testing.T) {
+	t.Run("accepts a suspend multiplier", func(t *testing.T) {
 		params, err := parseModelFailoverParams(base(map[string]interface{}{
-			"failureRateThresholdPercent": float64(50),
-			"latencyThresholdMs":          float64(2000),
+			"maxSuspendMultiplier": float64(4),
 		}), []string{"anthropic-upstream"}, "openai-primary")
 		require.NoError(t, err)
-		assert.Equal(t, 50, params.FailureRateThresholdPercent)
-		assert.Equal(t, 2000, params.LatencyThresholdMs)
+		assert.Equal(t, 4, params.MaxSuspendMultiplier)
 	})
 }
 
@@ -506,6 +500,80 @@ func TestParseModelFailoverParams_RejectsDuplicatePrimaryModelAcrossTargets(t *t
 	require.Error(t, err)
 }
 
+func TestParseModelFailoverParams_WildcardCatchAll(t *testing.T) {
+	wildcard := func(fallback map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"model": "*", "fallbacks": []interface{}{fallback}}
+	}
+	backupProvider := map[string]interface{}{"model": "*", "provider": "openai-backup"}
+
+	t.Run("accepts a catch-all alongside an exact entry", func(t *testing.T) {
+		raw := map[string]interface{}{"targets": []interface{}{
+			wildcard(backupProvider),
+			map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}}},
+		}}
+		_, err := parseModelFailoverParams(raw, []string{"openai-backup"}, "openai-primary")
+		require.NoError(t, err)
+	})
+	t.Run("rejects a second catch-all", func(t *testing.T) {
+		raw := map[string]interface{}{"targets": []interface{}{wildcard(backupProvider), wildcard(backupProvider)}}
+		_, err := parseModelFailoverParams(raw, []string{"openai-backup"}, "openai-primary")
+		require.Error(t, err)
+	})
+	t.Run("rejects a pass-through fallback that dials the primary again", func(t *testing.T) {
+		raw := map[string]interface{}{"targets": []interface{}{wildcard(map[string]interface{}{"model": "*"})}}
+		_, err := parseModelFailoverParams(raw, nil, "openai-primary")
+		require.Error(t, err)
+	})
+}
+
+func TestParseModelFailoverParams_FallbackInheritsTargetLocation(t *testing.T) {
+	parse := func(t *testing.T, target map[string]interface{}) (*modelFailoverParams, error) {
+		t.Helper()
+		return parseModelFailoverParams(map[string]interface{}{"targets": []interface{}{target}},
+			[]string{"openai-provider-2", "anthropic-upstream"}, "openai-primary")
+	}
+
+	t.Run("omitted provider inherits the target's provider", func(t *testing.T) {
+		params, err := parse(t, map[string]interface{}{
+			"model": "gpt-4.1", "provider": "openai-provider-2",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4.1-mini"}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "openai-provider-2", params.Targets[0].Fallbacks[0].Provider)
+	})
+	t.Run("explicit provider is kept", func(t *testing.T) {
+		params, err := parse(t, map[string]interface{}{
+			"model": "gpt-4.1", "provider": "openai-provider-2",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5", "provider": "anthropic-upstream"}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "anthropic-upstream", params.Targets[0].Fallbacks[0].Provider)
+	})
+	t.Run("target without a provider still resolves fallbacks to the primary", func(t *testing.T) {
+		params, err := parse(t, map[string]interface{}{
+			"model":     "gpt-4.1",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4.1-mini"}},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, params.Targets[0].Fallbacks[0].Provider)
+	})
+	t.Run("same model with an inherited provider is a duplicate member", func(t *testing.T) {
+		_, err := parse(t, map[string]interface{}{
+			"model": "gpt-4.1", "provider": "openai-provider-2",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4.1"}},
+		})
+		require.Error(t, err)
+	})
+	t.Run("naming the primary explicitly still fails over to it", func(t *testing.T) {
+		params, err := parse(t, map[string]interface{}{
+			"model": "gpt-4.1", "provider": "openai-provider-2",
+			"fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4.1", "provider": "openai-primary"}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "openai-primary", params.Targets[0].Fallbacks[0].Provider)
+	})
+}
+
 func TestParseModelFailoverParams_RejectsDuplicateCanonicalMemberWithinChain(t *testing.T) {
 	raw := map[string]interface{}{
 		"targets": []interface{}{map[string]interface{}{
@@ -545,22 +613,22 @@ func TestParseModelFailoverParams_ParsesPerTryTimeout(t *testing.T) {
 			"model":     "gpt-4o",
 			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
 		}},
-		"perTryTimeoutMs": float64(5000),
+		"perTryTimeout": float64(5),
 	}
 
 	params, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")
 
 	require.NoError(t, err)
-	assert.Equal(t, 5000, params.PerTryTimeoutMs)
+	assert.Equal(t, 5, params.PerTryTimeout)
 }
 
-func TestParseModelFailoverParams_RejectsNegativePerTryTimeoutMs(t *testing.T) {
+func TestParseModelFailoverParams_RejectsNegativePerTryTimeout(t *testing.T) {
 	raw := map[string]interface{}{
 		"targets": []interface{}{map[string]interface{}{
 			"model":     "gpt-4o",
 			"fallbacks": []interface{}{map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-upstream"}},
 		}},
-		"perTryTimeoutMs": float64(-1),
+		"perTryTimeout": float64(-1),
 	}
 
 	_, err := parseModelFailoverParams(raw, []string{"anthropic-upstream"}, "openai-primary")

@@ -20,8 +20,8 @@ package config
 
 import (
 	"fmt"
-	"regexp"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -99,6 +99,36 @@ func (pv *PolicyValidator) ValidateRestAPIPolicies(apiConfig *api.RestAPI) []Val
 		}
 	}
 
+	// Per-upstream policies
+	errors = append(errors, pv.validatePolicyList(apiConfig.Spec.Upstream.Main.Policies, "spec.upstream.main.policies")...)
+	if apiConfig.Spec.Upstream.Sandbox != nil {
+		errors = append(errors, pv.validatePolicyList(apiConfig.Spec.Upstream.Sandbox.Policies, "spec.upstream.sandbox.policies")...)
+	}
+
+	return errors
+}
+
+// validatePolicyList validates every policy in an optional list, reporting each
+// under fieldPath[i].
+func (pv *PolicyValidator) validatePolicyList(policies *[]api.Policy, fieldPath string) []ValidationError {
+	if policies == nil {
+		return nil
+	}
+	var errors []ValidationError
+	for i, policy := range *policies {
+		policyPath := fmt.Sprintf("%s[%d]", fieldPath, i)
+		// model-failover sets selected_provider, which these lists are gated
+		// on, so it cannot run from inside one. It is attached once in the
+		// operation policies and the controller adds its per-attempt copy.
+		if policy.Name == modelFailoverPolicyName {
+			errors = append(errors, ValidationError{
+				Field:   policyPath,
+				Message: "model-failover cannot be attached to an upstream's policies; attach it in operationPolicies",
+			})
+			continue
+		}
+		errors = append(errors, pv.validatePolicy(policy, policyPath)...)
+	}
 	return errors
 }
 
@@ -108,13 +138,21 @@ func (pv *PolicyValidator) ValidateRestAPIPolicies(apiConfig *api.RestAPI) []Val
 // LLM->RestAPI transform (e.g. upstream auth) are intentionally not validated here so the
 // semantics match the REST API path, which only validates user-authored policies.
 func (pv *PolicyValidator) ValidateLLMProviderPolicies(cfg *api.LLMProviderConfiguration) []ValidationError {
-	return pv.validateLLMPolicyRefs(cfg.Spec.GlobalPolicies, cfg.Spec.OperationPolicies, cfg.Spec.Policies)
+	errors := pv.validateLLMPolicyRefs(cfg.Spec.GlobalPolicies, cfg.Spec.OperationPolicies, cfg.Spec.Policies)
+	return append(errors, pv.validatePolicyList(cfg.Spec.Upstream.Policies, "spec.upstream.policies")...)
 }
 
 // ValidateLLMProxyPolicies validates all policy references in an LLM proxy configuration.
 // See ValidateLLMProviderPolicies for the rationale on validating the source configuration.
 func (pv *PolicyValidator) ValidateLLMProxyPolicies(cfg *api.LLMProxyConfiguration) []ValidationError {
-	return pv.validateLLMPolicyRefs(cfg.Spec.GlobalPolicies, cfg.Spec.OperationPolicies, cfg.Spec.Policies)
+	errors := pv.validateLLMPolicyRefs(cfg.Spec.GlobalPolicies, cfg.Spec.OperationPolicies, cfg.Spec.Policies)
+	errors = append(errors, pv.validatePolicyList(cfg.Spec.Provider.Policies, "spec.provider.policies")...)
+	if cfg.Spec.AdditionalProviders != nil {
+		for i, ap := range *cfg.Spec.AdditionalProviders {
+			errors = append(errors, pv.validatePolicyList(ap.Policies, fmt.Sprintf("spec.additionalProviders[%d].policies", i))...)
+		}
+	}
+	return errors
 }
 
 // validateLLMPolicyRefs validates the three policy collections shared by LLM providers and
@@ -126,23 +164,39 @@ func (pv *PolicyValidator) validateLLMPolicyRefs(globalPolicies *[]api.Policy, o
 	// Global (api-level) policies carry params, so reuse validatePolicy to also validate them.
 	if globalPolicies != nil {
 		for i, policy := range *globalPolicies {
-			errors = append(errors, pv.validatePolicy(policy, fmt.Sprintf("spec.globalPolicies[%d]", i))...)
+			fieldPath := fmt.Sprintf("spec.globalPolicies[%d]", i)
+			errors = append(errors, pv.validatePolicy(policy, fieldPath)...)
+			if policy.Name == modelFailoverPolicyName && policy.Params != nil {
+				errors = append(errors, validateModelFailoverParamKeys(*policy.Params, fieldPath+".params")...)
+			}
 		}
 	}
 
 	// Operation-level policies: validate name + version existence.
 	if operationPolicies != nil {
 		for i, policy := range *operationPolicies {
-			_, errs := pv.validatePolicyRef(policy.Name, policy.Version, fmt.Sprintf("spec.operationPolicies[%d]", i))
+			fieldPath := fmt.Sprintf("spec.operationPolicies[%d]", i)
+			_, errs := pv.validatePolicyRef(policy.Name, policy.Version, fieldPath)
 			errors = append(errors, errs...)
+			if policy.Name == modelFailoverPolicyName {
+				for j, path := range policy.Paths {
+					errors = append(errors, validateModelFailoverParamKeys(path.Params, fmt.Sprintf("%s.paths[%d].params", fieldPath, j))...)
+				}
+			}
 		}
 	}
 
 	// Deprecated policies list (still honoured): validate name + version existence.
 	if legacyPolicies != nil {
 		for i, policy := range *legacyPolicies {
-			_, errs := pv.validatePolicyRef(policy.Name, policy.Version, fmt.Sprintf("spec.policies[%d]", i))
+			fieldPath := fmt.Sprintf("spec.policies[%d]", i)
+			_, errs := pv.validatePolicyRef(policy.Name, policy.Version, fieldPath)
 			errors = append(errors, errs...)
+			if policy.Name == modelFailoverPolicyName {
+				for j, path := range policy.Paths {
+					errors = append(errors, validateModelFailoverParamKeys(path.Params, fmt.Sprintf("%s.paths[%d].params", fieldPath, j))...)
+				}
+			}
 		}
 	}
 
@@ -152,6 +206,14 @@ func (pv *PolicyValidator) validateLLMPolicyRefs(globalPolicies *[]api.Policy, o
 // validatePolicy validates a single policy reference (name + version existence) and, when the
 // definition declares a parameter schema, the policy's params against that schema.
 func (pv *PolicyValidator) validatePolicy(policy api.Policy, fieldPath string) []ValidationError {
+	// upstream is controller-internal: authors attach upstream-attempt policies
+	// under the upstream's own policies list instead.
+	if policy.Upstream != nil {
+		return []ValidationError{{
+			Field:   fieldPath + ".upstream",
+			Message: "upstream is not supported; list the policy under the upstream's policies instead",
+		}}
+	}
 	policyDef, errors := pv.validatePolicyRef(policy.Name, policy.Version, fieldPath)
 	if len(errors) > 0 {
 		return errors
