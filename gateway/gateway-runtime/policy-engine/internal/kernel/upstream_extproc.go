@@ -22,13 +22,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strconv"
 	"strings"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extprocconfigv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/prototext"
 
 	"github.com/wso2/api-platform/gateway/gateway-runtime/policy-engine/internal/constants"
@@ -207,7 +211,7 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 					state.clusterName, state.backendURL, state.basePath, state.method, state.path, state.memberClusterName)
 				action, err := s.chainExecutor.ExecuteUpstreamAttemptRequestHeaderPolicies(ctx, state.chain.UpstreamPolicies, reqHdrCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
 				if err != nil {
-					slog.ErrorContext(ctx, "[upstream-extproc] upstream request header policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
+					immediate = upstreamPolicyErrorResponse(ctx, err, "upstream_request_headers", &state)
 				} else if imm, ok := action.(policy.ImmediateResponse); ok {
 					immediate = buildImmediateResponse(imm)
 				} else if reqHdrCtx.Path != state.path {
@@ -252,7 +256,12 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 			state.statusCode = extractStatusCode(r.ResponseHeaders)
 
 			originalResponseHeaders := extractHeaderMap(r.ResponseHeaders)
-			state.responseHeaders = policy.NewHeaders(originalResponseHeaders)
+			state.responseHeaders = policy.NewHeaders(cloneHeaderMap(originalResponseHeaders))
+			// ResolvedFailoverProviderHeader is an internal signal only an
+			// upstream-attempt policy may set. A copy the backend itself sent is
+			// dropped here, before any policy runs, so it can never reach the
+			// downstream phase's analytics attribution.
+			delete(state.responseHeaders.UnsafeInternalValues(), ResolvedFailoverProviderHeader)
 
 			var immediate *extprocv3.ImmediateResponse
 			if state.chain != nil && state.chain.RequiresUpstreamResponse {
@@ -260,7 +269,7 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 					state.clusterName, state.backendURL, state.basePath, state.method, state.path, state.statusCode, state.memberClusterName)
 				action, err := s.chainExecutor.ExecuteUpstreamAttemptResponseHeaderPolicies(ctx, state.chain.UpstreamPolicies, respHdrCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
 				if err != nil {
-					slog.ErrorContext(ctx, "[upstream-extproc] upstream response header policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
+					immediate = upstreamPolicyErrorResponse(ctx, err, "upstream_response_headers", &state)
 				} else if imm, ok := action.(policy.ImmediateResponse); ok {
 					immediate = buildImmediateResponse(imm)
 				}
@@ -279,6 +288,13 @@ func (s *UpstreamExternalProcessorServer) Process(stream extprocv3.ExternalProce
 					Response: &extprocv3.ProcessingResponse_ResponseHeaders{
 						ResponseHeaders: headersResp,
 					},
+				}
+				// The filter buffers response bodies so a response-body policy
+				// (e.g. a transformer translating back) can run. Without one in
+				// this chain, skip the body so a streamed completion is passed
+				// through as it arrives instead of being held until it ends.
+				if !hasUpstreamResponseBodyPolicy(state.chain) {
+					resp.ModeOverride = &extprocconfigv3.ProcessingMode{ResponseBodyMode: extprocconfigv3.ProcessingMode_NONE}
 				}
 			}
 
@@ -319,10 +335,9 @@ func (s *UpstreamExternalProcessorServer) processRequestBody(ctx context.Context
 		state.clusterName, state.backendURL, state.basePath, state.method, state.path, state.memberClusterName)
 	action, err := s.chainExecutor.ExecuteUpstreamAttemptRequestPolicies(ctx, state.chain.UpstreamPolicies, reqCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
 	if err != nil {
-		slog.ErrorContext(ctx, "[upstream-extproc] upstream request policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
 		return &extprocv3.ProcessingResponse{
-			Response: &extprocv3.ProcessingResponse_RequestBody{
-				RequestBody: &extprocv3.BodyResponse{Response: &extprocv3.CommonResponse{}},
+			Response: &extprocv3.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: upstreamPolicyErrorResponse(ctx, err, "upstream_request_body", state),
 			},
 		}
 	}
@@ -411,7 +426,11 @@ func (s *UpstreamExternalProcessorServer) processResponseBody(ctx context.Contex
 			state.clusterName, state.backendURL, state.basePath, state.method, state.path, state.statusCode, state.memberClusterName)
 		action, err := s.chainExecutor.ExecuteUpstreamAttemptResponsePolicies(ctx, state.chain.UpstreamPolicies, respCtx, state.chain.UpstreamPolicySpecs, "", state.routeKey)
 		if err != nil {
-			slog.ErrorContext(ctx, "[upstream-extproc] upstream response policy execution failed", "error", err, "route", state.routeKey, "cluster", state.clusterName)
+			return &extprocv3.ProcessingResponse{
+				Response: &extprocv3.ProcessingResponse_ImmediateResponse{
+					ImmediateResponse: upstreamPolicyErrorResponse(ctx, err, "upstream_response_body", state),
+				},
+			}
 		} else if imm, ok := action.(policy.ImmediateResponse); ok {
 			return &extprocv3.ProcessingResponse{
 				Response: &extprocv3.ProcessingResponse_ImmediateResponse{ImmediateResponse: buildImmediateResponse(imm)},
@@ -448,6 +467,40 @@ func (s *UpstreamExternalProcessorServer) processResponseBody(ctx context.Contex
 			ResponseBody: &extprocv3.BodyResponse{Response: commonResp},
 		},
 	}
+}
+
+// upstreamPolicyErrorResponse fails an attempt closed when its upstream policy
+// chain errors (for example a CEL execution condition that cannot be
+// evaluated). Continuing would send the attempt without the policies that did
+// not run, such as a provider's transformer, its credential or a masking
+// policy, so the attempt is answered with the same generic 500 the downstream
+// phase returns (handlePolicyError). The reason is logged, never returned.
+func upstreamPolicyErrorResponse(ctx context.Context, err error, phase string, state *upstreamAttemptState) *extprocv3.ImmediateResponse {
+	errorID := uuid.New().String()
+	slog.ErrorContext(ctx, "[upstream-extproc] upstream policy execution failed",
+		"error_id", errorID, "phase", phase, "route", state.routeKey, "cluster", state.clusterName, "error", err)
+	return &extprocv3.ImmediateResponse{
+		Status: &typev3.HttpStatus{Code: typev3.StatusCode_InternalServerError},
+		Headers: buildHeaderValueOptions(map[string]string{
+			"content-type": "application/json",
+			"x-error-id":   errorID,
+		}),
+		Body: []byte(fmt.Sprintf(`{"error":"Internal Server Error","error_id":"%s"}`, errorID)),
+	}
+}
+
+// hasUpstreamResponseBodyPolicy reports whether any of the chain's
+// upstream-attempt policies implements the response-body phase.
+func hasUpstreamResponseBodyPolicy(chain *registry.PolicyChain) bool {
+	if chain == nil {
+		return false
+	}
+	for _, p := range chain.UpstreamPolicies {
+		if _, ok := p.(policy.ResponsePolicy); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // extractMethodAndPath reads the :method/:path pseudo-headers Envoy delivers

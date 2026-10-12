@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	compositev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/composite/v3"
@@ -57,7 +58,7 @@ func shortStableID(value string) string {
 
 // buildFailoverCompositeClusters creates one retry-aware composite cluster
 // per targets[] entry and a dedicated leaf cluster per member.
-func buildFailoverCompositeClusters(rf *models.RouteFailover, routeKey string, sourceClusters map[string]*cluster.Cluster) ([]*cluster.Cluster, error) {
+func buildFailoverCompositeClusters(rf *models.RouteFailover, routeKey string, sourceClusters map[string]*cluster.Cluster, messageTimeout time.Duration) ([]*cluster.Cluster, error) {
 	var out []*cluster.Cluster
 	for targetIndex, target := range rf.Targets {
 		members := make([]models.RouteFailoverEntry, 0, len(target.Fallbacks)+1)
@@ -89,7 +90,7 @@ func buildFailoverCompositeClusters(rf *models.RouteFailover, routeKey string, s
 			compositeEntries = append(compositeEntries, &compositev3.ClusterConfig_ClusterEntry{Name: leafName})
 		}
 
-		composite, err := buildCompositeCluster(AggregateClusterName(routeKey, targetIndex), compositeEntries)
+		composite, err := buildCompositeCluster(AggregateClusterName(routeKey, targetIndex), compositeEntries, messageTimeout)
 		if err != nil {
 			return nil, fmt.Errorf("build composite cluster for %q target %d: %w", routeKey, targetIndex, err)
 		}
@@ -101,7 +102,7 @@ func buildFailoverCompositeClusters(rf *models.RouteFailover, routeKey string, s
 		// cluster name, not a duplicated cluster definition, and the count is
 		// linear in chain length, not combinatorial in suspension state.
 		for memberIndex := 1; memberIndex < len(members); memberIndex++ {
-			suffix, err := buildCompositeCluster(SuffixCompositeClusterName(routeKey, targetIndex, memberIndex), compositeEntries[memberIndex:])
+			suffix, err := buildCompositeCluster(SuffixCompositeClusterName(routeKey, targetIndex, memberIndex), compositeEntries[memberIndex:], messageTimeout)
 			if err != nil {
 				return nil, fmt.Errorf("build suffix composite cluster for %q target %d from %d: %w", routeKey, targetIndex, memberIndex, err)
 			}
@@ -116,7 +117,7 @@ func buildFailoverCompositeClusters(rf *models.RouteFailover, routeKey string, s
 // policy filter attached exactly as every failover composite needs (per
 // composite entry point, not per leaf — see attachUpstreamPolicyFilter's own
 // call sites for why this must be on every composite, full-chain or suffix).
-func buildCompositeCluster(name string, clusterEntries []*compositev3.ClusterConfig_ClusterEntry) (*cluster.Cluster, error) {
+func buildCompositeCluster(name string, clusterEntries []*compositev3.ClusterConfig_ClusterEntry, messageTimeout time.Duration) (*cluster.Cluster, error) {
 	compositeAny, err := anypb.New(&compositev3.ClusterConfig{Clusters: clusterEntries})
 	if err != nil {
 		return nil, fmt.Errorf("marshal composite cluster config: %w", err)
@@ -129,7 +130,7 @@ func buildCompositeCluster(name string, clusterEntries []*compositev3.ClusterCon
 			TypedConfig: compositeAny,
 		}},
 	}
-	if err := attachUpstreamPolicyFilter(composite, constants.UpstreamPolicyEngineClusterName); err != nil {
+	if err := attachUpstreamPolicyFilter(composite, constants.UpstreamPolicyEngineClusterName, messageTimeout); err != nil {
 		return nil, fmt.Errorf("attach upstream policy filter to composite cluster %q: %w", name, err)
 	}
 	return composite, nil

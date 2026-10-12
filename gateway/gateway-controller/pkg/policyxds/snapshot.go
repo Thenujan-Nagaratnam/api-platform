@@ -301,6 +301,19 @@ func (t *Translator) TranslateRuntimeConfigs(rdcs []*models.RuntimeDeployConfig)
 					upstreamDefTargets[uc.Name] = policyenginev1.UpstreamInfo{BasePath: uc.BasePath}
 				}
 			}
+			// The primary upstream is addressable by name too (an LlmProxy's
+			// primary provider id), so a router that selects the primary lands
+			// on this route's own main cluster. Its Envoy name is the route's
+			// ClusterKey, which follows no upstream-definition convention, so it
+			// is spelled out. A real upstream definition of the same name wins.
+			if rdc.PrimaryUpstreamName != "" {
+				if _, taken := upstreamDefTargets[rdc.PrimaryUpstreamName]; !taken {
+					upstreamDefTargets[rdc.PrimaryUpstreamName] = policyenginev1.UpstreamInfo{
+						ClusterName: route.Upstream.ClusterKey,
+						BasePath:    upstreamBasePath,
+					}
+				}
+			}
 			// A failover aggregate cluster is addressable by name from a policy
 			// (model-failover returns its aggregateCluster param as UpstreamName)
 			// but is not an upstream definition — its Envoy cluster name is

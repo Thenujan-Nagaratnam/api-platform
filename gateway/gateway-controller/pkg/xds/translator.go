@@ -53,6 +53,7 @@ import (
 	luav3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/lua/v3"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	earlyheadermutation "github.com/envoyproxy/go-control-plane/envoy/extensions/http/early_header_mutation/header_mutation/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
@@ -269,7 +270,7 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 			}
 			c := t.createCluster(clusterName, parsedURL, nil, connectTimeout)
 			if clusterNeedsUpstreamPolicyFilter(clusterName, rdc) {
-				if err := attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName); err != nil {
+				if err := attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName, t.upstreamPolicyMessageTimeout()); err != nil {
 					return nil, nil, fmt.Errorf("failed to attach upstream policy filter to cluster %q: %w", clusterName, err)
 				}
 			}
@@ -278,7 +279,7 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		}
 		c := t.createWeightedCluster(clusterName, uc.Endpoints, uc.TLS, connectTimeout)
 		if clusterNeedsUpstreamPolicyFilter(clusterName, rdc) {
-			if err := attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName); err != nil {
+			if err := attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName, t.upstreamPolicyMessageTimeout()); err != nil {
 				return nil, nil, fmt.Errorf("failed to attach upstream policy filter to cluster %q: %w", clusterName, err)
 			}
 		}
@@ -296,7 +297,7 @@ func (t *Translator) translateRuntimeConfig(rdc *models.RuntimeDeployConfig) ([]
 		if rdcRoute.Upstream.Failover == nil {
 			continue
 		}
-		failoverClusters, err := buildFailoverCompositeClusters(rdcRoute.Upstream.Failover, routeKey, sourceClusters)
+		failoverClusters, err := buildFailoverCompositeClusters(rdcRoute.Upstream.Failover, routeKey, sourceClusters, t.upstreamPolicyMessageTimeout())
 		if err != nil {
 			return nil, nil, fmt.Errorf("route %q: %w", routeKey, err)
 		}
@@ -973,13 +974,12 @@ func (t *Translator) TranslateConfigs(
 			// closing the gap where a client could otherwise self-suppress its own
 			// traffic/analytics record by sending a forged x-envoy-original-path.
 			//
-			// Also strip envoyClientOverridableHeaders — a client-supplied
-			// x-envoy-max-retries/x-envoy-*-timeout-ms/x-envoy-attempt-count
-			// would otherwise let a caller override retry/timeout behavior Envoy
-			// would normally only apply from server-side route config (or, for
-			// a failover route, from the model-failover policy's own per-chain
-			// override).
-			RequestHeadersToRemove: append([]string{envoyOriginalPathHeader}, envoyClientOverridableHeaders...),
+			// envoyClientOverridableHeaders are NOT stripped here: the router
+			// applies this list before it reads x-envoy-max-retries, so it
+			// would also remove model-failover's own per-request value. They
+			// are stripped at the connection manager instead, before any
+			// filter runs (see earlyStripClientOverridableHeaders).
+			RequestHeadersToRemove: []string{envoyOriginalPathHeader},
 		}
 		virtualHosts = append(virtualHosts, virtualHost)
 	}
@@ -1435,12 +1435,18 @@ func (t *Translator) createListener(virtualHosts []*route.VirtualHost, isHTTPS b
 		},
 	})
 
+	earlyStrip, err := earlyStripClientOverridableHeaders()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build early header mutation: %w", err)
+	}
+
 	// Create HTTP connection manager with RDS (Route Discovery Service)
 	// This allows route configuration to be shared between HTTP and HTTPS listeners
 	manager := &hcm.HttpConnectionManager{
-		CodecType:         hcm.HttpConnectionManager_AUTO,
-		StatPrefix:        "http",
-		GenerateRequestId: wrapperspb.Bool(true),
+		EarlyHeaderMutationExtensions: []*core.TypedExtensionConfig{earlyStrip},
+		CodecType:                     hcm.HttpConnectionManager_AUTO,
+		StatPrefix:                    "http",
+		GenerateRequestId:             wrapperspb.Bool(true),
 		RouteSpecifier: &hcm.HttpConnectionManager_Rds{
 			Rds: &hcm.Rds{
 				ConfigSource: &core.ConfigSource{
@@ -2916,6 +2922,30 @@ var envoyClientOverridableHeaders = []string{
 	"x-envoy-upstream-rq-per-try-timeout-ms",
 	"x-envoy-expected-rq-timeout-ms",
 	"x-envoy-attempt-count",
+}
+
+// earlyStripClientOverridableHeaders removes the client's copies of
+// envoyClientOverridableHeaders as the request enters the connection
+// manager, before any HTTP filter runs. Stripping them later (a route or
+// virtual-host RequestHeadersToRemove) is applied by the router before it
+// reads x-envoy-max-retries, so it would also drop the value the policy
+// engine sets per request, leaving every failover suffix with the route's
+// full retry budget and a retry Envoy can't place ("no healthy upstream").
+func earlyStripClientOverridableHeaders() (*core.TypedExtensionConfig, error) {
+	mutations := make([]*mutationrules.HeaderMutation, 0, len(envoyClientOverridableHeaders))
+	for _, name := range envoyClientOverridableHeaders {
+		mutations = append(mutations, &mutationrules.HeaderMutation{
+			Action: &mutationrules.HeaderMutation_Remove{Remove: name},
+		})
+	}
+	cfg, err := anypb.New(&earlyheadermutation.HeaderMutation{Mutations: mutations})
+	if err != nil {
+		return nil, err
+	}
+	return &core.TypedExtensionConfig{
+		Name:        "envoy.http.early_header_mutation.header_mutation",
+		TypedConfig: cfg,
+	}, nil
 }
 
 // buildIgnorePathsAccessLogFilter builds an Envoy AccessLogFilter that suppresses

@@ -26,10 +26,13 @@ MOCK_ANTHROPIC_PID=""
 
 log() { echo "[failover-e2e] $*"; }
 
+MOCK_BIN_DIR="$(mktemp -d)"
+
 cleanup() {
   log "cleaning up mock backends..."
   [[ -n "$MOCK_OPENAI_PID" ]] && kill "$MOCK_OPENAI_PID" 2>/dev/null || true
   [[ -n "$MOCK_ANTHROPIC_PID" ]] && kill "$MOCK_ANTHROPIC_PID" 2>/dev/null || true
+  rm -rf "$MOCK_BIN_DIR"
 }
 trap cleanup EXIT
 
@@ -57,12 +60,12 @@ command -v go >/dev/null 2>&1 || {
 
 log "checking the real gateway stack is already up (run 'make build' + 'docker compose up' yourself first if not)..."
 wait_for "$CONTROLLER_HEALTH_URL" "gateway-controller" || {
-  log "hint: cd gateway && docker compose --profile redis up -d gateway-controller gateway-runtime sample-backend redis"
+  log "hint: cd gateway && docker compose up -d gateway-controller gateway-runtime sample-backend"
   exit 1
 }
 wait_for "$RUNTIME_HEALTH_URL" "gateway-runtime" || exit 1
 
-# A mock left over from an earlier run keeps its port, so `go run` below
+# A mock left over from an earlier run keeps its port, so the mock below
 # would fail to bind and exit quietly while the health check passes against
 # the stale process — silently testing an old mock build.
 for port in 9611 9612; do
@@ -73,12 +76,18 @@ for port in 9611 9612; do
   fi
 done
 
+# Build, then run the binaries directly: killing a `go run` wrapper leaves
+# its compiled child serving the port, which the next run then trips over.
+log "building mocks..."
+(cd "$MOCK_OPENAI_DIR" && GOWORK=off go build -o "$MOCK_BIN_DIR/mock-openai" .)
+(cd "$MOCK_ANTHROPIC_DIR" && GOWORK=off go build -o "$MOCK_BIN_DIR/mock-anthropic" .)
+
 log "starting mock-openai on :9611..."
-(cd "$MOCK_OPENAI_DIR" && GOWORK=off go run .) &
+"$MOCK_BIN_DIR/mock-openai" &
 MOCK_OPENAI_PID=$!
 
 log "starting mock-anthropic on :9612..."
-(cd "$MOCK_ANTHROPIC_DIR" && GOWORK=off go run .) &
+"$MOCK_BIN_DIR/mock-anthropic" &
 MOCK_ANTHROPIC_PID=$!
 
 wait_for "$MOCK_OPENAI_HEALTH_URL" "mock-openai"

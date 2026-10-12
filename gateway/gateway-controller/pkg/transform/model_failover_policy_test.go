@@ -405,6 +405,37 @@ func TestParseModelFailoverParams_RejectsOutOfRangeStatusCode(t *testing.T) {
 	require.Error(t, err)
 }
 
+// ─── probeTimeoutMs: derived from the route's attempt deadline ──────────────
+
+func TestProbeTimeoutMs_DerivesFromTheAttemptDeadline(t *testing.T) {
+	sixtySeconds := 60 * time.Second
+	tenSeconds := 10 * time.Second
+	zero := time.Duration(0)
+	withTimeout := func(d *time.Duration) *models.Route {
+		return &models.Route{Timeout: &models.RouteTimeout{Timeout: d}}
+	}
+
+	cases := []struct {
+		name           string
+		perTrySeconds  int
+		route          *models.Route
+		defaultTimeout time.Duration
+		want           int
+	}{
+		{"gateway default route timeout", 0, &models.Route{}, 30 * time.Second, 35000},
+		{"route's own timeout wins over the default", 0, withTimeout(&sixtySeconds), 30 * time.Second, 65000},
+		{"perTryTimeout bounds each attempt", 8, withTimeout(&sixtySeconds), 30 * time.Second, 13000},
+		{"perTryTimeout never exceeds the route timeout", 20, withTimeout(&tenSeconds), 30 * time.Second, 15000},
+		{"perTryTimeout on a route with no timeout", 8, withTimeout(&zero), 30 * time.Second, 13000},
+		{"no deadline at all leaves the policy fallback", 0, withTimeout(&zero), 30 * time.Second, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, probeTimeoutMs(tc.perTrySeconds, tc.route, tc.defaultTimeout))
+		})
+	}
+}
+
 func TestParseModelFailoverParams_ValidatesCircuitFields(t *testing.T) {
 	base := func(extra map[string]interface{}) map[string]interface{} {
 		raw := map[string]interface{}{

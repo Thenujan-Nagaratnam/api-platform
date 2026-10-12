@@ -34,6 +34,7 @@ import (
 	tracev3 "github.com/envoyproxy/go-control-plane/envoy/config/trace/v3"
 	extproc "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	earlyheadermutation "github.com/envoyproxy/go-control-plane/envoy/extensions/http/early_header_mutation/header_mutation/v3"
 	otelresourcedetectorsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/tracers/opentelemetry/resource_detectors/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
@@ -1799,31 +1800,48 @@ func TestTranslator_TranslateConfigs_StripsClientOriginalPathHeader(t *testing.T
 // vhost uses model-failover — Envoy's router filter honors these from ANY
 // client request unless removed, so a forged x-envoy-max-retries could force
 // deeper retry storms against a downstream provider on an unrelated route.
-func TestTranslator_TranslateConfigs_StripsClientOverridableEnvoyHeaders(t *testing.T) {
-	logger := createTestLogger()
-	routerCfg := testRouterConfig()
-	cfg := testConfig()
-	translator := NewTranslator(logger, routerCfg, nil, cfg)
+// Client copies of envoyClientOverridableHeaders are stripped by the
+// connection manager before any filter runs, so the policy engine's own
+// x-envoy-max-retries survives to the router.
+func TestTranslator_CreateListener_StripsClientOverridableEnvoyHeadersEarly(t *testing.T) {
+	translator := NewTranslator(createTestLogger(), testRouterConfig(), nil, testConfig())
+
+	lis, _, err := translator.createListener(nil, false)
+	require.NoError(t, err)
+	manager := extractHCM(t, lis)
+
+	require.Len(t, manager.GetEarlyHeaderMutationExtensions(), 1)
+	ext := manager.GetEarlyHeaderMutationExtensions()[0]
+	assert.Equal(t, "envoy.http.early_header_mutation.header_mutation", ext.GetName())
+	mutation := &earlyheadermutation.HeaderMutation{}
+	require.NoError(t, ext.GetTypedConfig().UnmarshalTo(mutation))
+
+	removed := make([]string, 0, len(mutation.GetMutations()))
+	for _, m := range mutation.GetMutations() {
+		removed = append(removed, m.GetRemove())
+	}
+	assert.ElementsMatch(t, envoyClientOverridableHeaders, removed)
+}
+
+// The router applies a virtual host's RequestHeadersToRemove before it reads
+// x-envoy-max-retries, so these headers must not be stripped there: it would
+// drop the policy engine's own per-request value too.
+func TestTranslator_TranslateConfigs_VirtualHostKeepsPolicySetRetryHeaders(t *testing.T) {
+	translator := NewTranslator(createTestLogger(), testRouterConfig(), nil, testConfig())
 
 	resources, err := translator.TranslateConfigs([]*models.StoredConfig{}, "test-correlation-id")
 	require.NoError(t, err)
 
 	routeConfigs := resources[resource.RouteType]
 	require.NotEmpty(t, routeConfigs)
-
-	found := false
 	for _, res := range routeConfigs {
 		rc, ok := res.(*route.RouteConfiguration)
 		require.True(t, ok)
 		for _, vh := range rc.VirtualHosts {
-			found = true
-			for _, h := range envoyClientOverridableHeaders {
-				assert.Contains(t, vh.RequestHeadersToRemove, h,
-					"virtual host %q must strip client-supplied %q", vh.Name, h)
-			}
+			assert.Equal(t, []string{envoyOriginalPathHeader}, vh.RequestHeadersToRemove,
+				"virtual host %q must only strip x-envoy-original-path", vh.Name)
 		}
 	}
-	assert.True(t, found, "expected at least one virtual host in the shared route config")
 }
 
 // The gateway's own /ready and /healthy direct-response routes must be present in

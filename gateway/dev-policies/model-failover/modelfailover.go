@@ -174,10 +174,13 @@ type ModelFailoverParams struct {
 	// close a suspended target's circuit. Omitted/<=0 defaults to
 	// defaultRecoverAfterSuccesses.
 	RecoverAfterSuccesses int `json:"recoverAfterSuccesses,omitempty"`
-	// ProbeTimeout is how long, in seconds, a half-open probe may go without
-	// a recorded outcome before it counts as failed. Omitted/<=0 defaults to
+	// ProbeTimeoutMs is injected by the controller (never authored): how long
+	// a half-open probe may go without a recorded outcome before it counts as
+	// failed. The controller derives it from the longest an attempt can run
+	// (perTryTimeout, else the route timeout), past which Envoy has given up
+	// and no outcome can still arrive. Omitted/<=0 defaults to
 	// defaultProbeTimeout.
-	ProbeTimeout int `json:"probeTimeout,omitempty"`
+	ProbeTimeoutMs int `json:"probeTimeoutMs,omitempty"`
 
 	// RequestModel says where the client-requested model lives and where a
 	// fallback's own resolved model must be written — see RequestModelConfig.
@@ -257,19 +260,20 @@ const (
 	// defaultProbeTimeout frees a half-open probe slot whose outcome never
 	// arrived (a transport failure or client cancel never reaches
 	// recordOutcome), so a lost probe can't hold a target half-open forever.
+	// Used only when the route has no attempt deadline to derive one from.
 	defaultProbeTimeout = 60 * time.Second
 	// defaultRecoverAfterSuccesses is how many consecutive successful probes
 	// restore normal traffic when RecoverAfterSuccesses is unset.
 	defaultRecoverAfterSuccesses = 3
 )
 
-// probeLease is the configured probe timeout, defaulted at the point of use
+// probeLease is the injected probe timeout, defaulted at the point of use
 // like requestModelLocation, so a hand-built Policy behaves like a parsed one.
 func (p *Policy) probeLease() time.Duration {
-	if p.params.ProbeTimeout <= 0 {
+	if p.params.ProbeTimeoutMs <= 0 {
 		return defaultProbeTimeout
 	}
-	return time.Duration(p.params.ProbeTimeout) * time.Second
+	return time.Duration(p.params.ProbeTimeoutMs) * time.Millisecond
 }
 
 // recoverAfterSuccesses is the configured close quorum, defaulted at the
@@ -463,7 +467,7 @@ func parseParams(raw map[string]interface{}) (ModelFailoverParams, error) {
 	if params.RecoverAfterSuccesses, err = parseOptionalInt(raw, "recoverAfterSuccesses"); err != nil {
 		return params, err
 	}
-	if params.ProbeTimeout, err = parseOptionalInt(raw, "probeTimeout"); err != nil {
+	if params.ProbeTimeoutMs, err = parseOptionalInt(raw, "probeTimeoutMs"); err != nil {
 		return params, err
 	}
 
@@ -1288,15 +1292,24 @@ func chainBasePaths(entry *FailoverTargetEntry) []string {
 	return bases
 }
 
-// rebaseAttemptPath swaps whichever chain member's base path currently
-// prefixes currentPath for newBase, keeping the rest of the path and the query
-// string exactly as the client sent them. The longest matching base wins, on a
-// segment boundary, so "/openai" never matches "/openai-backup/...". When no
-// known base prefixes the path (not expected — the downstream rewrite always
-// uses one of them), it falls back to newBase + operationPath, which is exact
-// for a route whose operation path has no parameters and a no-op when
-// operationPath is empty.
+// rebaseAttemptPath returns the :path this attempt must dial, with the query
+// string kept. For a literal operation path (no {param}, no wildcard) that is
+// exactly newBase + operationPath. Otherwise only the client's concrete path
+// can fill in the parameters, so it swaps whichever chain member's base path
+// prefixes currentPath for newBase and keeps the rest. The longest matching
+// base wins, on a segment boundary, so "/openai" never matches
+// "/openai-backup/...". When no known base prefixes the path, it falls back to
+// newBase + operationPath, a no-op when operationPath is empty.
 func rebaseAttemptPath(currentPath, newBase string, knownBases []string, operationPath string) string {
+	// A literal operation path is the whole relative path for every member, so
+	// rebuild from it. The replayed :path can't be trusted past the base: an
+	// earlier attempt's transformer may have rewritten it into its own
+	// provider's shape (openai-to-anthropic turns "/chat/completions" into
+	// "/v1/messages"), and Envoy replays that on the retry.
+	if isLiteralOperationPath(operationPath) {
+		return withQueryFrom(currentPath, joinBasePathAndOperation(newBase, operationPath))
+	}
+
 	pathOnly, query, hasQuery := strings.Cut(currentPath, "?")
 
 	matched := ""
@@ -1471,6 +1484,12 @@ func (p *Policy) OnRequestHeaders(_ context.Context, reqCtx *policy.RequestHeade
 // (both static, query-free configuration values) would otherwise silently
 // drop it: "?stream=true" on the client's original request must survive
 // every attempt, not just the first.
+// isLiteralOperationPath reports whether operationPath names one concrete
+// path: non-empty, with no {param} placeholder and no wildcard.
+func isLiteralOperationPath(operationPath string) bool {
+	return operationPath != "" && !strings.ContainsAny(operationPath, "{}*")
+}
+
 func withQueryFrom(stalePath, newPath string) string {
 	if _, query, ok := strings.Cut(stalePath, "?"); ok && query != "" {
 		return newPath + "?" + query
@@ -1482,8 +1501,7 @@ func withQueryFrom(stalePath, newPath string) string {
 // 5xx by default, or exactly the configured StatusCodes) via recordOutcome —
 // this is the SOLE cross-request routing-health signal: downstream's
 // OnRequestBody suspension bypass reads exactly this state (Envoy's own
-// composite-cluster selection has no host-health awareness of its own — see
-// the outlier-detection investigation this design's history records — so
+// composite-cluster selection has no host-health awareness of its own, so
 // there is no second, Envoy-native mechanism to fall back on). A qualifying
 // failure counts toward SuspendAfterFailures and, once it trips, suspends the
 // target for a backoff-computed window; a non-qualifying response resets the

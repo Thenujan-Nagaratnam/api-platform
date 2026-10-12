@@ -61,7 +61,6 @@ func validFailoverParams() map[string]interface{} {
 		"suspendAfterFailures":  float64(2),
 		"maxSuspendMultiplier":  float64(8),
 		"recoverAfterSuccesses": float64(3),
-		"probeTimeout":          float64(60),
 		"perTryTimeout":         float64(15),
 	}
 }
@@ -92,6 +91,22 @@ func TestValidateLLMProxyPolicies_ModelFailoverUnknownParamsRejected(t *testing.
 	assert.Contains(t, fields, "spec.operationPolicies[0].paths[0].params.targets[0].fallbacks[0].region")
 }
 
+// probeTimeout is derived by the controller from the route's attempt deadline,
+// and probeTimeoutMs is controller-injected; neither may be authored.
+func TestValidateLLMProxyPolicies_ModelFailoverProbeTimeoutNotAuthorable(t *testing.T) {
+	validator := NewPolicyValidator(modelFailoverDefs())
+	params := validFailoverParams()
+	params["probeTimeout"] = float64(60)
+	params["probeTimeoutMs"] = float64(60000)
+
+	errors := validator.ValidateLLMProxyPolicies(proxyWithFailoverParams(params))
+
+	require.Len(t, errors, 2)
+	fields := []string{errors[0].Field, errors[1].Field}
+	assert.Contains(t, fields, "spec.operationPolicies[0].paths[0].params.probeTimeout")
+	assert.Contains(t, fields, "spec.operationPolicies[0].paths[0].params.probeTimeoutMs")
+}
+
 func TestValidateLLMProxyPolicies_ModelFailoverUnderProviderRejected(t *testing.T) {
 	validator := NewPolicyValidator(modelFailoverDefs())
 	cfg := proxyWithFailoverParams(validFailoverParams())
@@ -107,6 +122,47 @@ func TestValidateLLMProxyPolicies_ModelFailoverUnderProviderRejected(t *testing.
 	assert.Equal(t, "spec.provider.policies[0]", errors[0].Field)
 	assert.Equal(t, "spec.additionalProviders[0].policies[0]", errors[1].Field)
 	assert.Contains(t, errors[0].Message, "attach it in operationPolicies")
+}
+
+// Attached globally, model-failover gets no per-attempt copy, so retries to
+// another provider would carry the primary's credential.
+func TestValidateLLMProxyPolicies_ModelFailoverAsGlobalPolicyRejected(t *testing.T) {
+	validator := NewPolicyValidator(modelFailoverDefs())
+	params := validFailoverParams()
+	cfg := proxyWithFailoverParams(validFailoverParams())
+	cfg.Spec.GlobalPolicies = &[]api.Policy{{Name: "model-failover", Version: "v0", Params: &params}}
+
+	errors := validator.ValidateLLMProxyPolicies(cfg)
+
+	require.Len(t, errors, 1)
+	assert.Equal(t, "spec.globalPolicies[0]", errors[0].Field)
+	assert.Contains(t, errors[0].Message, "attach it in operationPolicies")
+}
+
+// Without model-failover nothing tags an attempt with its provider, so a
+// multi-provider proxy's per-provider lists would not run where declared.
+func TestValidateLLMProxyPolicies_ProviderPoliciesNeedModelFailover(t *testing.T) {
+	validator := NewPolicyValidator(map[string]models.PolicyDefinition{
+		"pii-masking|v0.1.0": {Name: "pii-masking", Version: "v0.1.0"},
+	})
+	masking := &[]api.Policy{{Name: "pii-masking", Version: "v0"}}
+	cfg := &api.LLMProxyConfiguration{Spec: api.LLMProxyConfigData{
+		Provider:            api.LLMProxyProvider{Id: "openai-primary", Policies: masking},
+		AdditionalProviders: &[]api.LLMProxyAdditionalProvider{{Id: "anthropic-provider", Policies: masking}},
+	}}
+
+	errors := validator.ValidateLLMProxyPolicies(cfg)
+
+	require.Len(t, errors, 2)
+	assert.Equal(t, "spec.provider.policies", errors[0].Field)
+	assert.Equal(t, "spec.additionalProviders[0].policies", errors[1].Field)
+
+	t.Run("a single-provider proxy needs no model-failover", func(t *testing.T) {
+		single := &api.LLMProxyConfiguration{Spec: api.LLMProxyConfigData{
+			Provider: api.LLMProxyProvider{Id: "openai-primary", Policies: masking},
+		}}
+		assert.Empty(t, validator.ValidateLLMProxyPolicies(single))
+	})
 }
 
 func TestValidateRestAPIPolicies_ModelFailoverUnderUpstreamRejected(t *testing.T) {

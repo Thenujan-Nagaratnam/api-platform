@@ -1469,9 +1469,13 @@ func (ec *PolicyExecutionContext) buildResponseContexts(headers *extprocv3.HttpH
 			// excluded from responseHeadersMap so no policy sees it as if it
 			// were a genuine upstream header.
 			if key == ResolvedFailoverProviderHeader {
-				if value != "" {
+				// Always stripped. Only trusted on a route whose chain runs
+				// upstream-attempt policies: there the upstream filter drops any
+				// copy the backend sent, so the value can only come from a
+				// policy. Elsewhere it could only have come from the backend.
+				ec.hasResolvedFailoverProviderHeader = true
+				if value != "" && ec.policyChain != nil && len(ec.policyChain.UpstreamPolicies) > 0 {
 					ec.sharedCtx.Metadata["resolved_failover_provider"] = value
-					ec.hasResolvedFailoverProviderHeader = true
 				}
 				continue
 			}

@@ -593,11 +593,35 @@ func TestRebaseAttemptPath(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			assert.Equal(t, c.want, rebaseAttemptPath(c.current, c.newBase, bases, "/unused"))
+			// "" (unknown operation path) exercises the prefix swap.
+			assert.Equal(t, c.want, rebaseAttemptPath(c.current, c.newBase, bases, ""))
 		})
 	}
 	assert.Equal(t, "/anthropic/chat/completions?x=1", rebaseAttemptPath("/elsewhere/chat?x=1", "/anthropic", bases, "/chat/completions"),
 		"no known prefix falls back to newBase + operationPath")
+}
+
+// An earlier attempt's transformer can rewrite :path into its own provider's
+// shape, and Envoy replays that on the retry. For a literal operation path the
+// next member's path is rebuilt from it, so the stale suffix is dropped.
+func TestRebaseAttemptPath_LiteralOperationPathDropsTransformedSuffix(t *testing.T) {
+	bases := []string{"/openai-provider", "/anthropic-provider"}
+
+	assert.Equal(t, "/openai-provider/chat/completions",
+		rebaseAttemptPath("/anthropic-provider/v1/messages", "/openai-provider", bases, "/chat/completions"))
+	assert.Equal(t, "/openai-provider/chat/completions?stream=true",
+		rebaseAttemptPath("/anthropic-provider/v1/messages?stream=true", "/openai-provider", bases, "/chat/completions"))
+}
+
+// A templated or wildcard operation path can't reproduce the client's concrete
+// path, so only the base prefix is swapped.
+func TestRebaseAttemptPath_TemplatedOperationPathKeepsConcretePath(t *testing.T) {
+	bases := []string{"/gemini-a", "/gemini-b"}
+
+	assert.Equal(t, "/gemini-b/models/gemini-pro:generateContent",
+		rebaseAttemptPath("/gemini-a/models/gemini-pro:generateContent", "/gemini-b", bases, "/models/{model}:generateContent"))
+	assert.Equal(t, "/gemini-b/anything/here",
+		rebaseAttemptPath("/gemini-a/anything/here", "/gemini-b", bases, "/*"))
 }
 
 // TestOnRequestHeaders_SetsUpstreamBasePathForThisAttempt pins the other half
@@ -1389,8 +1413,8 @@ func TestAllowRequest_ConfiguredRecoverAfterSuccessesClosesSooner(t *testing.T) 
 	assert.False(t, p.isSuspended(target.Model, target.Provider), "recoverAfterSuccesses: 1 closes on the first good probe")
 }
 
-func TestAllowRequest_ConfiguredProbeTimeoutReleasesLostProbe(t *testing.T) {
-	p := &Policy{params: ModelFailoverParams{SuspendDuration: 30, ProbeTimeout: 5}, susp: newSuspensionState()}
+func TestAllowRequest_InjectedProbeTimeoutReleasesLostProbe(t *testing.T) {
+	p := &Policy{params: ModelFailoverParams{SuspendDuration: 30, ProbeTimeoutMs: 5000}, susp: newSuspensionState()}
 	target := FailoverTarget{Model: "gpt-4o"}
 	key := p.keyFor(target)
 	p.susp.suspended[key] = time.Now().Add(-time.Second)
@@ -1411,12 +1435,12 @@ func TestParseParams_RecoveryParams(t *testing.T) {
 	params, err := parseParams(map[string]interface{}{
 		"targets":               []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}}}},
 		"recoverAfterSuccesses": float64(2),
-		"probeTimeout":          float64(10),
+		"probeTimeoutMs":        float64(10000),
 	})
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, params.RecoverAfterSuccesses)
-	assert.Equal(t, 10, params.ProbeTimeout)
+	assert.Equal(t, 10000, params.ProbeTimeoutMs)
 }
 
 // ─── ECI #18469 finding #7: idle registry eviction ──────────────────────────

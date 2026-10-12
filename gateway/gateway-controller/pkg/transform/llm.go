@@ -21,6 +21,7 @@ package transform
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	api "github.com/wso2/api-platform/gateway/gateway-controller/pkg/api/management"
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
@@ -37,6 +38,9 @@ type LLMTransformer struct {
 	llmTransformer  *utils.LLMProviderTransformer
 	restTransformer *RestAPITransformer
 	store           *storage.ConfigStore
+	// defaultRouteTimeout is the gateway-wide route timeout, which bounds a
+	// failover route's attempts when the route sets none of its own.
+	defaultRouteTimeout time.Duration
 }
 
 // NewLLMTransformer creates a new LLMTransformer.
@@ -48,11 +52,15 @@ func NewLLMTransformer(
 	policyDefinitions map[string]models.PolicyDefinition,
 	policyVersionResolver utils.PolicyVersionResolver,
 ) *LLMTransformer {
-	return &LLMTransformer{
+	t := &LLMTransformer{
 		llmTransformer:  utils.NewLLMProviderTransformer(store, db, routerConfig, policyVersionResolver),
 		restTransformer: NewRestAPITransformer(routerConfig, systemConfig, policyDefinitions),
 		store:           store,
 	}
+	if routerConfig != nil {
+		t.defaultRouteTimeout = time.Duration(routerConfig.Upstream.Timeouts.RouteTimeoutMs) * time.Millisecond
+	}
+	return t
 }
 
 // Transform converts a StoredConfig (LLM Provider or LLM Proxy) into RuntimeDeployConfig.
@@ -112,7 +120,8 @@ func (t *LLMTransformer) Transform(cfg *models.StoredConfig) (*models.RuntimeDep
 	// and only source: it resolves exactly the routes the policy is attached to.
 	// No-op for any other kind, and for any LlmProxy without the attachment.
 	if proxy, ok := cfg.SourceConfiguration.(api.LLMProxyConfiguration); ok {
-		if err := applyModelFailoverPolicyToRoutes(rdc, llmProxyProviderIdentities(&proxy), proxy.Spec.Provider.Id); err != nil {
+		rdc.PrimaryUpstreamName = proxy.Spec.Provider.Id
+		if err := applyModelFailoverPolicyToRoutes(rdc, llmProxyProviderIdentities(&proxy), proxy.Spec.Provider.Id, t.defaultRouteTimeout); err != nil {
 			return nil, fmt.Errorf("resolving %s policy: %w", modelFailoverPolicyName, err)
 		}
 	}

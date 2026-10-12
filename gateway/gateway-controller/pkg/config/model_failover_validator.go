@@ -40,7 +40,6 @@ var (
 		"suspendAfterFailures":  true,
 		"maxSuspendMultiplier":  true,
 		"recoverAfterSuccesses": true,
-		"probeTimeout":          true,
 		"perTryTimeout":         true,
 	}
 	modelFailoverTargetKeys = map[string]bool{

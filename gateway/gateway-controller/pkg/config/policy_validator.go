@@ -152,6 +152,43 @@ func (pv *PolicyValidator) ValidateLLMProxyPolicies(cfg *api.LLMProxyConfigurati
 			errors = append(errors, pv.validatePolicyList(ap.Policies, fmt.Sprintf("spec.additionalProviders[%d].policies", i))...)
 		}
 	}
+	return append(errors, providerPoliciesNeedModelFailover(cfg)...)
+}
+
+// providerPoliciesNeedModelFailover rejects per-provider policies on a
+// multi-provider proxy that has no model-failover operation policy. Each
+// provider's list runs only on attempts tagged with that provider, and only
+// model-failover tags attempts; without it an additional provider's list would
+// never run (a masking policy listed there would be skipped silently) and the
+// primary's list would run on every provider's traffic.
+func providerPoliciesNeedModelFailover(cfg *api.LLMProxyConfiguration) []ValidationError {
+	if cfg.Spec.AdditionalProviders == nil || len(*cfg.Spec.AdditionalProviders) == 0 {
+		return nil
+	}
+	if cfg.Spec.OperationPolicies != nil {
+		for _, p := range *cfg.Spec.OperationPolicies {
+			if p.Name == modelFailoverPolicyName {
+				return nil
+			}
+		}
+	}
+	if cfg.Spec.Policies != nil {
+		for _, p := range *cfg.Spec.Policies {
+			if p.Name == modelFailoverPolicyName {
+				return nil
+			}
+		}
+	}
+	const message = "per-provider policies on a proxy with additionalProviders require a model-failover operation policy"
+	var errors []ValidationError
+	if cfg.Spec.Provider.Policies != nil && len(*cfg.Spec.Provider.Policies) > 0 {
+		errors = append(errors, ValidationError{Field: "spec.provider.policies", Message: message})
+	}
+	for i, ap := range *cfg.Spec.AdditionalProviders {
+		if ap.Policies != nil && len(*ap.Policies) > 0 {
+			errors = append(errors, ValidationError{Field: fmt.Sprintf("spec.additionalProviders[%d].policies", i), Message: message})
+		}
+	}
 	return errors
 }
 
@@ -166,8 +203,15 @@ func (pv *PolicyValidator) validateLLMPolicyRefs(globalPolicies *[]api.Policy, o
 		for i, policy := range *globalPolicies {
 			fieldPath := fmt.Sprintf("spec.globalPolicies[%d]", i)
 			errors = append(errors, pv.validatePolicy(policy, fieldPath)...)
-			if policy.Name == modelFailoverPolicyName && policy.Params != nil {
-				errors = append(errors, validateModelFailoverParamKeys(*policy.Params, fieldPath+".params")...)
+			// The controller builds failover chains, and the per-attempt copy
+			// that selects each attempt's provider credential, only from the
+			// operation policies. Attached globally, retries would reach other
+			// providers carrying the primary's credential.
+			if policy.Name == modelFailoverPolicyName {
+				errors = append(errors, ValidationError{
+					Field:   fieldPath,
+					Message: "model-failover cannot be a global policy; attach it in operationPolicies",
+				})
 			}
 		}
 	}

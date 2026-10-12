@@ -76,6 +76,15 @@ func createUpstreamPolicyEngineCluster() *cluster.Cluster {
 	}
 }
 
+// upstreamPolicyMessageTimeout is the per-message timeout for the upstream
+// ext_proc filter: the same configured value the downstream filter uses.
+func (t *Translator) upstreamPolicyMessageTimeout() time.Duration {
+	if t.routerConfig == nil {
+		return 0
+	}
+	return time.Duration(t.routerConfig.PolicyEngine.MessageTimeoutMs) * time.Millisecond
+}
+
 // shouldAttachUpstreamPolicyFilter decides whether a route needs the
 // per-cluster upstream ext_proc filter at all. Routes with no upstream-phase
 // policy (the overwhelming majority) pay zero cost — no filter is attached.
@@ -98,7 +107,11 @@ func shouldAttachUpstreamPolicyFilter(requiresUpstreamRequest, requiresUpstreamR
 //
 // Idempotent: calling this more than once on the same cluster leaves exactly
 // one filter chain in place rather than accumulating duplicates.
-func attachUpstreamPolicyFilter(c *cluster.Cluster, upstreamPolicyEngineClusterName string) error {
+//
+// messageTimeout bounds each message exchange with the policy engine, as the
+// downstream filter's MessageTimeout does; 0 leaves Envoy's 200 ms default,
+// which a buffered body transformation can exceed.
+func attachUpstreamPolicyFilter(c *cluster.Cluster, upstreamPolicyEngineClusterName string, messageTimeout time.Duration) error {
 	extProcConfig := &extprocv3.ExternalProcessor{
 		GrpcService: &core.GrpcService{
 			TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
@@ -154,6 +167,9 @@ func attachUpstreamPolicyFilter(c *cluster.Cluster, upstreamPolicyEngineClusterN
 				Untyped: []string{constants.ExtProcMetadataNamespace},
 			},
 		},
+	}
+	if messageTimeout > 0 {
+		extProcConfig.MessageTimeout = durationpb.New(messageTimeout)
 	}
 	extProcAny, err := anypb.New(extProcConfig)
 	if err != nil {

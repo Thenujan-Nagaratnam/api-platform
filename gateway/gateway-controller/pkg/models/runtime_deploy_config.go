@@ -43,6 +43,12 @@ type RuntimeDeployConfig struct {
 	PolicyChains        map[string]*PolicyChain
 	UpstreamClusters    map[string]*UpstreamCluster
 	SensitiveValues     []string // resolved secret plaintext values for redaction; populated from StoredConfig.SensitiveValues
+	// PrimaryUpstreamName is the name a policy may route to (UpstreamName) to
+	// select the route's own main upstream. Set for LlmProxy to the primary
+	// provider's id, which has no upstream definition of its own: a router
+	// selecting the primary by name must land on the main cluster, not on a
+	// convention-derived cluster that does not exist. Empty for other kinds.
+	PrimaryUpstreamName string
 }
 
 // Metadata contains identity information for the deployed API.

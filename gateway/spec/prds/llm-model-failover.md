@@ -38,7 +38,6 @@ A `model-failover` policy on an LlmProxy operation declares, per requested model
     suspendAfterFailures: 2
     maxSuspendMultiplier: 8
     recoverAfterSuccesses: 3
-    probeTimeout: 60
     perTryTimeout: 20
 ```
 
@@ -50,12 +49,11 @@ A `model-failover` policy on an LlmProxy operation declares, per requested model
 | `suspendAfterFailures` | 1 | Consecutive failures before suspending. |
 | `maxSuspendMultiplier` | 8 | Cap on window doubling for repeat trips. |
 | `recoverAfterSuccesses` | 3 | Successful probes in a row that restore a suspended member. |
-| `probeTimeout` | 60 | Seconds a probe may go without a result before it counts as failed. |
 | `perTryTimeout` | route timeout | Seconds per attempt; × chain length must fit the route timeout. |
 
 - **Provider defaults:** a target without `provider` uses the proxy's primary; a fallback without `provider` uses its target's.
 - **Wildcard:** a `"*"` member keeps the client's model; an exact entry always wins.
-- **Rejected at deploy:** unknown provider, target with no fallback, duplicate model or member, chain over 10, bad status codes, `perTryTimeout` × chain over the route timeout, any parameter not listed above (at the top level, on a target or on a fallback), and model-failover attached to an upstream's `policies` list.
+- **Rejected at deploy:** unknown provider, target with no fallback, duplicate model or member, chain over 10, bad status codes, `perTryTimeout` × chain over the route timeout, any parameter not listed above (at the top level, on a target or on a fallback), model-failover attached to an upstream's `policies` list or as a global policy, and an authored `probeTimeout`.
 
 ### Per-provider upstream policies
 
@@ -80,13 +78,15 @@ spec:
 - Authors attach upstream policies only through these lists. There is no per-operation upstream flag.
 - Policies run in the order listed, after model-failover. The provider's transformer and auth always run after them.
 - model-failover itself is attached once, in the operation policies, never in a provider's list. The controller adds its per-attempt copy automatically, ahead of every provider's list. It must run on every attempt to set `selected_provider`, which is what the provider lists are gated on. The validator rejects it in a provider's list.
+- On a proxy with `additionalProviders`, per-provider lists require a model-failover operation policy; the validator rejects them otherwise. Only model-failover tags an attempt with its provider, so without it an additional provider's list would never run and the primary's would run on every provider's traffic.
 
 ### Deploy time
 
 The gateway controller validates the chains and compiles them into Envoy and policy-engine config.
 
 - **Clusters:** one leaf cluster per member, one `envoy.clusters.composite` per chain, and one suffix composite per fallback position (linear in chain length).
-- **Retry policy:** `retry_on` = 5xx (or the exact `statusCodes`) + `connect-failure`, `reset`, `reset-before-request`; per-try timeout; 1024 concurrent retries per leaf.
+- **Retry policy:** `retry_on` = 5xx (or the exact `statusCodes`) + `connect-failure`, `reset`, `reset-before-request`; per-try timeout; 1024 concurrent retries per leaf. The route allows the deepest chain's retries; the downstream policy lowers that per request to the entry point's remaining members.
+- **Named upstreams:** every provider on the proxy can be routed to by name, the primary included (by its id, mapped to the route's own cluster), so a router such as `llm-header-router` that selects the primary still reaches it.
 - **Policy chains:**
   - **Downstream:** model-failover.
   - **Upstream (per attempt):** model-failover first. Then each provider gets its own list, gated on `selected_provider`, built in this order:
@@ -115,12 +115,17 @@ The gateway controller validates the chains and compiles them into Envoy and pol
 ### Circuit breaker
 
 - **Open:** after `suspendAfterFailures` consecutive failures; skipped for the backoff window.
-- **Half-open:** probes are real requests, one at a time; others still skip. `recoverAfterSuccesses` successes (default 3) close it; a failed probe, or no result within `probeTimeout` (default 60 s), reopens it.
+- **Half-open:** probes are real requests, one at a time; others still skip. `recoverAfterSuccesses` successes (default 3) close it; a failed probe, or no result by the attempt deadline (`perTryTimeout`, else the route timeout, plus 5 s), reopens it. The controller derives that deadline and injects it as `probeTimeoutMs`; it is not configurable, since no result can arrive after Envoy gives up on the attempt.
 - **State:** per member (model + provider), in memory per replica, shared by the downstream and upstream policy instances; evicted after 24 h with no traffic or redeploy.
 
 ### Upstream ext_proc and existing policies
 
 Existing policies run per attempt unchanged. The engine calls the same `On*` methods with `Downstream == nil`. Request steps run in chain order and response steps in reverse. Each attempt starts from the original request.
+
+- **Fails closed:** if the upstream chain errors (for example an execution condition that cannot be evaluated), the attempt is answered with the same generic 500 the downstream phase returns. It is never sent on without the policies that did not run.
+- **Response bodies:** buffered only when the chain has a response-body policy (e.g. a transformer). Otherwise the policy engine skips the body, so a streamed completion passes through as it arrives.
+- **Message timeout:** the per-attempt filter uses the configured policy-engine `message_timeout_ms`, as the downstream filter does.
+- **Provider attribution:** the `x-wso2-resolved-failover-provider` header is internal. The per-attempt filter drops any copy a backend sends, and the downstream phase trusts it only on routes with upstream policies and always strips it before the client.
 
 Upstream policies are attached per upstream, not per operation:
 
@@ -158,6 +163,8 @@ Upstream policies are attached per upstream, not per operation:
 - ext_proc is not called for Envoy's local replies, so connection failures retry but never suspend.
 - The upstream filter must sit on the composite cluster, not the leaves, or it never fires.
 - The upstream filter needs system-header mutation (`:path`) and a buffered response body for transforms.
+- A composite cluster has no member for an attempt past its end: a spare retry fails with 503 "no healthy upstream". The policy caps each request's retries to its entry point with `x-envoy-max-retries`. Client copies of that header are stripped by the connection manager before any filter runs; stripping them on the virtual host also removed the policy's own value, because the router applies that removal before it reads the header.
+- Envoy replays the previous attempt's `:path`, including any transformer rewrite (Anthropic's `/v1/messages`). For a literal operation path the upstream policy rebuilds each attempt's path as the member's base path plus the operation path.
 
 ## The challenges and how the proposed solutions handle them
 
@@ -363,15 +370,6 @@ parameters:
         failed probe suspends the target again.
       minimum: 1
       default: 3
-    probeTimeout:
-      type: integer
-      x-wso2-policy-advanced-param: true
-      description: |
-        Seconds a probe request may go without a result (for example a
-        connection failure the policy never sees) before it counts as failed
-        and the target is suspended again.
-      minimum: 1
-      default: 60
     perTryTimeout:
       type: integer
       x-wso2-policy-advanced-param: true

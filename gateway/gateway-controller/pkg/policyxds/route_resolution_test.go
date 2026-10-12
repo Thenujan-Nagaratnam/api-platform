@@ -722,3 +722,74 @@ func TestRouteConfigRegistersFailoverAggregateClusterByName(t *testing.T) {
 		assert.False(t, registered, "leaf %d is never an UpstreamName, so it must not be registered", pos)
 	}
 }
+
+// An LlmProxy's primary provider has no upstream definition, yet a router
+// (llm-header-router's defaultProvider or a mapping) can select it by its id.
+// It must be registered against the route's own main cluster; unregistered,
+// the policy engine derives a convention cluster name that does not exist and
+// Envoy answers 503 NC cluster_not_found for every request routed to it.
+func TestRouteConfigRegistersPrimaryUpstreamByName(t *testing.T) {
+	const routeKey = "POST|/proxy/chat/completions|localhost"
+	rdc := &models.RuntimeDeployConfig{
+		Metadata:            models.Metadata{UUID: "proxy-1", Kind: "LlmProxy", Handle: "proxy"},
+		Context:             "/proxy",
+		PolicyChainResolver: models.RouteKeyResolverName,
+		PrimaryUpstreamName: "openai-provider",
+		Routes: map[string]*models.Route{
+			routeKey: {
+				Method: "POST", Path: "/proxy/chat/completions", OperationPath: "/chat/completions",
+				Vhost:    "localhost",
+				Upstream: models.RouteUpstream{ClusterKey: "upstream_main_127.0.0.1_8080", UseClusterHeader: true},
+			},
+		},
+		PolicyChains: map[string]*models.PolicyChain{routeKey: {}},
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"upstream_main_127.0.0.1_8080": {BasePath: "/openai-provider", Endpoints: []models.Endpoint{{Host: "127.0.0.1", Port: 8080}}},
+			"upstream_anthropic": {
+				Name: "anthropic-upstream", BasePath: "/anthropic-provider",
+				Endpoints: []models.Endpoint{{Host: "127.0.0.1", Port: 8080}},
+			},
+		},
+	}
+
+	resources, err := testTranslator().TranslateRuntimeConfigs([]*models.RuntimeDeployConfig{rdc})
+	require.NoError(t, err)
+
+	data := decodeRouteConfig(t, resources[RouteConfigTypeURL][routeKey])
+	registry, ok := data["upstream_definition_targets"].(map[string]interface{})
+	require.True(t, ok)
+
+	primary, ok := registry["openai-provider"].(map[string]interface{})
+	require.True(t, ok, "the primary provider id must be addressable by name")
+	assert.Equal(t, "upstream_main_127.0.0.1_8080", primary["cluster_name"], "it must name the route's real main cluster")
+	assert.Equal(t, "/openai-provider", primary["base_path"])
+}
+
+// A real upstream definition that happens to share the primary's name keeps
+// its own registration.
+func TestRouteConfigPrimaryUpstreamNameNeverShadowsADefinition(t *testing.T) {
+	const routeKey = "POST|/proxy/chat/completions|localhost"
+	rdc := &models.RuntimeDeployConfig{
+		Metadata:            models.Metadata{UUID: "proxy-1", Kind: "LlmProxy", Handle: "proxy"},
+		PolicyChainResolver: models.RouteKeyResolverName,
+		PrimaryUpstreamName: "shared",
+		Routes: map[string]*models.Route{
+			routeKey: {Method: "POST", Path: "/chat/completions", OperationPath: "/chat/completions", Vhost: "localhost",
+				Upstream: models.RouteUpstream{ClusterKey: "upstream_main"}},
+		},
+		PolicyChains: map[string]*models.PolicyChain{routeKey: {}},
+		UpstreamClusters: map[string]*models.UpstreamCluster{
+			"upstream_main":   {BasePath: "/main", Endpoints: []models.Endpoint{{Host: "127.0.0.1", Port: 8080}}},
+			"upstream_shared": {Name: "shared", BasePath: "/shared", Endpoints: []models.Endpoint{{Host: "127.0.0.1", Port: 8080}}},
+		},
+	}
+
+	resources, err := testTranslator().TranslateRuntimeConfigs([]*models.RuntimeDeployConfig{rdc})
+	require.NoError(t, err)
+
+	data := decodeRouteConfig(t, resources[RouteConfigTypeURL][routeKey])
+	registry := data["upstream_definition_targets"].(map[string]interface{})
+	shared := registry["shared"].(map[string]interface{})
+	assert.Equal(t, "/shared", shared["base_path"])
+	assert.Equal(t, "", shared["cluster_name"])
+}

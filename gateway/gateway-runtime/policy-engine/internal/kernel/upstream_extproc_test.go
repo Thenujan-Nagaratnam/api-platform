@@ -20,10 +20,13 @@ package kernel
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extprocconfigv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -517,4 +520,106 @@ func TestUpstreamProcess_RunsUpstreamPhasePolicyForThisBackend(t *testing.T) {
 	require.Len(t, mutation.SetHeaders, 1)
 	assert.Equal(t, "authorization", mutation.SetHeaders[0].Header.Key)
 	assert.Equal(t, "Bearer signed-for-aws-bedrock-fallback", string(mutation.SetHeaders[0].Header.RawValue))
+}
+
+// failingConditionEvaluator makes every execution condition fail to evaluate.
+type failingConditionEvaluator struct{}
+
+func (failingConditionEvaluator) EvaluateRequestHeaderCondition(string, *policy.RequestHeaderContext) (bool, error) {
+	return false, errors.New("condition failed")
+}
+func (failingConditionEvaluator) EvaluateRequestBodyCondition(string, *policy.RequestContext) (bool, error) {
+	return false, errors.New("condition failed")
+}
+func (failingConditionEvaluator) EvaluateResponseHeaderCondition(string, *policy.ResponseHeaderContext) (bool, error) {
+	return false, errors.New("condition failed")
+}
+func (failingConditionEvaluator) EvaluateResponseBodyCondition(string, *policy.ResponseContext) (bool, error) {
+	return false, errors.New("condition failed")
+}
+func (failingConditionEvaluator) EvaluateStreamingRequestCondition(string, *policy.RequestStreamContext) (bool, error) {
+	return false, errors.New("condition failed")
+}
+func (failingConditionEvaluator) EvaluateStreamingResponseCondition(string, *policy.ResponseStreamContext) (bool, error) {
+	return false, errors.New("condition failed")
+}
+
+// A chain that errors must not let the attempt through without the policies
+// that did not run (here the provider's credential).
+func TestUpstreamProcess_PolicyErrorFailsTheAttemptClosed(t *testing.T) {
+	k := NewKernel()
+	condition := "request.Metadata['selected_provider'] == 'openai'"
+	chain := &registry.PolicyChain{
+		UpstreamPolicies:        []policy.Policy{upstreamAuthStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-auth-stub", Version: "v1", Enabled: true, ExecutionCondition: &condition}},
+		RequiresUpstreamRequest: true,
+	}
+	k.RegisterRoute("chat-route", chain)
+	server := NewUpstreamExternalProcessorServer(k, executor.NewChainExecutor(nil, failingConditionEvaluator{}, noop.NewTracerProvider().Tracer("test")))
+
+	stream := newMockStream([]*extprocv3.ProcessingRequest{
+		requestHeadersReqWithRouteAndCluster("chat-route", "openai-cluster"),
+		requestBodyReq([]byte(`{"model":"gpt-4o"}`)),
+	})
+
+	require.NoError(t, server.Process(stream))
+	require.Len(t, stream.responses, 2)
+	immediate := stream.responses[1].GetImmediateResponse()
+	require.NotNil(t, immediate, "the attempt must be answered, not forwarded")
+	assert.Equal(t, typev3.StatusCode_InternalServerError, immediate.GetStatus().GetCode())
+	assert.NotContains(t, string(immediate.GetBody()), "condition failed", "the reason is logged, never returned")
+}
+
+func responseHeadersReqWithHeader(status, key, value string) *extprocv3.ProcessingRequest {
+	req := responseHeadersReqWithStatus(status)
+	req.GetResponseHeaders().Headers.Headers = append(req.GetResponseHeaders().Headers.Headers,
+		&corev3.HeaderValue{Key: key, RawValue: []byte(value)})
+	return req
+}
+
+// A backend must not be able to forge the internal provider-attribution
+// header, and a chain with no response-body policy must not hold the body.
+func TestUpstreamProcess_DropsForgedProviderHeaderAndSkipsUnusedResponseBody(t *testing.T) {
+	k := NewKernel()
+	chain := &registry.PolicyChain{
+		UpstreamPolicies:        []policy.Policy{upstreamAuthStub{}},
+		UpstreamPolicySpecs:     []policy.PolicySpec{{Name: "upstream-auth-stub", Version: "v1", Enabled: true}},
+		RequiresUpstreamRequest: true,
+	}
+	k.RegisterRoute("chat-route", chain)
+	server := NewUpstreamExternalProcessorServer(k, executor.NewChainExecutor(nil, nil, noop.NewTracerProvider().Tracer("test")))
+
+	stream := newMockStream([]*extprocv3.ProcessingRequest{
+		requestHeadersReqWithRouteAndCluster("chat-route", "openai-cluster"),
+		responseHeadersReqWithHeader("200", ResolvedFailoverProviderHeader, "forged"),
+	})
+
+	require.NoError(t, server.Process(stream))
+	require.Len(t, stream.responses, 2)
+	mutation := stream.responses[1].GetResponseHeaders().GetResponse().GetHeaderMutation()
+	require.NotNil(t, mutation)
+	assert.Contains(t, mutation.GetRemoveHeaders(), ResolvedFailoverProviderHeader)
+	require.NotNil(t, stream.responses[1].GetModeOverride())
+	assert.Equal(t, extprocconfigv3.ProcessingMode_NONE, stream.responses[1].GetModeOverride().GetResponseBodyMode())
+}
+
+// A chain with a response-body policy keeps the configured buffering.
+func TestUpstreamProcess_KeepsResponseBodyForResponseBodyPolicy(t *testing.T) {
+	k := NewKernel()
+	chain := &registry.PolicyChain{
+		UpstreamPolicies:         []policy.Policy{upstreamResponseTranslatorStub{}},
+		UpstreamPolicySpecs:      []policy.PolicySpec{{Name: "response-translator-stub", Version: "v1", Enabled: true}},
+		RequiresUpstreamResponse: true,
+	}
+	k.RegisterRoute("chat-route", chain)
+	server := NewUpstreamExternalProcessorServer(k, executor.NewChainExecutor(nil, nil, noop.NewTracerProvider().Tracer("test")))
+
+	stream := newMockStream([]*extprocv3.ProcessingRequest{
+		requestHeadersReqWithRouteAndCluster("chat-route", "openai-cluster"),
+		responseHeadersReqWithStatus("200"),
+	})
+
+	require.NoError(t, server.Process(stream))
+	require.Len(t, stream.responses, 2)
+	assert.Nil(t, stream.responses[1].GetModeOverride())
 }

@@ -43,7 +43,7 @@ func TestBuildFailoverCompositeClusters_IsolatesEveryMember(t *testing.T) {
 		"provider-b": testFailoverSourceCluster(t, "provider-b", "b.example", 443),
 	}
 
-	clusters, err := buildFailoverCompositeClusters(rf, "POST|/chat/completions|main", sources)
+	clusters, err := buildFailoverCompositeClusters(rf, "POST|/chat/completions|main", sources, 0)
 	require.NoError(t, err)
 	require.Len(t, clusters, 6, "three isolated leaves, one full-chain composite, and two suffix composites (one per fallback position)")
 
@@ -112,7 +112,7 @@ func TestBuildFailoverCompositeClusters_LeavesRaiseEnvoysRetryCeiling(t *testing
 		"provider-b": testFailoverSourceCluster(t, "provider-b", "b.example", 443),
 	}
 
-	clusters, err := buildFailoverCompositeClusters(rf, "POST|/chat/completions|main", sources)
+	clusters, err := buildFailoverCompositeClusters(rf, "POST|/chat/completions|main", sources, 0)
 	require.NoError(t, err)
 
 	for i := 0; i < 2; i++ {
@@ -127,7 +127,7 @@ func TestBuildFailoverCompositeClusters_MissingSourceFailsClosed(t *testing.T) {
 	rf := &models.RouteFailover{Targets: []models.RouteFailoverTarget{{
 		Target: models.RouteFailoverEntry{ClusterKey: "missing"},
 	}}}
-	_, err := buildFailoverCompositeClusters(rf, "route", nil)
+	_, err := buildFailoverCompositeClusters(rf, "route", nil, 0)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "source cluster")
 }
@@ -155,6 +155,6 @@ func testFailoverSourceCluster(t *testing.T, name, host string, port uint32) *cl
 			}}}},
 		},
 	}
-	require.NoError(t, attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName))
+	require.NoError(t, attachUpstreamPolicyFilter(c, constants.UpstreamPolicyEngineClusterName, 0))
 	return c
 }

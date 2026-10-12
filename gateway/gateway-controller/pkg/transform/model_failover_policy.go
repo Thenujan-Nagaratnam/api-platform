@@ -115,11 +115,14 @@ type modelFailoverParams struct {
 	// policy; omitted/0 means its default (8), 1 disables doubling.
 	MaxSuspendMultiplier int `json:"maxSuspendMultiplier,omitempty"`
 
-	// RecoverAfterSuccesses and ProbeTimeout (seconds) tune half-open
-	// recovery. Passed through to the runtime policy; omitted/0 means its
-	// defaults (3 probes, 60 seconds).
+	// RecoverAfterSuccesses tunes half-open recovery. Passed through to the
+	// runtime policy; omitted/0 means its default (3 probes).
 	RecoverAfterSuccesses int `json:"recoverAfterSuccesses,omitempty"`
-	ProbeTimeout          int `json:"probeTimeout,omitempty"`
+
+	// ProbeTimeoutMs is injected by the controller (never authored): how long
+	// the runtime policy waits on a half-open probe whose outcome never
+	// arrives. See probeTimeoutMs.
+	ProbeTimeoutMs int `json:"probeTimeoutMs,omitempty"`
 
 	// Note: this struct deliberately has NO requestModel field. requestModel
 	// (where the model lives in the request — payload JSONPath, header,
@@ -251,9 +254,6 @@ func parseModelFailoverParams(raw map[string]interface{}, availableProviders []s
 	}
 	if params.RecoverAfterSuccesses < 0 {
 		return nil, fmt.Errorf("model-failover: recoverAfterSuccesses must not be negative")
-	}
-	if params.ProbeTimeout < 0 {
-		return nil, fmt.Errorf("model-failover: probeTimeout must not be negative")
 	}
 
 	return &params, nil
@@ -415,7 +415,7 @@ func llmProxyProviderIdentities(proxy *api.LLMProxyConfiguration) []string {
 // Params are merged key-wise rather than replaced so keys the chain builder
 // added (attachedTo) survive.
 func applyModelFailoverPolicyToRoutes(rdc *models.RuntimeDeployConfig, availableProviders []string,
-	primaryProviderID string) error {
+	primaryProviderID string, defaultRouteTimeout time.Duration) error {
 	for routeKey, r := range rdc.Routes {
 		chain := rdc.PolicyChains[rdc.EffectiveCanonicalChainKey(routeKey, r)]
 		if chain == nil {
@@ -439,6 +439,7 @@ func applyModelFailoverPolicyToRoutes(rdc *models.RuntimeDeployConfig, available
 		if err != nil {
 			return err
 		}
+		expanded.ProbeTimeoutMs = probeTimeoutMs(params.PerTryTimeout, r, defaultRouteTimeout)
 		expandedParams, err := modelFailoverParamsToMap(expanded)
 		if err != nil {
 			return fmt.Errorf("route %q: %w", routeKey, err)
@@ -459,6 +460,35 @@ func applyModelFailoverPolicyToRoutes(rdc *models.RuntimeDeployConfig, available
 		}
 	}
 	return nil
+}
+
+// probeGrace is added to the attempt deadline so an outcome recorded right at
+// that deadline is not raced by the probe's own expiry.
+const probeGrace = 5 * time.Second
+
+// probeTimeoutMs is how long the runtime policy should wait on a half-open
+// probe before treating it as failed. A probe's outcome can only go missing
+// when Envoy gave up on the attempt, and Envoy always gives up by the
+// attempt's deadline: perTryTimeout when set, otherwise the route timeout
+// (the route's own, else the gateway default). Past that deadline no outcome
+// can still arrive, so it replaces an authored probe timeout. A route with no
+// deadline at all (an explicit zero timeout) returns 0, leaving the policy's
+// own fallback in effect.
+func probeTimeoutMs(perTryTimeoutSeconds int, r *models.Route, defaultRouteTimeout time.Duration) int {
+	deadline := defaultRouteTimeout
+	if r.Timeout != nil && r.Timeout.Timeout != nil {
+		deadline = *r.Timeout.Timeout
+	}
+	if perTryTimeoutSeconds > 0 {
+		perTry := time.Duration(perTryTimeoutSeconds) * time.Second
+		if deadline <= 0 || perTry < deadline {
+			deadline = perTry
+		}
+	}
+	if deadline <= 0 {
+		return 0
+	}
+	return int((deadline + probeGrace).Milliseconds())
 }
 
 // modelFailoverParamsToMap renders the expanded params back into the generic

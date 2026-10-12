@@ -45,6 +45,11 @@ func main() {
 	mux.HandleFunc("/control/arm-failure", handleArmFailure)
 	mux.HandleFunc("/control/reset", handleReset)
 	mux.HandleFunc("/control/history", handleHistory)
+	// Anything else is a misrouted request; log it so a 404 is diagnosable.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("unmatched request: %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
+	})
 
 	log.Printf("mock-anthropic listening on %s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, mux))

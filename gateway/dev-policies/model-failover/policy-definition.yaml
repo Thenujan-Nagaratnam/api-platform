@@ -113,15 +113,6 @@ parameters:
         failed probe suspends the target again.
       minimum: 1
       default: 3
-    probeTimeout:
-      type: integer
-      x-wso2-policy-advanced-param: true
-      description: |
-        Seconds a probe request may go without a result (for example a
-        connection failure the policy never sees) before it counts as failed
-        and the target is suspended again.
-      minimum: 1
-      default: 60
     perTryTimeout:
       type: integer
       x-wso2-policy-advanced-param: true
@@ -139,7 +130,10 @@ parameters:
   # the LLM provider template and merged into this policy's params
   # automatically by gateway-controller's llm_transformer.go
   # (buildTemplateParams/mergeParams), the same place primaryProvider/
-  # operationPath are injected rather than authored. The runtime policy
+  # operationPath are injected rather than authored. So is probeTimeoutMs: the
+  # controller derives how long a lost probe is waited on from perTryTimeout,
+  # else the route timeout, since no outcome can arrive after Envoy gives up
+  # on the attempt. The runtime policy
   # (modelfailover.go) parses and defaults it from its own raw params map.
 
 systemParameters:

@@ -41,32 +41,42 @@ translation) exercise exactly that case.
     arrived.
 - `postman/llm-failover-e2e.postman_collection.json` — the full e2e suite.
 
-## 1. Start the mocks (host machine, not containers)
+## 1. Mocks (host machine, not containers)
+
+`run-failover-e2e.sh` builds and starts both mocks itself and stops them on
+exit. To run them by hand, build and run the binaries rather than `go run`:
+killing a `go run` wrapper leaves its compiled child holding the port.
 
 ```bash
-cd gateway/dev-policies/mocks/mock-openai && GOWORK=off go run . &
-cd gateway/dev-policies/mocks/mock-anthropic && GOWORK=off go run . &
-curl -s localhost:9611/healthz && echo
-curl -s localhost:9612/healthz && echo
+(cd gateway/dev-policies/mocks/mock-openai && GOWORK=off go build -o /tmp/mock-openai .) && /tmp/mock-openai &
+(cd gateway/dev-policies/mocks/mock-anthropic && GOWORK=off go build -o /tmp/mock-anthropic .) && /tmp/mock-anthropic &
 ```
 
 `host.docker.internal` resolves back to these from inside the gateway
 containers automatically (Docker Desktop/Colima/Rancher) — no extra config.
+Each mock logs any request to a path it doesn't serve, so a 404 from a mock
+shows the exact path the gateway sent.
 
-## 2. Build (run yourself — not run automatically)
+## 2. Build
 
 ```bash
 cd gateway
 make build
 ```
 
-Builds from `build.yaml`'s `gomodule:` entries — no local policy overrides.
+`model-failover` comes from its `filePath:` entry in `build.yaml`; every other
+policy from its `gomodule:` entry. `make build` runs the policy-engine's host
+tests first: on macOS with a newer Command Line Tools SDK, set
+`SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk` if linking
+fails with `unknown architecture`. A stale, git-ignored
+`policy-engine/cmd/policy-engine/plugin_registry.go` from a manual builder run
+also breaks those tests; delete it.
 
-## 3. Bring up the stack (run yourself)
+## 3. Bring up the stack
 
 ```bash
 cd gateway
-docker compose --profile redis up -d gateway-controller gateway-runtime sample-backend redis
+docker compose up -d --force-recreate gateway-controller gateway-runtime sample-backend
 ```
 
 - gateway-controller management API: `http://localhost:9090/api/management/v1`
@@ -128,7 +138,7 @@ concurrency check; it exits non-zero if either fails.
 | 10. Same-Provider Fallback (Model Only) | A fallback on the primary's own provider retries the same cluster with the primary's credential, with the body rewritten to the cheaper model |
 | 14. Circuit - Half-Open Reopen And Close | After the 3s window, one probe reaches the primary; it fails, the circuit reopens with a doubled 6s window and the next request is skipped; after that window one successful probe closes it |
 | 15. Circuit - Three-Member Chain And Exhaustion | Chain `gpt-4o` → Anthropic → `gpt-4o-mini`. With the primary suspended, the request enters at the Anthropic suffix; when Anthropic fails, Envoy still retries on to `gpt-4o-mini` (body rewritten to that model) and the suspended primary is not dialed. With only `gpt-4o-mini` left, its 500 reaches the client. With every member suspended, the policy answers `503 failover_exhausted` locally and neither mock is dialed |
-| 16. Deploy-Time Validation | The controller rejects, with a 400 naming the field, an unknown top-level param (`perTryTimeoutMs`), a stale `upstreamDefinition` on a target, and model-failover under `provider.policies`; a proxy using every param, including `recoverAfterSuccesses` and `probeTimeout`, deploys |
+| 16. Deploy-Time Validation | The controller rejects, with a 400 naming the field, an unknown top-level param (`perTryTimeoutMs`), a stale `upstreamDefinition` on a target, and model-failover under `provider.policies`; an authored `probeTimeout` (now derived) is rejected; a proxy using every param, including `recoverAfterSuccesses`, deploys |
 | Probe concurrency (script) | While half-open, 3 concurrent requests send exactly 1 to the slow, recovering primary and 2 to the fallback; once that probe closes the circuit, 3 concurrent requests all reach the primary |
 
 ## Cleanup
@@ -137,4 +147,5 @@ concurrency check; it exits non-zero if either fails.
 docker compose down
 ```
 
-Kill the two `go run` mock processes.
+If you started the mocks by hand, stop them:
+`kill $(lsof -t -nP -iTCP:9611 -sTCP:LISTEN) $(lsof -t -nP -iTCP:9612 -sTCP:LISTEN)`.

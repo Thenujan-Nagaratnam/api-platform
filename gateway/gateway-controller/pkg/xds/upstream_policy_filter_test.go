@@ -20,6 +20,7 @@ package xds
 
 import (
 	"testing"
+	"time"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
@@ -34,7 +35,7 @@ import (
 func TestAttachUpstreamPolicyFilter_EndsWithTerminalUpstreamCodec(t *testing.T) {
 	c := &cluster.Cluster{Name: "test-backend-cluster"}
 
-	err := attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster")
+	err := attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster", 0)
 	require.NoError(t, err)
 
 	require.NotNil(t, c.TypedExtensionProtocolOptions)
@@ -53,6 +54,19 @@ func TestAttachUpstreamPolicyFilter_EndsWithTerminalUpstreamCodec(t *testing.T) 
 	require.NoError(t, opts.HttpFilters[1].GetTypedConfig().UnmarshalTo(&codecCfg))
 }
 
+// The upstream filter uses the configured policy-engine message timeout, not
+// Envoy's 200 ms default.
+func TestAttachUpstreamPolicyFilter_SetsMessageTimeout(t *testing.T) {
+	c := &cluster.Cluster{Name: "test-backend-cluster"}
+	require.NoError(t, attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster", 60*time.Second))
+
+	var opts httpv3.HttpProtocolOptions
+	require.NoError(t, c.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey].UnmarshalTo(&opts))
+	var extProc extprocv3.ExternalProcessor
+	require.NoError(t, opts.HttpFilters[0].GetTypedConfig().UnmarshalTo(&extProc))
+	assert.Equal(t, 60*time.Second, extProc.GetMessageTimeout().AsDuration())
+}
+
 func TestAttachUpstreamPolicyFilter_ProducesValidHttpProtocolOptions(t *testing.T) {
 	// Envoy rejects the whole CDS update at warming time if
 	// HttpProtocolOptions.upstream_protocol_options (a required oneof) is
@@ -62,7 +76,7 @@ func TestAttachUpstreamPolicyFilter_ProducesValidHttpProtocolOptions(t *testing.
 	// than only discovering it against a real Envoy.
 	c := &cluster.Cluster{Name: "test-backend-cluster"}
 
-	err := attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster")
+	err := attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster", 0)
 	require.NoError(t, err)
 
 	anyOpts := c.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey]
@@ -75,7 +89,7 @@ func TestAttachUpstreamPolicyFilter_ProducesValidHttpProtocolOptions(t *testing.
 func TestAttachUpstreamPolicyFilter_PointsAtGivenExtProcCluster(t *testing.T) {
 	c := &cluster.Cluster{Name: "test-backend-cluster"}
 
-	err := attachUpstreamPolicyFilter(c, "my-upstream-policy-cluster")
+	err := attachUpstreamPolicyFilter(c, "my-upstream-policy-cluster", 0)
 	require.NoError(t, err)
 
 	anyOpts := c.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey]
@@ -101,8 +115,8 @@ func TestAttachUpstreamPolicyFilter_PointsAtGivenExtProcCluster(t *testing.T) {
 func TestAttachUpstreamPolicyFilter_IsIdempotent(t *testing.T) {
 	c := &cluster.Cluster{Name: "test-backend-cluster"}
 
-	require.NoError(t, attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster"))
-	require.NoError(t, attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster"))
+	require.NoError(t, attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster", 0))
+	require.NoError(t, attachUpstreamPolicyFilter(c, "upstream-policy-engine-cluster", 0))
 
 	anyOpts := c.TypedExtensionProtocolOptions[constants.HttpProtocolOptionsTypedConfigKey]
 	var opts httpv3.HttpProtocolOptions
