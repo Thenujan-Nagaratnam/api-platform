@@ -34,7 +34,9 @@ case "${names}" in
   *) echo "The gateway runtime has no AWS session credentials. Check that the service is named gateway-runtime." >&2; exit 1 ;;
 esac
 
-# 5. Follow the logs so you can see the gateway come up. Ctrl+C stops following; the gateway
-#    keeps running. Stop it with: docker compose --env-file api-platform.env down
-echo "Following the gateway logs. Press Ctrl+C to stop following; the gateway keeps running."
-gateway_compose logs -f --tail 20 gateway-controller gateway-runtime
+# 5. Leave the gateway running in the background. Set FOLLOW_LOGS=1 to follow its logs now.
+echo "The gateway is running in the background. To follow its logs:"
+echo "  (cd \"${GATEWAY_DIR}\" && docker compose --env-file api-platform.env logs -f)"
+if [ "${FOLLOW_LOGS:-0}" = "1" ]; then
+  gateway_compose logs -f --tail 20 gateway-controller gateway-runtime
+fi

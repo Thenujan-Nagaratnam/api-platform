@@ -45,15 +45,14 @@ terraform -chdir=terraform output              # IDs and ARNs for AI Workspace
 ./scripts/test-guardrails.sh <gateway-folder>   # calls https://localhost:8443/default/<proxy>
 ```
 
-`run-gateway.sh` starts the gateway in the background, confirms that `gateway-runtime` received your AWS credentials (it prints variable names only), and then follows the logs. Press Ctrl+C to stop following. The gateway keeps running. Stop it with `docker compose --env-file api-platform.env down` in the gateway folder.
+`run-gateway.sh` starts the gateway in the background, confirms that `gateway-runtime` received your AWS credentials (it prints variable names only), and returns. Set `FOLLOW_LOGS=1` to follow the logs. Stop the gateway with `docker compose --env-file api-platform.env down` in the gateway folder.
 
 ## Code-only path (no AI Workspace)
 
 To configure everything as code instead of in AI Workspace, use the standalone gateway and its management API. The Terraform, test, and cleanup steps are the same.
 
 ```bash
-./scripts/start-gateway.sh        # downloads the gateway (SHA-256 verified), sets it up, starts it, follows logs
-# In a second terminal:
+./scripts/start-gateway.sh        # downloads the gateway (SHA-256 verified), sets it up, and starts it
 ./scripts/deploy-artifacts.sh     # provider, both proxies, and one key per app in Secrets Manager
 ./scripts/test-guardrails.sh wso2apip-ai-gateway
 ```
