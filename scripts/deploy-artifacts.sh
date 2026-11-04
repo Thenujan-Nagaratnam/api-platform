@@ -7,7 +7,7 @@ set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-GATEWAY_DIR="${ROOT_DIR}/wso2apip-ai-gateway-2026.09.24"
+GATEWAY_DIR="${ROOT_DIR}/wso2apip-ai-gateway"
 API="http://localhost:9090/api/management/v1"
 NETRC_FILE="$(mktemp)"
 trap 'rm -f "${NETRC_FILE}"' EXIT

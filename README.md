@@ -55,7 +55,7 @@ To configure everything as code instead of in AI Workspace, use the standalone g
 ./scripts/start-gateway.sh        # downloads the gateway (SHA-256 verified), sets it up, starts it, follows logs
 # In a second terminal:
 ./scripts/deploy-artifacts.sh     # provider, both proxies, and one key per app in Secrets Manager
-./scripts/test-guardrails.sh wso2apip-ai-gateway-2026.09.24
+./scripts/test-guardrails.sh wso2apip-ai-gateway
 ```
 
 `deploy-artifacts.sh` deploys `gateway/bedrock-provider.yaml` and the two proxy files, fills in the Terraform outputs, and stores each application's key in Secrets Manager without printing it. The admin password for the management API is generated once and kept in Secrets Manager. Standalone proxies live at `https://localhost:8443/<proxy>`, without the `/default` project prefix, and the test script picks that up automatically.

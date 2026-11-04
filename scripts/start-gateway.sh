@@ -10,13 +10,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GATEWAY_VERSION="2026.09.24"
 GATEWAY_ZIP_URL="https://github.com/wso2/api-platform/releases/download/ai-gateway/v${GATEWAY_VERSION}/wso2apip-ai-gateway-${GATEWAY_VERSION}.zip"
 GATEWAY_ZIP_SHA256="a33772849b4b8ca5393dd9be6facc409846c5ffd857a6c23248a6b28104701fc"
-GATEWAY_DIR="${ROOT_DIR}/wso2apip-ai-gateway-${GATEWAY_VERSION}"
+GATEWAY_DIR="${ROOT_DIR}/wso2apip-ai-gateway"
 
 # 1. Download the distribution and verify its checksum.
 if [ ! -d "${GATEWAY_DIR}" ]; then
   curl -fsSL -o "${ROOT_DIR}/gateway.zip" "${GATEWAY_ZIP_URL}"
   echo "${GATEWAY_ZIP_SHA256}  ${ROOT_DIR}/gateway.zip" | shasum -a 256 -c -
-  (cd "${ROOT_DIR}" && unzip -q gateway.zip && rm gateway.zip)
+  # The zip extracts to wso2apip-ai-gateway-<version>; rename it to a version-independent folder.
+  (cd "${ROOT_DIR}" && unzip -q gateway.zip && rm gateway.zip \
+    && mv "wso2apip-ai-gateway-${GATEWAY_VERSION}" wso2apip-ai-gateway)
 fi
 
 # 2. First run only: an admin password in Secrets Manager, then the distribution's setup.
