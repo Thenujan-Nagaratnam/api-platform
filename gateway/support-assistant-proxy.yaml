@@ -40,5 +40,7 @@ spec:
               jsonPath: "$.messages[-1].content[0].text"
               showAssessment: true         # For this walkthrough only
             response:
-              enabled: true
-              jsonPath: "$.output.message.content[0].text"
+              enabled: false               # The provider's baseline checks every response.
+              # Policy v1.2.0 also checks error responses, so a block by the baseline would
+              # fail this JSONPath. With policy v1.3 or later, enable it with
+              # applicableStatusCodes: "200-299".
