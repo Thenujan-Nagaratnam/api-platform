@@ -15,6 +15,7 @@ if [ -f "${GATEWAY_DIR}/.sample-images" ]; then
   docker image rm "${CONTROLLER_IMAGE}" "${RUNTIME_IMAGE}" >/dev/null 2>&1 || true
   rm -f "${GATEWAY_DIR}/.sample-images"
 fi
+rm -rf "${ROOT_DIR}/.tools"   # The ap CLI that build-gateway-image.sh downloaded
 
 for secret in $(aws secretsmanager list-secrets --filters Key=name,Values=wso2-ai-gateway/ \
     --query 'SecretList[].Name' --output text); do
