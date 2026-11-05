@@ -31,11 +31,12 @@ read_admin_password() {
   fi
   [ -t 0 ] || { echo "Set ADMIN_PASSWORD, or run this script in a terminal so that it can ask for the password." >&2; exit 1; }
   while :; do
-    read -r -s -p "Choose an admin password for the gateway management API (at least 12 characters): " password \
+    read -r -s -p "Choose an admin password for the gateway management API: " password \
       || { echo >&2; echo "No password entered." >&2; exit 1; }
     echo >&2
-    if [ "${#password}" -lt 12 ]; then
-      echo "Use at least 12 characters." >&2
+    # An empty password would make the gateway's setup generate its own, which wouldn't match Secrets Manager.
+    if [ -z "${password}" ]; then
+      echo "Enter a password." >&2
       continue
     fi
     read -r -s -p "Enter the password again: " confirm || { echo >&2; echo "No password entered." >&2; exit 1; }
