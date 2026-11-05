@@ -22,7 +22,7 @@ Sample code for the AWS Machine Learning Blog post *Apply baseline and per-app A
 - An AWS account and an AWS CLI session (AWS IAM Identity Center recommended).
 - An AWS Region with Amazon Bedrock and Amazon Bedrock Guardrails. The post uses `us-east-2` with the `us.amazon.nova-2-lite-v1:0` inference profile, which routes to `us-east-1`, `us-east-2`, and `us-west-2`. Set `model_regions` if you use another profile.
 - An AI Workspace account.
-- Docker with Docker Compose 2.30 or later, Terraform 1.9 or later, AWS CLI 2.9 or later, curl, jq, and envsubst.
+- Docker with Docker Compose 2.30 or later, Terraform 1.9 or later, AWS CLI 2.9 or later, curl, jq, envsubst, and the [`ap` CLI v0.9.1](https://github.com/wso2/api-platform/releases/tag/ap%2Fv0.9.1).
 
 ## Run
 
@@ -58,6 +58,10 @@ To configure everything as code instead of in AI Workspace, use the standalone g
 ```
 
 `deploy-artifacts.sh` deploys `gateway/bedrock-provider.yaml` and the two proxy files, fills in the Terraform outputs, and stores each application's key in Secrets Manager without printing it. The admin password for the management API is generated once and kept in Secrets Manager. Standalone proxies live at `https://localhost:8443/<proxy>`, without the `/default` project prefix, and the test script picks that up automatically.
+
+## Gateway version and the guardrail policy
+
+The sample uses WSO2 AI Gateway 1.2.0, which ships `aws-bedrock-guardrail` v1.1.0. On first start, `run-gateway.sh` runs `build-gateway-image.sh`, which pins the policy to v1.3.0 in the gateway's `build.yaml` and builds new controller and runtime images with the `ap` CLI. v1.3.0 adds `applicableStatusCodes`, so a response check skips error responses, such as a 422 from another guardrail. The generated `docker-compose.override.yaml` points the gateway at the built images.
 
 ## Clean up
 

@@ -34,8 +34,15 @@ gateway_dir() {
   (cd "${dir}" && pwd)
 }
 
-# Runs docker compose the same way AI Workspace's Get Started does. Docker Compose also merges
-# docker-compose.override.yaml from the same folder automatically.
+# The guardrail policy version built into the gateway images. v1.3.0 adds applicableStatusCodes,
+# so a response check skips error responses (such as another guardrail's HTTP 422).
+export GUARDRAIL_POLICY_VERSION="v1.3.0"
+
+# Runs docker compose with the gateway's env files: .env (the Compose project name that setup pins)
+# and api-platform.env. Docker Compose also merges docker-compose.override.yaml automatically.
 gateway_compose() {
-  docker compose --env-file api-platform.env "$@"
+  local args=()
+  [ -f .env ] && args+=(--env-file .env)
+  [ -f api-platform.env ] && args+=(--env-file api-platform.env)
+  docker compose "${args[@]}" "$@"
 }

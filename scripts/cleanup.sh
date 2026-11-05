@@ -9,6 +9,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GATEWAY_DIR="$(gateway_dir "${1:-}")"
 
 (cd "${GATEWAY_DIR}" && gateway_compose down --volumes && rm -f docker-compose.override.yaml)
+if [ -f "${GATEWAY_DIR}/.sample-images" ]; then
+  # shellcheck disable=SC1091 # Written by build-gateway-image.sh.
+  source "${GATEWAY_DIR}/.sample-images"
+  docker image rm "${CONTROLLER_IMAGE}" "${RUNTIME_IMAGE}" >/dev/null 2>&1 || true
+  rm -f "${GATEWAY_DIR}/.sample-images"
+fi
 
 for secret in $(aws secretsmanager list-secrets --filters Key=name,Values=wso2-ai-gateway/ \
     --query 'SecretList[].Name' --output text); do

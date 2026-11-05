@@ -7,9 +7,9 @@ set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-GATEWAY_VERSION="2026.09.24"
+GATEWAY_VERSION="1.2.0"
 GATEWAY_ZIP_URL="https://github.com/wso2/api-platform/releases/download/ai-gateway/v${GATEWAY_VERSION}/wso2apip-ai-gateway-${GATEWAY_VERSION}.zip"
-GATEWAY_ZIP_SHA256="a33772849b4b8ca5393dd9be6facc409846c5ffd857a6c23248a6b28104701fc"
+GATEWAY_ZIP_SHA256="6fe3581223b2522d41a79fdebdfb1f04232f5c35dc8a2daeff54fdc80fce5308"
 GATEWAY_DIR="${ROOT_DIR}/wso2apip-ai-gateway"
 
 # 1. Download the distribution and verify its checksum.
@@ -29,9 +29,10 @@ if [ ! -f "${GATEWAY_DIR}/api-platform.env" ]; then
       --description "WSO2 AI Gateway management API admin password" \
       --secret-string file:///dev/stdin >/dev/null
   fi
-  (cd "${GATEWAY_DIR}" && ADMIN_PASSWORD="$(aws secretsmanager get-secret-value --secret-id "${ADMIN_SECRET}" \
+  (cd "${GATEWAY_DIR}" && ADMIN_USERNAME=admin ADMIN_PASSWORD="$(aws secretsmanager get-secret-value --secret-id "${ADMIN_SECRET}" \
     --query SecretString --output text)" ./scripts/setup.sh --force)
 fi
 
-# 3. Allowlist, credentials override, start, and logs: the same steps as the AI Workspace path.
+# 3. Build images with the newer guardrail policy, then add the allowlist and credentials override and
+#    start the gateway: the same steps as the AI Workspace path.
 exec "${ROOT_DIR}/scripts/run-gateway.sh" "${GATEWAY_DIR}"

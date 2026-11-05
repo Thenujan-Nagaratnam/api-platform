@@ -46,6 +46,7 @@ spec:
             response:
               enabled: true
               jsonPath: "$.output.message.content[0].text"
+              applicableStatusCodes: "200-299"  # Pass error responses through unchanged
     - name: aws-authentication             # Replaces Authorization with SigV4
       version: v0
       paths:
