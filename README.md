@@ -12,7 +12,7 @@ Sample code for the AWS Machine Learning Blog post *Apply baseline and per-app A
 
 | Path | Contents |
 | --- | --- |
-| `terraform/` | The guardrails, their versions, and the gateway's IAM role |
+| `terraform/` | The guardrails, their versions, the gateway's IAM role, and an Amazon CloudWatch dashboard |
 | `compose/` | `docker-compose.override.yaml`, which passes your session credentials to the gateway runtime, and the guardrail allowlist |
 | `scripts/` | Start the gateway, store application keys, test, and clean up |
 | `gateway/` | Provider and proxy definitions for the code-only path |
@@ -43,7 +43,10 @@ terraform -chdir=terraform output              # IDs and ARNs for AI Workspace
 ./scripts/store-app-key.sh employee-assistant
 
 ./scripts/test-guardrails.sh <gateway-folder>   # calls https://localhost:8443/default/<proxy>
+terraform -chdir=terraform output -raw dashboard_url   # CloudWatch dashboard with checks per guardrail
 ```
+
+Terraform also creates an Amazon CloudWatch dashboard that graphs each guardrail's checks and the requests and responses that the guardrails block or mask. Metrics appear a few minutes after traffic. Add `-var="create_dashboard=false"` to skip it; `terraform destroy` removes it.
 
 `run-gateway.sh` starts the gateway in the background, confirms that `gateway-runtime` received your AWS credentials (it prints variable names only), and returns. Set `FOLLOW_LOGS=1` to follow the logs. Stop the gateway with `docker compose --env-file api-platform.env down` in the gateway folder.
 

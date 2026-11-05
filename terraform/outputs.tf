@@ -33,3 +33,11 @@ output "baseline_guardrail_arn" {
 output "support_guardrail_arn" {
   value = aws_bedrock_guardrail.support_assistant.guardrail_arn
 }
+
+output "dashboard_url" {
+  description = "Amazon CloudWatch dashboard for the guardrails, or null when create_dashboard is false."
+  value = var.create_dashboard ? join("", [
+    "https://${var.region}.console.aws.amazon.com/cloudwatch/home?region=${var.region}",
+    "#dashboards/dashboard/${aws_cloudwatch_dashboard.guardrails[0].dashboard_name}",
+  ]) : null
+}
