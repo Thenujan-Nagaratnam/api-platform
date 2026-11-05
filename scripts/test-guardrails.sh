@@ -53,9 +53,11 @@ SUMMARIZE_BLOCK='
       "BLOCKED", $l[], "Checked on the \($d)"
     end'
 
-# Collapses whitespace and swaps characters that would break column alignment for ASCII.
+# Collapses whitespace, drops Markdown emphasis (*), and swaps characters that would break column
+# alignment for ASCII.
 clean() {
-  { iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || cat; } | tr '\r\n\t' '   ' | tr -s ' ' | sed 's/^ //; s/ $//'
+  { iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || cat; } | tr '\r\n\t' '   ' | tr -d '*' | tr -s ' ' \
+    | sed 's/^ //; s/ $//'
 }
 
 # Prints text as lines of at most $2 characters, keeping existing line breaks.
@@ -121,7 +123,7 @@ done
 
 # Print the table.
 echo
-printf '%sAmazon Bedrock Guardrails through WSO2 AI Gateway%s  %s%s%s\n' \
+printf '%sAmazon Bedrock Guardrails test results%s  %s%s%s\n' \
   "${BOLD}" "${RESET}" "${DIM}" "${GATEWAY_URL}" "${RESET}"
 rule '┌' '┬' '┐'
 printf '│'
