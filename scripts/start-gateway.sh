@@ -21,13 +21,41 @@ if [ ! -d "${GATEWAY_DIR}" ]; then
     && mv "wso2apip-ai-gateway-${GATEWAY_VERSION}" wso2apip-ai-gateway)
 fi
 
-# 2. First run only: an admin password in Secrets Manager, then the distribution's setup.
+# Asks for the management API admin password, without echoing it, and prints it to stdout for the caller.
+# Set ADMIN_PASSWORD to skip the prompt, for example in CI.
+read_admin_password() {
+  local password confirm
+  if [ -n "${ADMIN_PASSWORD:-}" ]; then
+    printf '%s' "${ADMIN_PASSWORD}"
+    return
+  fi
+  [ -t 0 ] || { echo "Set ADMIN_PASSWORD, or run this script in a terminal so that it can ask for the password." >&2; exit 1; }
+  while :; do
+    read -r -s -p "Choose an admin password for the gateway management API (at least 12 characters): " password \
+      || { echo >&2; echo "No password entered." >&2; exit 1; }
+    echo >&2
+    if [ "${#password}" -lt 12 ]; then
+      echo "Use at least 12 characters." >&2
+      continue
+    fi
+    read -r -s -p "Enter the password again: " confirm || { echo >&2; echo "No password entered." >&2; exit 1; }
+    echo >&2
+    [ "${password}" = "${confirm}" ] && break
+    echo "The passwords don't match. Try again." >&2
+  done
+  printf '%s' "${password}"
+}
+
+# 2. First run only: store your admin password in Secrets Manager, then run the distribution's setup.
 #    --force regenerates the listener certificate and AES key, because the ones in the zip are public.
 if [ ! -f "${GATEWAY_DIR}/api-platform.env" ]; then
   if ! aws secretsmanager describe-secret --secret-id "${ADMIN_SECRET}" >/dev/null 2>&1; then
-    openssl rand -base64 24 | tr -d '\n' | aws secretsmanager create-secret --name "${ADMIN_SECRET}" \
+    admin_password="$(read_admin_password)"
+    printf '%s' "${admin_password}" | aws secretsmanager create-secret --name "${ADMIN_SECRET}" \
       --description "WSO2 AI Gateway management API admin password" \
       --secret-string file:///dev/stdin >/dev/null
+    unset admin_password
+    echo "Stored the admin password in Secrets Manager as ${ADMIN_SECRET}."
   fi
   (cd "${GATEWAY_DIR}" && ADMIN_USERNAME=admin ADMIN_PASSWORD="$(aws secretsmanager get-secret-value --secret-id "${ADMIN_SECRET}" \
     --query SecretString --output text)" ./scripts/setup.sh --force)
