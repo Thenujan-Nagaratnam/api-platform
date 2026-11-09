@@ -10,12 +10,11 @@ tf_output() {
 
 AWS_REGION="$(tf_output region)"
 BEDROCK_MODEL_ID="$(tf_output model_id)"
-GATEWAY_ROLE_ARN="$(tf_output gateway_role_arn)"
 BASELINE_GUARDRAIL_ID="$(tf_output baseline_guardrail_id)"
 BASELINE_GUARDRAIL_VERSION="$(tf_output baseline_guardrail_version)"
 SUPPORT_GUARDRAIL_ID="$(tf_output support_guardrail_id)"
 SUPPORT_GUARDRAIL_VERSION="$(tf_output support_guardrail_version)"
-export AWS_REGION BEDROCK_MODEL_ID GATEWAY_ROLE_ARN \
+export AWS_REGION BEDROCK_MODEL_ID \
   BASELINE_GUARDRAIL_ID BASELINE_GUARDRAIL_VERSION SUPPORT_GUARDRAIL_ID SUPPORT_GUARDRAIL_VERSION
 export AWS_DEFAULT_REGION="${AWS_REGION}"
 
@@ -25,24 +24,11 @@ export APPS="support-assistant employee-assistant"
 
 # Only these variables are substituted, so other ${...} text stays intact.
 # shellcheck disable=SC2016 # Single quotes are intentional: envsubst expands these names.
-export SUBST_VARS='${AWS_REGION} ${GATEWAY_ROLE_ARN} ${BASELINE_GUARDRAIL_ID} ${BASELINE_GUARDRAIL_VERSION} ${SUPPORT_GUARDRAIL_ID} ${SUPPORT_GUARDRAIL_VERSION}'
+export SUBST_VARS='${AWS_REGION} ${BASELINE_GUARDRAIL_ID} ${BASELINE_GUARDRAIL_VERSION} ${SUPPORT_GUARDRAIL_ID} ${SUPPORT_GUARDRAIL_VERSION}'
 
-# The folder where you downloaded the gateway from AI Workspace. Pass it as the first argument.
-gateway_dir() {
-  local dir="${1:?Pass the folder where you downloaded the gateway from AI Workspace.}"
-  [ -f "${dir}/api-platform.env" ] || { echo "No api-platform.env in ${dir}. Run the AI Workspace Get Started commands first." >&2; return 1; }
-  (cd "${dir}" && pwd)
-}
-
-# The guardrail policy version built into the gateway images. v1.3.0 adds applicableStatusCodes,
-# so a response check skips error responses (such as another guardrail's HTTP 422).
-export GUARDRAIL_POLICY_VERSION="v1.3.0"
-
-# Runs docker compose with the gateway's env files: .env (the Compose project name that setup pins)
-# and api-platform.env. Docker Compose also merges docker-compose.override.yaml automatically.
-gateway_compose() {
-  local args=()
-  [ -f .env ] && args+=(--env-file .env)
-  [ -f api-platform.env ] && args+=(--env-file api-platform.env)
-  docker compose "${args[@]}" "$@"
-}
+# The downloaded gateway distribution, used only to build images, and the Helm release settings.
+export GATEWAY_DIR="${ROOT_DIR}/wso2-ai-gateway"
+export RELEASE="wso2-ai-gateway"
+NAMESPACE="$(tf_output namespace)"
+CLUSTER_NAME="$(tf_output cluster_name)"
+export NAMESPACE CLUSTER_NAME

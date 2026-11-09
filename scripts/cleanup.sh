@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Stops the gateway, removes its data, and deletes the application key secrets.
-# If you used AI Workspace, delete the proxies, the provider, and the gateway there first. Then run this script,
-# and then run terraform destroy.
-# Usage: ./scripts/cleanup.sh <gateway-folder>
+# Uninstalls the gateway and cert-manager, deletes the application key and admin password secrets, and
+# removes the downloaded tools. Safe to rerun. Run terraform destroy afterwards.
+# Usage: ./scripts/cleanup.sh
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-GATEWAY_DIR="$(gateway_dir "${1:-}")"
 
-(cd "${GATEWAY_DIR}" && gateway_compose down --volumes && rm -f docker-compose.override.yaml)
-if [ -f "${GATEWAY_DIR}/.sample-images" ]; then
-  # shellcheck disable=SC1091 # Written by build-gateway-image.sh.
-  source "${GATEWAY_DIR}/.sample-images"
-  docker image rm "${CONTROLLER_IMAGE}" "${RUNTIME_IMAGE}" >/dev/null 2>&1 || true
-  rm -f "${GATEWAY_DIR}/.sample-images"
+if aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+  helm uninstall "${RELEASE}" --namespace "${NAMESPACE}" --wait 2>/dev/null || true
+  helm uninstall cert-manager --namespace cert-manager --wait 2>/dev/null || true
+  kubectl delete namespace "${NAMESPACE}" cert-manager --ignore-not-found --wait=true
+else
+  echo "No cluster to clean up. Continuing."
 fi
-rm -rf "${ROOT_DIR}/.tools"   # The ap CLI that build-gateway-image.sh downloaded
+
+rm -rf "${GATEWAY_DIR}" "${ROOT_DIR}/.tools"   # The distribution and the ap CLI that build-gateway-image.sh downloaded
 
 for secret in $(aws secretsmanager list-secrets --filters Key=name,Values=wso2-ai-gateway/ \
     --query 'SecretList[].Name' --output text); do

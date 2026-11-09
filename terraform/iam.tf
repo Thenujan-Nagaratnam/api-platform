@@ -1,11 +1,5 @@
 data "aws_caller_identity" "current" {}
 
-# Resolves the IAM role or user behind your current session (for example, an
-# IAM Identity Center permission set role), so only that principal can assume the gateway role.
-data "aws_iam_session_context" "current" {
-  arn = data.aws_caller_identity.current.arn
-}
-
 locals {
   # A cross-Region inference profile ID such as us.amazon.nova-2-lite-v1:0 routes to the
   # foundation model amazon.nova-2-lite-v1:0 in several Regions. IAM must allow the profile
@@ -18,19 +12,18 @@ locals {
   ] : ["arn:aws:bedrock:${var.region}::foundation-model/${var.model_id}"]
 }
 
-# Least-privilege role for the gateway. Your own credentials only call sts:AssumeRole;
-# every Amazon Bedrock call runs under this role's temporary credentials.
+# Least-privilege role for the gateway. EKS Pod Identity gives it to the gateway's service account, and
+# every Amazon Bedrock call runs under its temporary credentials.
 resource "aws_iam_role" "gateway" {
-  name                 = "${var.name_prefix}-bedrock"
-  max_session_duration = 3600
+  name = "${var.name_prefix}-bedrock"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
-      Action    = "sts:AssumeRole"
+      Principal = { Service = "pods.eks.amazonaws.com" }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
       Condition = {
-        ArnEquals = { "aws:PrincipalArn" = data.aws_iam_session_context.current.issuer_arn }
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
       }
     }]
   })

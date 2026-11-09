@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
-# Builds gateway images that include aws-bedrock-guardrail v1.3.0, using the ap CLI and the build.yaml
-# that ships with the gateway. v1.3.0 adds applicableStatusCodes, so a response check skips error
-# responses. Run by run-gateway.sh on first start; run it yourself to rebuild.
-# Usage: ./scripts/build-gateway-image.sh <gateway-folder>
+# Builds gateway images with the policy versions in gateway/policy-versions.env, using the ap CLI and
+# the build.yaml that ships with the gateway, and pushes them to Amazon ECR for linux/amd64 nodes.
+# Usage: ./scripts/build-gateway-image.sh
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-GATEWAY_DIR="$(gateway_dir "${1:-}")"
+
+GATEWAY_VERSION="1.2.0"
+GATEWAY_ZIP_URL="https://github.com/wso2/api-platform/releases/download/ai-gateway/v${GATEWAY_VERSION}/wso2apip-ai-gateway-${GATEWAY_VERSION}.zip"
+GATEWAY_ZIP_SHA256="6fe3581223b2522d41a79fdebdfb1f04232f5c35dc8a2daeff54fdc80fce5308"
 BUILD_FILE="${GATEWAY_DIR}/build.yaml"
+VERSIONS_FILE="${ROOT_DIR}/gateway/policy-versions.env"
+
+# Download the distribution and verify its checksum. The build needs only its build.yaml.
+if [ ! -d "${GATEWAY_DIR}" ]; then
+  curl -fsSL -o "${ROOT_DIR}/gateway.zip" "${GATEWAY_ZIP_URL}"
+  echo "${GATEWAY_ZIP_SHA256}  ${ROOT_DIR}/gateway.zip" | shasum -a 256 -c -
+  (cd "${ROOT_DIR}" && unzip -q gateway.zip && rm gateway.zip \
+    && mv "wso2apip-ai-gateway-${GATEWAY_VERSION}" "$(basename "${GATEWAY_DIR}")")
+fi
 [ -f "${BUILD_FILE}" ] || { echo "No build.yaml in ${GATEWAY_DIR}" >&2; exit 1; }
 
 TMP_DIR="$(mktemp -d)"
@@ -44,17 +55,23 @@ if [ ! -x "${AP}" ]; then
   install -m 0755 "${TMP_DIR}/${ap_name}/ap" "${AP}"
 fi
 
-# 1. Pin the guardrail policy version in build.yaml.
-sed -i.bak -E "s#(gateway-controllers/policies/aws-bedrock-guardrail)@[^[:space:]\"]+#\1@${GUARDRAIL_POLICY_VERSION}#" "${BUILD_FILE}"
-rm -f "${BUILD_FILE}.bak"
-grep -q "aws-bedrock-guardrail@${GUARDRAIL_POLICY_VERSION}" "${BUILD_FILE}" || {
-  echo "Couldn't pin aws-bedrock-guardrail@${GUARDRAIL_POLICY_VERSION} in ${BUILD_FILE}" >&2
-  exit 1
-}
+# 1. Set the policy versions in build.yaml.
+while IFS='=' read -r policy version; do
+  case "${policy}" in '' | \#*) continue ;; esac
+  [ -n "${version}" ] || continue
+  sed -i.bak -E "s#(gateway-controllers/policies/${policy})@[^[:space:]\"]+#\1@${version}#" "${BUILD_FILE}"
+  rm -f "${BUILD_FILE}.bak"
+  grep -q "policies/${policy}@${version}" "${BUILD_FILE}" || {
+    echo "Couldn't set ${policy}@${version} in ${BUILD_FILE}" >&2
+    exit 1
+  }
+done < "${VERSIONS_FILE}"
 
-# 2. Build the controller and runtime images.
+# 2. Sign in to Amazon ECR, then build and push the controller and runtime images.
+aws ecr get-login-password | docker login --username AWS --password-stdin "$(tf_output ecr_registry)"
 LOG="${TMP_DIR}/build.log"
-(cd "${GATEWAY_DIR}" && "${AP}" gateway image build --name bedrock-guardrails) | tee "${LOG}"
+(cd "${GATEWAY_DIR}" && "${AP}" gateway image build --name bedrock-guardrails \
+  --repository "$(tf_output image_repository)" --platform linux/amd64 --push) | tee "${LOG}"
 CONTROLLER_IMAGE="$(grep -o '[^[:space:]]*-gateway-controller:[^[:space:]]*' "${LOG}" | tail -1)"
 RUNTIME_IMAGE="$(grep -o '[^[:space:]]*-gateway-runtime:[^[:space:]]*' "${LOG}" | tail -1)"
 [ -n "${CONTROLLER_IMAGE}" ] && [ -n "${RUNTIME_IMAGE}" ] || {
@@ -62,6 +79,8 @@ RUNTIME_IMAGE="$(grep -o '[^[:space:]]*-gateway-runtime:[^[:space:]]*' "${LOG}" 
   exit 1
 }
 
-# 3. Record the images for run-gateway.sh.
+# 3. Record the images for install-gateway.sh, and show what was built.
 printf 'CONTROLLER_IMAGE=%s\nRUNTIME_IMAGE=%s\n' "${CONTROLLER_IMAGE}" "${RUNTIME_IMAGE}" > "${GATEWAY_DIR}/.sample-images"
-echo "Built ${CONTROLLER_IMAGE} and ${RUNTIME_IMAGE} with aws-bedrock-guardrail@${GUARDRAIL_POLICY_VERSION}."
+echo "Pushed ${CONTROLLER_IMAGE} and ${RUNTIME_IMAGE}."
+echo "Policy versions in this build:"
+grep -o 'gateway-controllers/policies/[^[:space:]"]*' "${BUILD_FILE}" | sed 's#gateway-controllers/policies/#  #'

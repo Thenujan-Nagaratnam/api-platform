@@ -15,7 +15,47 @@ variable "model_regions" {
 }
 
 variable "name_prefix" {
-  description = "Prefix for the IAM role name."
+  description = "Prefix for resource names."
   type        = string
   default     = "wso2-ai-gateway"
+}
+
+variable "eks_public_access_cidrs" {
+  description = "CIDR ranges allowed to reach the Kubernetes API endpoint, for example your own IP address as a /32."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.eks_public_access_cidrs) > 0 && !contains(var.eks_public_access_cidrs, "0.0.0.0/0")
+    error_message = "Set at least one CIDR range, and don't use 0.0.0.0/0."
+  }
+}
+
+variable "eks_version" {
+  description = "Kubernetes version for the Amazon EKS cluster."
+  type        = string
+  default     = "1.35"
+}
+
+variable "node_instance_type" {
+  description = "Instance type for the EKS managed node group."
+  type        = string
+  default     = "m5.xlarge"
+}
+
+variable "vpc_cidr" {
+  description = "CIDR range for the VPC."
+  type        = string
+  default     = "10.20.0.0/16"
+}
+
+variable "db_instance_class" {
+  description = "Instance class for the gateway's Amazon RDS for PostgreSQL database."
+  type        = string
+  default     = "db.t4g.small"
+}
+
+variable "db_multi_az" {
+  description = "Run the database across Availability Zones. Turn this on for production."
+  type        = bool
+  default     = false
 }

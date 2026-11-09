@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
 # Sends the same four prompts through both applications' App LLM proxies and prints the results as a
 # table: whether each prompt was allowed or blocked, and the guardrail finding or the model's reply.
-# Usage: ./scripts/test-guardrails.sh <gateway-folder>
-# Set GATEWAY_URL if your gateway URL or project differs. Set NO_COLOR=1 to turn colors off.
+# Usage: ./scripts/test-guardrails.sh
+# Set GATEWAY_URL if your gateway listens elsewhere. Set NO_COLOR=1 to turn colors off.
+# The gateway's listener uses a self-signed certificate here, so curl runs with --insecure.
 set -euo pipefail
+GATEWAY_URL="${GATEWAY_URL:-https://localhost:8443}"
+PORT_FORWARD_HINT="Can't reach ${GATEWAY_URL}. Run ./scripts/port-forward.sh, then rerun."
+curl -sk -o /dev/null --max-time 5 "${GATEWAY_URL}" || { echo "${PORT_FORWARD_HINT}" >&2; exit 1; }
 # shellcheck source=scripts/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-GATEWAY_DIR="$(gateway_dir "${1:-}")"
-# AI Workspace proxies live under the project name (/default). deploy-artifacts.sh records an
-# empty base path for the standalone gateway, whose proxies live at the root.
-BASE_PATH="/default"
-[ -f "${GATEWAY_DIR}/.sample-base-path" ] && BASE_PATH="$(cat "${GATEWAY_DIR}/.sample-base-path")"
-GATEWAY_URL="${GATEWAY_URL:-https://localhost:8443${BASE_PATH}}"
-CA_CERT="${GATEWAY_DIR}/resources/listener-certs/default-listener.crt"
 PROMPTS=(
   "Draft a two-line reply that thanks a customer for their order."
   "Can I sue you if my refund is late?"
@@ -86,11 +83,11 @@ for app in ${APPS}; do
     body="$(jq -n --arg t "${prompt}" \
       '{messages: [{role: "user", content: [{text: $t}]}], inferenceConfig: {maxTokens: 128}}')"
     # The key goes in through a header file, so it doesn't show in the process list.
-    response="$(curl -sS -w '\n%{http_code}' --cacert "${CA_CERT}" \
+    response="$(curl -sS --insecure -w '\n%{http_code}' \
       -X POST "${GATEWAY_URL}/${app}/model/${BEDROCK_MODEL_ID}/converse" \
       -H "Content-Type: application/json" \
       -H @<(printf 'Authorization: Bearer %s\n' "${key}") \
-      -d "${body}")"
+      -d "${body}")" || { echo "${PORT_FORWARD_HINT}" >&2; exit 1; }
     status="${response##*$'\n'}"
     payload="${response%$'\n'*}"
 

@@ -2,7 +2,7 @@ terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.*
 terraform/*.tfvars
-wso2apip-ai-gateway/
+wso2-ai-gateway/
 wso2apip-ai-gateway-*/
 gateway.zip
 *.zip

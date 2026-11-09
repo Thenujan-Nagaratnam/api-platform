@@ -36,9 +36,7 @@ spec:
             guardrailID: ${BASELINE_GUARDRAIL_ID}
             guardrailVersion: "${BASELINE_GUARDRAIL_VERSION}"
             awsAuth:
-              authenticationType: sts-assume-role
-              awsRoleARN: ${GATEWAY_ROLE_ARN}
-              awsRoleSessionName: baseline-guardrail
+              authenticationType: default-credential-chain
             request:
               jsonPath: "$.messages[-1].content[0].text"
               redactPII: true
@@ -55,6 +53,4 @@ spec:
           params:
             service: bedrock
             region: ${AWS_REGION}
-            authenticationType: sts-assume-role
-            awsRoleARN: ${GATEWAY_ROLE_ARN}
-            awsRoleSessionName: bedrock-converse
+            authenticationType: default-credential-chain

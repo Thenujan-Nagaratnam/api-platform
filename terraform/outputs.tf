@@ -41,3 +41,48 @@ output "dashboard_url" {
     "#dashboards/dashboard/${aws_cloudwatch_dashboard.guardrails[0].dashboard_name}",
   ]) : null
 }
+
+output "cluster_name" {
+  value = aws_eks_cluster.main.name
+}
+
+output "namespace" {
+  value = local.namespace
+}
+
+output "service_account_name" {
+  value = local.service_account_name
+}
+
+output "ecr_registry" {
+  value = split("/", aws_ecr_repository.gateway["controller"].repository_url)[0]
+}
+
+output "image_repository" {
+  description = "The repository prefix to pass to the ap CLI."
+  value       = "${split("/", aws_ecr_repository.gateway["controller"].repository_url)[0]}/${var.name_prefix}"
+}
+
+output "controller_image_repo" {
+  value = aws_ecr_repository.gateway["controller"].repository_url
+}
+
+output "runtime_image_repo" {
+  value = aws_ecr_repository.gateway["runtime"].repository_url
+}
+
+output "db_host" {
+  value = aws_db_instance.main.address
+}
+
+output "db_name" {
+  value = aws_db_instance.main.db_name
+}
+
+output "db_user" {
+  value = aws_db_instance.main.username
+}
+
+output "db_secret_arn" {
+  value = aws_db_instance.main.master_user_secret[0].secret_arn
+}

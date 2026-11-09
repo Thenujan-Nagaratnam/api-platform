@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Code-only path, without AI Workspace: deploys the provider and both App LLM proxies through the
-# standalone gateway's management API, and stores one proxy key per application in Secrets Manager.
-# Run it in a second terminal after ./scripts/start-gateway.sh.
+# Deploys the provider and both App LLM proxies through the gateway's management API, and stores one
+# proxy key per application in Secrets Manager. Run it while ./scripts/port-forward.sh is running.
 # Usage: ./scripts/deploy-artifacts.sh
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-GATEWAY_DIR="${ROOT_DIR}/wso2apip-ai-gateway"
 API="http://localhost:9090/api/management/v1"
 NETRC_FILE="$(mktemp)"
 trap 'rm -f "${NETRC_FILE}"' EXIT
@@ -19,11 +17,13 @@ api() {
   curl --fail-with-body -sS --netrc-file "${NETRC_FILE}" "$@"
 }
 
-# Wait for the controller's admin API.
+# Wait for the management API, which port-forward.sh makes available on this machine.
+ready=0
 for _ in $(seq 1 30); do
-  curl -fs http://localhost:9094/api/admin/v1/health >/dev/null && break
+  if api -o /dev/null "${API}/llm-providers" 2>/dev/null; then ready=1; break; fi
   sleep 2
 done
+[ "${ready}" = "1" ] || { echo "Can't reach the management API on port 9090. Run ./scripts/port-forward.sh in a second terminal, then rerun." >&2; exit 1; }
 
 # Creates the artifact, or replaces it if it already exists.
 apply_artifact() {
@@ -71,6 +71,4 @@ SECRET
   fi
 done
 
-# Standalone proxies live at the root path, not under an AI Workspace project name.
-printf '' > "${GATEWAY_DIR}/.sample-base-path"
-echo "Done. Test with: ./scripts/test-guardrails.sh ${GATEWAY_DIR}"
+echo "Done. Test with: ./scripts/test-guardrails.sh"
