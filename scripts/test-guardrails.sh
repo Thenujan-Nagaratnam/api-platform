@@ -5,7 +5,7 @@
 # Set GATEWAY_URL if your gateway listens elsewhere. Set NO_COLOR=1 to turn colors off.
 # The gateway's listener uses a self-signed certificate here, so curl runs with --insecure.
 set -euo pipefail
-GATEWAY_URL="${GATEWAY_URL:-https://localhost:8443}"
+GATEWAY_URL="${GATEWAY_URL:-https://localhost:8443/default}"   # Agent Control Plane proxies live under the project name
 PORT_FORWARD_HINT="Can't reach ${GATEWAY_URL}. Run ./scripts/port-forward.sh, then rerun."
 curl -sk -o /dev/null --max-time 5 "${GATEWAY_URL}" || { echo "${PORT_FORWARD_HINT}" >&2; exit 1; }
 # shellcheck source=scripts/common.sh

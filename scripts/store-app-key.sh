@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stores an application's App LLM proxy key from AI Workspace in AWS Secrets Manager.
+# Stores an application's App LLM proxy key from Agent Control Plane in AWS Secrets Manager.
 # The key is read without echo and piped to Secrets Manager, so it isn't in your shell history.
 # Usage: ./scripts/store-app-key.sh support-assistant
 set -euo pipefail
@@ -15,7 +15,7 @@ if aws secretsmanager describe-secret --secret-id "${secret}" >/dev/null 2>&1; t
     --secret-string file:///dev/stdin >/dev/null
 else
   printf '%s' "${key}" | aws secretsmanager create-secret --name "${secret}" \
-    --description "AI Workspace App LLM proxy key for ${app}" \
+    --description "Agent Control Plane App LLM proxy key for ${app}" \
     --secret-string file:///dev/stdin >/dev/null
 fi
 unset key

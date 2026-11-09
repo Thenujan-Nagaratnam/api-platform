@@ -20,6 +20,7 @@ export AWS_DEFAULT_REGION="${AWS_REGION}"
 
 export SECRET_PREFIX="wso2-ai-gateway/apps"
 export ADMIN_SECRET="wso2-ai-gateway/admin-password"
+export CONTROL_PLANE_TOKEN_SECRET="wso2-ai-gateway/control-plane-token"
 export APPS="support-assistant employee-assistant"
 
 # Only these variables are substituted, so other ${...} text stays intact.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Uninstalls the gateway and cert-manager, deletes the application key and admin password secrets, and
+# Uninstalls the gateway and cert-manager, deletes the application key, gateway token, and admin password secrets, and
 # removes the downloaded tools. Safe to rerun. Run terraform destroy afterwards.
+# In Agent Control Plane, delete the proxies, the provider, and the gateway first.
 # Usage: ./scripts/cleanup.sh
 set -euo pipefail
 # shellcheck source=scripts/common.sh

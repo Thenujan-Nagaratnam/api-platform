@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Installs cert-manager and the gateway's Helm chart in the EKS cluster, with private services. Run it
-# after ./scripts/build-gateway-image.sh. Rerun it to apply changes.
-# Usage: ./scripts/install-gateway.sh
+# Installs cert-manager and the gateway's Helm chart in the EKS cluster, with private services, and connects
+# the gateway to Agent Control Plane. Run it after ./scripts/build-gateway-image.sh and
+# ./scripts/store-gateway-token.sh. Rerun it to apply changes.
+# Usage: AGENT_CONTROL_PLANE_HOST=<host> ./scripts/install-gateway.sh
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -9,6 +10,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 CHART="oci://ghcr.io/wso2/api-platform/helm-charts/gateway"
 CHART_VERSION="1.2.5"
 CERT_MANAGER_VERSION="v1.19.1"
+
+: "${AGENT_CONTROL_PLANE_HOST:?Set AGENT_CONTROL_PLANE_HOST to the control plane host that Agent Control Plane shows for your gateway.}"
+aws secretsmanager describe-secret --secret-id "${CONTROL_PLANE_TOKEN_SECRET}" >/dev/null 2>&1 \
+  || { echo "No gateway token in Secrets Manager. Run ./scripts/store-gateway-token.sh first." >&2; exit 1; }
 
 [ -f "${GATEWAY_DIR}/.sample-images" ] || { echo "No built images. Run ./scripts/build-gateway-image.sh first." >&2; exit 1; }
 # shellcheck disable=SC1091 # Written by build-gateway-image.sh.
@@ -52,7 +57,13 @@ aws secretsmanager get-secret-value --secret-id "$(tf_output db_secret_arn)" --q
 kubectl -n "${NAMESPACE}" create secret generic gateway-db --from-file=password="${WORK_DIR}/password" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-# 5. The settings that come from this deployment.
+# 5. The gateway's registration token, copied from Secrets Manager.
+printf '%s' "$(aws secretsmanager get-secret-value --secret-id "${CONTROL_PLANE_TOKEN_SECRET}" --query SecretString --output text)" \
+  > "${WORK_DIR}/token"
+kubectl -n "${NAMESPACE}" create secret generic gateway-control-plane --from-file=token="${WORK_DIR}/token" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+# 6. The settings that come from this deployment.
 cat > "${WORK_DIR}/values.yaml" <<VALUES
 gateway:
   config:
@@ -71,6 +82,11 @@ gateway:
           database: $(tf_output db_name)
           user: $(tf_output db_user)
   controller:
+    controlPlane:
+      host: ${AGENT_CONTROL_PLANE_HOST}
+      token:
+        secretName: gateway-control-plane
+        key: token
     image:
       repository: ${CONTROLLER_IMAGE%:*}
       tag: "${CONTROLLER_IMAGE##*:}"
@@ -80,7 +96,7 @@ gateway:
       tag: "${RUNTIME_IMAGE##*:}"
 VALUES
 
-# 6. Unpack the chart, add the guardrail allowlist to its config.toml, and install it.
+# 7. Unpack the chart, add the guardrail allowlist to its config.toml, and install it.
 helm pull "${CHART}" --version "${CHART_VERSION}" --untar --untardir "${WORK_DIR}"
 "${ROOT_DIR}/helm/add-allowlist.sh" "${WORK_DIR}/gateway"
 helm upgrade --install "${RELEASE}" "${WORK_DIR}/gateway" --namespace "${NAMESPACE}" \
