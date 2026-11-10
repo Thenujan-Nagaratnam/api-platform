@@ -34,7 +34,7 @@ terraform -chdir=terraform init
 terraform -chdir=terraform apply "${TF_VARS[@]}"
 
 ./scripts/start-gateway.sh        # downloads the gateway (SHA-256 verified), sets it up, and starts it
-./scripts/deploy-artifacts.sh     # in a second terminal: provider, both proxies, and one key per app in Secrets Manager
+./scripts/deploy-artifacts.sh     # provider, both proxies, and one key per app in Secrets Manager
 ./scripts/test-guardrails.sh wso2apip-ai-gateway   # calls https://localhost:8443/<proxy>
 terraform -chdir=terraform output -raw dashboard_url   # CloudWatch dashboard with checks per guardrail
 ```

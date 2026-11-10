@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploys the provider and both App LLM proxies through the
 # standalone gateway's management API, and stores one proxy key per application in Secrets Manager.
-# Run it in a second terminal after ./scripts/start-gateway.sh.
+# Run it after ./scripts/start-gateway.sh.
 # Usage: ./scripts/deploy-artifacts.sh
 set -euo pipefail
 # shellcheck source=scripts/common.sh

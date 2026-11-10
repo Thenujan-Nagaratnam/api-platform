@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Downloads the open-source WSO2 AI Gateway, sets it up in
 # standalone mode, and starts it with your temporary AWS credentials (through run-gateway.sh).
-# Then deploy the provider and proxies with ./scripts/deploy-artifacts.sh in a second terminal.
+# Then deploy the provider and proxies with ./scripts/deploy-artifacts.sh.
 # Usage: ./scripts/start-gateway.sh
 set -euo pipefail
 # shellcheck source=scripts/common.sh
