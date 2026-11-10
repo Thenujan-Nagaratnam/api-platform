@@ -6,6 +6,8 @@ Sample code for the AWS Machine Learning Blog post *Apply one Amazon Bedrock gua
 - **WSO2 side, in Agent Control Plane:** you configure one LLM provider with the guardrail policy in Agent Control Plane, which deploys it to a gateway that runs on your machine. Every request through the provider is checked.
 - **No stored AWS keys:** your AWS CLI session's temporary credentials only call `sts:AssumeRole` on the gateway role. Every Amazon Bedrock call runs under that role.
 
+![High-level architecture](images/figure-1-architecture.png)
+
 ## Layout
 
 | Path | Contents |
