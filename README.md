@@ -1,20 +1,18 @@
-# Safeguard LLM traffic with Amazon Bedrock Guardrails and WSO2 AI Gateway
+# Apply one Amazon Bedrock guardrail to all LLM traffic with WSO2 AI Gateway
 
-Sample code for the AWS Machine Learning Blog post *Safeguard LLM traffic with Amazon Bedrock Guardrails and WSO2 AI Gateway*.
+Sample code for the AWS Machine Learning Blog post *Apply one Amazon Bedrock guardrail to all LLM traffic with WSO2 AI Gateway*.
 
-- **AWS side, as code:** Terraform creates two Amazon Bedrock guardrails (an organization baseline and a support-assistant guardrail), their versions, and a least-privilege IAM role for the gateway.
-- **WSO2 side, in Agent Control Plane:** you configure the LLM provider, the App LLM proxies, and their guardrail policies in Agent Control Plane, which deploys them to a gateway that runs on your machine.
+- **AWS side, as code:** Terraform creates one Amazon Bedrock guardrail (the organization baseline), a numbered version of it, and a least-privilege IAM role for the gateway.
+- **WSO2 side, in Agent Control Plane:** you configure one LLM provider with the guardrail policy in Agent Control Plane, which deploys it to a gateway that runs on your machine. Every request through the provider is checked.
 - **No stored AWS keys:** your AWS CLI session's temporary credentials only call `sts:AssumeRole` on the gateway role. Every Amazon Bedrock call runs under that role.
-
-![High-level architecture](images/figure-1-architecture.png)
 
 ## Layout
 
 | Path | Contents |
 | --- | --- |
-| `terraform/` | The guardrails, their versions, the gateway's IAM role, and an Amazon CloudWatch dashboard |
+| `terraform/` | The guardrail, its version, the gateway's IAM role, and an Amazon CloudWatch dashboard |
 | `compose/` | `docker-compose.override.yaml`, which passes your session credentials to the gateway runtime, and the guardrail allowlist |
-| `scripts/` | Start the gateway, store application keys, test, and clean up |
+| `scripts/` | Start the gateway, store the provider key, test, and clean up |
 
 ## Prerequisites
 
@@ -37,15 +35,15 @@ terraform -chdir=terraform output              # IDs and ARNs for Agent Control 
 # In Agent Control Plane: add a gateway and run steps 1 to 3 of its Set up panel. Then:
 ./scripts/run-gateway.sh <gateway-folder>
 
-# In Agent Control Plane: add the provider and both App LLM proxies (see the post), then store each proxy key:
-./scripts/store-app-key.sh support-assistant
-./scripts/store-app-key.sh employee-assistant
+# In Agent Control Plane: add the provider with the guardrail and AWS Authentication policies (see the post),
+# deploy it to your gateway, generate an API key, and store it:
+./scripts/store-provider-key.sh
 
-./scripts/test-guardrails.sh <gateway-folder>   # calls https://localhost:8443/default/<proxy>; set PROJECT for another project
-terraform -chdir=terraform output -raw dashboard_url   # CloudWatch dashboard with checks per guardrail
+./scripts/test-guardrails.sh <gateway-folder>   # calls https://localhost:8443/bedrock-provider
+terraform -chdir=terraform output -raw dashboard_url   # CloudWatch dashboard for the guardrail
 ```
 
-Terraform also creates an Amazon CloudWatch dashboard that graphs each guardrail's checks and the requests and responses that the guardrails block or mask. Metrics appear a few minutes after traffic. Add `-var="create_dashboard=false"` to skip it; `terraform destroy` removes it.
+Terraform also creates an Amazon CloudWatch dashboard that graphs the guardrail's checks and the requests and responses that it blocks or masks. Metrics appear a few minutes after traffic. Add `-var="create_dashboard=false"` to skip it; `terraform destroy` removes it.
 
 `run-gateway.sh` starts the gateway in the background, confirms that `gateway-runtime` received your AWS credentials (it prints variable names only), and returns. Set `FOLLOW_LOGS=1` to follow the logs. Stop the gateway with `docker compose --env-file api-platform.env down` in the gateway folder.
 
@@ -55,7 +53,7 @@ The sample uses WSO2 AI Gateway 1.2.0, which ships `aws-bedrock-guardrail` v1.0.
 
 ## Clean up
 
-In Agent Control Plane, delete the proxies, the provider, and the gateway first. Then:
+In Agent Control Plane, delete the provider and the gateway first. Then:
 
 ```bash
 ./scripts/cleanup.sh <gateway-folder>

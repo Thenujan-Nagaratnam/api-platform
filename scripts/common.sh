@@ -13,18 +13,15 @@ BEDROCK_MODEL_ID="$(tf_output model_id)"
 GATEWAY_ROLE_ARN="$(tf_output gateway_role_arn)"
 BASELINE_GUARDRAIL_ID="$(tf_output baseline_guardrail_id)"
 BASELINE_GUARDRAIL_VERSION="$(tf_output baseline_guardrail_version)"
-SUPPORT_GUARDRAIL_ID="$(tf_output support_guardrail_id)"
-SUPPORT_GUARDRAIL_VERSION="$(tf_output support_guardrail_version)"
 export AWS_REGION BEDROCK_MODEL_ID GATEWAY_ROLE_ARN \
-  BASELINE_GUARDRAIL_ID BASELINE_GUARDRAIL_VERSION SUPPORT_GUARDRAIL_ID SUPPORT_GUARDRAIL_VERSION
+  BASELINE_GUARDRAIL_ID BASELINE_GUARDRAIL_VERSION
 export AWS_DEFAULT_REGION="${AWS_REGION}"
 
-export SECRET_PREFIX="wso2-ai-gateway/apps"
-export APPS="support-assistant employee-assistant"
+export PROVIDER_KEY_SECRET="wso2-ai-gateway/provider-key"
 
 # Only these variables are substituted, so other ${...} text stays intact.
 # shellcheck disable=SC2016 # Single quotes are intentional: envsubst expands these names.
-export SUBST_VARS='${AWS_REGION} ${GATEWAY_ROLE_ARN} ${BASELINE_GUARDRAIL_ID} ${BASELINE_GUARDRAIL_VERSION} ${SUPPORT_GUARDRAIL_ID} ${SUPPORT_GUARDRAIL_VERSION}'
+export SUBST_VARS='${AWS_REGION} ${GATEWAY_ROLE_ARN} ${BASELINE_GUARDRAIL_ID} ${BASELINE_GUARDRAIL_VERSION}'
 
 # The folder where you downloaded the gateway from Agent Control Plane. Pass it as the first argument.
 gateway_dir() {

@@ -55,13 +55,10 @@ resource "aws_iam_role_policy" "gateway_bedrock" {
         Resource = local.inference_profile_arn
       }] : [],
       [{
-        Sid    = "ApplyApprovedGuardrails"
-        Effect = "Allow"
-        Action = "bedrock:ApplyGuardrail"
-        Resource = [
-          aws_bedrock_guardrail.baseline.guardrail_arn,
-          aws_bedrock_guardrail.support_assistant.guardrail_arn,
-        ]
+        Sid      = "ApplyApprovedGuardrails"
+        Effect   = "Allow"
+        Action   = "bedrock:ApplyGuardrail"
+        Resource = aws_bedrock_guardrail.baseline.guardrail_arn
       }]
     )
   })

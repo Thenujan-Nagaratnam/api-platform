@@ -18,20 +18,8 @@ output "baseline_guardrail_version" {
   value = aws_bedrock_guardrail_version.baseline.version
 }
 
-output "support_guardrail_id" {
-  value = aws_bedrock_guardrail.support_assistant.guardrail_id
-}
-
-output "support_guardrail_version" {
-  value = aws_bedrock_guardrail_version.support_assistant.version
-}
-
 output "baseline_guardrail_arn" {
   value = aws_bedrock_guardrail.baseline.guardrail_arn
-}
-
-output "support_guardrail_arn" {
-  value = aws_bedrock_guardrail.support_assistant.guardrail_arn
 }
 
 output "dashboard_url" {

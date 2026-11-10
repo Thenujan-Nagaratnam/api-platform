@@ -1,5 +1,5 @@
-# Amazon CloudWatch dashboard for the two guardrails. It graphs how many checks each guardrail runs,
-# and how many requests and responses the guardrails block or mask. Set create_dashboard = false to
+# Amazon CloudWatch dashboard for the shared guardrail. It graphs how many checks the guardrail runs,
+# and how many requests and responses it blocks or masks. Set create_dashboard = false to
 # skip it. After the first three dashboards in an account, each one costs about $3 a month, and
 # terraform destroy removes it with the guardrails.
 variable "create_dashboard" {
@@ -36,13 +36,9 @@ resource "aws_cloudwatch_dashboard" "guardrails" {
           [local.guardrail_namespace, "Invocations",
             "GuardrailArn", aws_bedrock_guardrail.baseline.guardrail_arn,
             "GuardrailVersion", aws_bedrock_guardrail_version.baseline.version,
-          { label = "${aws_bedrock_guardrail.baseline.name} checks (every application)", color = "#1f77b4" }],
-          [local.guardrail_namespace, "Invocations",
-            "GuardrailArn", aws_bedrock_guardrail.support_assistant.guardrail_arn,
-            "GuardrailVersion", aws_bedrock_guardrail_version.support_assistant.version,
-          { label = "${aws_bedrock_guardrail.support_assistant.name} checks (support assistant only)", color = "#ff7f0e" }],
+          { label = "${aws_bedrock_guardrail.baseline.name} checks (every request)", color = "#1f77b4" }],
           [local.guardrail_namespace, "InvocationsIntervened", "Operation", "ApplyGuardrail",
-          { label = "Interventions: blocked or masked (both guardrails)", color = "#d62728" }],
+          { label = "Interventions: blocked or masked", color = "#d62728" }],
         ]
         yAxis  = { left = { min = 0, label = "Count", showUnits = false } }
         legend = { position = "bottom" }

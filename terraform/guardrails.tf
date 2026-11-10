@@ -39,31 +39,10 @@ resource "aws_bedrock_guardrail" "baseline" {
   }
 }
 
-# App-specific guardrail. The gateway attaches it to the support assistant's proxy only.
-resource "aws_bedrock_guardrail" "support_assistant" {
-  name                      = "support-assistant"
-  description               = "Extra rules for the customer-facing support assistant"
-  blocked_input_messaging   = "The support assistant can't help with that."
-  blocked_outputs_messaging = "The support assistant can't help with that."
-
-  topic_policy_config {
-    topics_config {
-      name       = "LegalAdvice"
-      type       = "DENY"
-      definition = "Advice about legal rights, lawsuits, or legal action against the company or anyone else."
-      examples   = ["Can I sue you if my refund is late?"]
-    }
-  }
-}
 
 # Numbered versions: editing a guardrail doesn't change what the gateway enforces
 # until you publish a new version and point the gateway at it.
 resource "aws_bedrock_guardrail_version" "baseline" {
   guardrail_arn = aws_bedrock_guardrail.baseline.guardrail_arn
   description   = "Baseline v1"
-}
-
-resource "aws_bedrock_guardrail_version" "support_assistant" {
-  guardrail_arn = aws_bedrock_guardrail.support_assistant.guardrail_arn
-  description   = "Support assistant v1"
 }

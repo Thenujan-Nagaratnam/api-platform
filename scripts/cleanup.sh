@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stops the gateway, removes its data, and deletes the application key secrets.
-# In Agent Control Plane, delete the proxies, the provider, and the gateway first. Then run this script,
+# Stops the gateway, removes its data, and deletes the provider key secret.
+# In Agent Control Plane, delete the provider and the gateway first. Then run this script,
 # and then run terraform destroy.
 # Usage: ./scripts/cleanup.sh <gateway-folder>
 set -euo pipefail
