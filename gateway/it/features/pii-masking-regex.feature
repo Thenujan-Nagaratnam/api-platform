@@ -469,6 +469,132 @@ Feature: PII Masking Regex
     When I delete the API "pii-masking-nested-api"
     Then the response should be successful
 
+  Scenario: Mask PII across the whole payload with root JSONPath
+    Given I authenticate using basic auth as "admin"
+    When I deploy this API configuration:
+      """
+      apiVersion: gateway.api-platform.wso2.com/v1
+      kind: RestApi
+      metadata:
+        name: pii-masking-root-jsonpath-api
+      spec:
+        displayName: PII Masking Root JSONPath API
+        version: v1.0
+        context: /pii-masking-root-jsonpath/$version
+        upstream:
+          main:
+            url: http://sample-backend:9080/api/v1
+        operations:
+          - method: GET
+            path: /health
+          - method: POST
+            path: /echo
+            policies:
+              - name: pii-masking-regex
+                version: v1
+                params:
+                  customPIIEntities:
+                    - piiEntity: "EMAIL"
+                      piiRegex: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+                  jsonPath: "$"
+                  redactPII: false
+      """
+    Then the response should be successful
+    And I wait for the endpoint "http://localhost:8080/pii-masking-root-jsonpath/v1.0/health" to be ready
+
+    # PII in two unrelated fields - "$" must cover both, not just one field
+    When I set header "Content-Type" to "application/json"
+    And I send a POST request to "http://localhost:8080/pii-masking-root-jsonpath/v1.0/echo" with body:
+      """
+      {
+        "user": {
+          "name": "Sam Carter",
+          "email": "sam.carter@example.com"
+        },
+        "messages": [
+          {"role": "user", "content": "Forward this to ops@example.org"}
+        ]
+      }
+      """
+    Then the response status code should be 200
+    And the response should be valid JSON
+    And the response body should contain "sam.carter@example.com"
+    And the response body should contain "ops@example.org"
+    And the response body should not contain "[EMAIL_"
+    When I send a GET request to "http://localhost:9080/captured-request"
+    Then the response status code should be 200
+    And the response body should contain "[EMAIL_"
+    And the response body should not contain "sam.carter@example.com"
+    And the response body should not contain "ops@example.org"
+    And the response body should contain "Sam Carter"
+
+    # Cleanup
+    Given I authenticate using basic auth as "admin"
+    When I delete the API "pii-masking-root-jsonpath-api"
+    Then the response should be successful
+
+  Scenario: Redact PII across the whole payload with root JSONPath
+    Given I authenticate using basic auth as "admin"
+    When I deploy this API configuration:
+      """
+      apiVersion: gateway.api-platform.wso2.com/v1
+      kind: RestApi
+      metadata:
+        name: pii-redact-root-jsonpath-api
+      spec:
+        displayName: PII Redact Root JSONPath API
+        version: v1.0
+        context: /pii-redact-root-jsonpath/$version
+        upstream:
+          main:
+            url: http://sample-backend:9080/api/v1
+        operations:
+          - method: GET
+            path: /health
+          - method: POST
+            path: /echo
+            policies:
+              - name: pii-masking-regex
+                version: v1
+                params:
+                  customPIIEntities:
+                    - piiEntity: "EMAIL"
+                      piiRegex: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+                  jsonPath: "$"
+                  redactPII: true
+      """
+    Then the response should be successful
+    And I wait for the endpoint "http://localhost:8080/pii-redact-root-jsonpath/v1.0/health" to be ready
+
+    When I set header "Content-Type" to "application/json"
+    And I send a POST request to "http://localhost:8080/pii-redact-root-jsonpath/v1.0/echo" with body:
+      """
+      {
+        "user": {
+          "name": "Sam Carter",
+          "email": "sam.carter@example.com"
+        },
+        "messages": [
+          {"role": "user", "content": "Forward this to ops@example.org"}
+        ]
+      }
+      """
+    Then the response status code should be 200
+    And the response should be valid JSON
+    And the response body should not contain "sam.carter@example.com"
+    And the response body should not contain "ops@example.org"
+    When I send a GET request to "http://localhost:9080/captured-request"
+    Then the response status code should be 200
+    And the response body should contain "*****"
+    And the response body should not contain "sam.carter@example.com"
+    And the response body should not contain "ops@example.org"
+    And the response body should contain "Sam Carter"
+
+    # Cleanup
+    Given I authenticate using basic auth as "admin"
+    When I delete the API "pii-redact-root-jsonpath-api"
+    Then the response should be successful
+
   # ============================================================================
   # EDGE CASES
   # ============================================================================

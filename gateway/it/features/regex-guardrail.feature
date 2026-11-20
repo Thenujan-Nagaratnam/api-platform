@@ -412,6 +412,134 @@ Feature: Regex Guardrail
     When I delete the API "regex-nested-jsonpath-api"
     Then the response should be successful
 
+  Scenario: Validate regex against the whole payload with root JSONPath
+    Given I authenticate using basic auth as "admin"
+    When I deploy this API configuration:
+      """
+      apiVersion: gateway.api-platform.wso2.com/v1
+      kind: RestApi
+      metadata:
+        name: regex-root-jsonpath-api
+      spec:
+        displayName: Regex Root JSONPath API
+        version: v1.0
+        context: /regex-root-jsonpath/$version
+        upstream:
+          main:
+            url: http://sample-backend:9080/api/v1
+        operations:
+          - method: GET
+            path: /health
+          - method: POST
+            path: /validate
+            policies:
+              - name: regex-guardrail
+                version: v1
+                params:
+                  request:
+                    jsonPath: "$"
+                    regex: "ORDER-[0-9]{4}"
+      """
+    Then the response should be successful
+    And I wait for the endpoint "http://localhost:8080/regex-root-jsonpath/v1.0/health" to be ready
+
+    # Match is outside the default $.messages[-1].content field - "$" must still see it
+    When I set header "Content-Type" to "application/json"
+    And I send a POST request to "http://localhost:8080/regex-root-jsonpath/v1.0/validate" with body:
+      """
+      {
+        "reference": "ORDER-1234",
+        "messages": [
+          {"role": "user", "content": "Where is my parcel?"}
+        ]
+      }
+      """
+    Then the response status code should be 200
+
+    # No match anywhere in the payload - should fail
+    When I set header "Content-Type" to "application/json"
+    And I send a POST request to "http://localhost:8080/regex-root-jsonpath/v1.0/validate" with body:
+      """
+      {
+        "reference": "none",
+        "messages": [
+          {"role": "user", "content": "Where is my parcel?"}
+        ]
+      }
+      """
+    Then the response status code should be 422
+    And the response should be valid JSON
+    And the response body should contain "REGEX_GUARDRAIL"
+
+    # Cleanup
+    Given I authenticate using basic auth as "admin"
+    When I delete the API "regex-root-jsonpath-api"
+    Then the response should be successful
+
+  Scenario: Block content anywhere in the payload with root JSONPath and inverted logic
+    Given I authenticate using basic auth as "admin"
+    When I deploy this API configuration:
+      """
+      apiVersion: gateway.api-platform.wso2.com/v1
+      kind: RestApi
+      metadata:
+        name: regex-root-jsonpath-invert-api
+      spec:
+        displayName: Regex Root JSONPath Invert API
+        version: v1.0
+        context: /regex-root-jsonpath-invert/$version
+        upstream:
+          main:
+            url: http://sample-backend:9080/api/v1
+        operations:
+          - method: GET
+            path: /health
+          - method: POST
+            path: /validate
+            policies:
+              - name: regex-guardrail
+                version: v1
+                params:
+                  request:
+                    jsonPath: "$"
+                    regex: "secret-[0-9]+"
+                    invert: true
+      """
+    Then the response should be successful
+    And I wait for the endpoint "http://localhost:8080/regex-root-jsonpath-invert/v1.0/health" to be ready
+
+    # No blocked pattern anywhere - should pass
+    When I set header "Content-Type" to "application/json"
+    And I send a POST request to "http://localhost:8080/regex-root-jsonpath-invert/v1.0/validate" with body:
+      """
+      {
+        "metadata": {"note": "nothing to see here"},
+        "messages": [
+          {"role": "user", "content": "Hello"}
+        ]
+      }
+      """
+    Then the response status code should be 200
+
+    # Blocked pattern in a nested field outside the default path - should fail
+    When I set header "Content-Type" to "application/json"
+    And I send a POST request to "http://localhost:8080/regex-root-jsonpath-invert/v1.0/validate" with body:
+      """
+      {
+        "metadata": {"note": "token is secret-42"},
+        "messages": [
+          {"role": "user", "content": "Hello"}
+        ]
+      }
+      """
+    Then the response status code should be 422
+    And the response body should contain "GUARDRAIL_INTERVENED"
+
+    # Cleanup
+    Given I authenticate using basic auth as "admin"
+    When I delete the API "regex-root-jsonpath-invert-api"
+    Then the response should be successful
+
   Scenario: Handle invalid JSONPath gracefully
     Given I authenticate using basic auth as "admin"
     When I deploy this API configuration:
