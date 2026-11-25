@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"regexp"
 	"sort"
@@ -95,10 +97,10 @@ func (q *JSONPathQuery) IsSingular() bool { return q.singular }
 // returns an empty list, not an error, when nothing matches.
 func (q *JSONPathQuery) Select(root any) []JSONPathNode {
 	c := &jpEval{root: root, paths: true}
-	nodes := evalSegments(c, q.segments, []jpNode{{path: "$", val: root}})
+	nodes := evalSegments(c, q.segments, []jpNode{{val: root}})
 	out := make([]JSONPathNode, len(nodes))
 	for i, n := range nodes {
-		out[i] = JSONPathNode{Path: n.path, Value: n.val}
+		out[i] = JSONPathNode{Path: n.path.String(), Value: n.val}
 	}
 	return out
 }
@@ -127,8 +129,18 @@ func QueryJSONPathValues(root any, path string) ([]any, error) {
 
 // ─── data model ──────────────────────────────────────────────────────────────
 
+// jpPath is the location of a node as a chain of steps. The normalized path
+// string is built only for nodes a query returns, so a query that visits many
+// nodes does not pay for a path per visit.
+type jpPath struct {
+	parent *jpPath
+	name   string
+	idx    int
+	isName bool
+}
+
 type jpNode struct {
-	path string // normalized path; empty when paths are not wanted
+	path *jpPath // nil for the root, and when paths are not wanted
 	val  any
 }
 
@@ -137,11 +149,41 @@ type jpEval struct {
 	paths bool
 }
 
-func (c *jpEval) child(parent jpNode, step string) string {
+func (c *jpEval) nameChild(parent jpNode, name string) *jpPath {
 	if !c.paths {
-		return ""
+		return nil
 	}
-	return parent.path + step
+	return &jpPath{parent: parent.path, name: name, isName: true}
+}
+
+func (c *jpEval) idxChild(parent jpNode, idx int) *jpPath {
+	if !c.paths {
+		return nil
+	}
+	return &jpPath{parent: parent.path, idx: idx}
+}
+
+// String renders the normalized path (RFC 9535 section 2.7).
+func (p *jpPath) String() string {
+	var steps []*jpPath
+	for cur := p; cur != nil; cur = cur.parent {
+		steps = append(steps, cur)
+	}
+	var b strings.Builder
+	b.WriteByte('$')
+	for i := len(steps) - 1; i >= 0; i-- {
+		st := steps[i]
+		if st.isName {
+			b.WriteString("['")
+			b.WriteString(escapeNormalizedName(st.name))
+			b.WriteString("']")
+		} else {
+			b.WriteByte('[')
+			b.WriteString(strconv.Itoa(st.idx))
+			b.WriteByte(']')
+		}
+	}
+	return b.String()
 }
 
 // ─── AST ─────────────────────────────────────────────────────────────────────
@@ -193,7 +235,7 @@ func sortedKeys(m map[string]any) []string {
 func (s jpName) apply(c *jpEval, n jpNode, out []jpNode) []jpNode {
 	if m, ok := n.val.(map[string]any); ok {
 		if v, ok := m[s.name]; ok {
-			out = append(out, jpNode{path: c.child(n, "['"+escapeNormalizedName(s.name)+"']"), val: v})
+			out = append(out, jpNode{path: c.nameChild(n, s.name), val: v})
 		}
 	}
 	return out
@@ -206,7 +248,7 @@ func (s jpIndex) apply(c *jpEval, n jpNode, out []jpNode) []jpNode {
 			i += int64(len(a))
 		}
 		if i >= 0 && i < int64(len(a)) {
-			out = append(out, jpNode{path: c.child(n, "["+strconv.FormatInt(i, 10)+"]"), val: a[i]})
+			out = append(out, jpNode{path: c.idxChild(n, int(i)), val: a[i]})
 		}
 	}
 	return out
@@ -216,11 +258,11 @@ func (jpWildcard) apply(c *jpEval, n jpNode, out []jpNode) []jpNode {
 	switch v := n.val.(type) {
 	case []any:
 		for i, e := range v {
-			out = append(out, jpNode{path: c.child(n, "["+strconv.Itoa(i)+"]"), val: e})
+			out = append(out, jpNode{path: c.idxChild(n, i), val: e})
 		}
 	case map[string]any:
 		for _, k := range sortedKeys(v) {
-			out = append(out, jpNode{path: c.child(n, "['"+escapeNormalizedName(k)+"']"), val: v[k]})
+			out = append(out, jpNode{path: c.nameChild(n, k), val: v[k]})
 		}
 	}
 	return out
@@ -239,7 +281,7 @@ func (s jpSlice) apply(c *jpEval, n jpNode, out []jpNode) []jpNode {
 		return length + i
 	}
 	pick := func(i int64) jpNode {
-		return jpNode{path: c.child(n, "["+strconv.FormatInt(i, 10)+"]"), val: a[i]}
+		return jpNode{path: c.idxChild(n, int(i)), val: a[i]}
 	}
 	// RFC 9535 section 2.3.4.2.2: defaults, normalisation, bounds.
 	if s.step > 0 {
@@ -291,13 +333,13 @@ func (s jpFilter) apply(c *jpEval, n jpNode, out []jpNode) []jpNode {
 	case []any:
 		for i, e := range v {
 			if s.cond.eval(c, e) {
-				out = append(out, jpNode{path: c.child(n, "["+strconv.Itoa(i)+"]"), val: e})
+				out = append(out, jpNode{path: c.idxChild(n, i), val: e})
 			}
 		}
 	case map[string]any:
 		for _, k := range sortedKeys(v) {
 			if s.cond.eval(c, v[k]) {
-				out = append(out, jpNode{path: c.child(n, "['"+escapeNormalizedName(k)+"']"), val: v[k]})
+				out = append(out, jpNode{path: c.nameChild(n, k), val: v[k]})
 			}
 		}
 	}
@@ -334,11 +376,11 @@ func descend(c *jpEval, sels []jpSelector, n jpNode, out []jpNode) []jpNode {
 	switch v := n.val.(type) {
 	case []any:
 		for i, e := range v {
-			out = descend(c, sels, jpNode{path: c.child(n, "["+strconv.Itoa(i)+"]"), val: e}, out)
+			out = descend(c, sels, jpNode{path: c.idxChild(n, i), val: e}, out)
 		}
 	case map[string]any:
 		for _, k := range sortedKeys(v) {
-			out = descend(c, sels, jpNode{path: c.child(n, "['"+escapeNormalizedName(k)+"']"), val: v[k]}, out)
+			out = descend(c, sels, jpNode{path: c.nameChild(n, k), val: v[k]}, out)
 		}
 	}
 	return out
@@ -494,6 +536,76 @@ func jpNumber(v any) (float64, bool) {
 	return 0, false
 }
 
+// jpNumCmp compares two numbers. Numbers that float64 holds exactly are compared
+// as floats; an integer or a json.Number beyond 2^53 is compared exactly, so that
+// two different 64-bit ids do not read as equal. ok is false when either value is
+// not a number or is NaN.
+func jpNumCmp(a, b any) (int, bool) {
+	fa, oka := jpNumber(a)
+	fb, okb := jpNumber(b)
+	if !oka || !okb || math.IsNaN(fa) || math.IsNaN(fb) {
+		return 0, false
+	}
+	const exact = 1 << 53
+	if math.Abs(fa) < exact && math.Abs(fb) < exact {
+		switch {
+		case fa < fb:
+			return -1, true
+		case fa > fb:
+			return 1, true
+		}
+		return 0, true
+	}
+	ra, rb := jpRat(a), jpRat(b)
+	if ra == nil || rb == nil {
+		switch {
+		case fa < fb:
+			return -1, true
+		case fa > fb:
+			return 1, true
+		}
+		return 0, true
+	}
+	return ra.Cmp(rb), true
+}
+
+// jpRat is the exact value of a number, or nil when it has none (infinity).
+func jpRat(v any) *big.Rat {
+	switch n := v.(type) {
+	case json.Number:
+		r, ok := new(big.Rat).SetString(n.String())
+		if !ok {
+			return nil
+		}
+		return r
+	case int:
+		return new(big.Rat).SetInt64(int64(n))
+	case int8:
+		return new(big.Rat).SetInt64(int64(n))
+	case int16:
+		return new(big.Rat).SetInt64(int64(n))
+	case int32:
+		return new(big.Rat).SetInt64(int64(n))
+	case int64:
+		return new(big.Rat).SetInt64(n)
+	case uint:
+		return new(big.Rat).SetInt(new(big.Int).SetUint64(uint64(n)))
+	case uint8:
+		return new(big.Rat).SetInt64(int64(n))
+	case uint16:
+		return new(big.Rat).SetInt64(int64(n))
+	case uint32:
+		return new(big.Rat).SetInt64(int64(n))
+	case uint64:
+		return new(big.Rat).SetInt(new(big.Int).SetUint64(n))
+	}
+	f, _ := jpNumber(v)
+	if math.IsInf(f, 0) || math.IsNaN(f) {
+		return nil
+	}
+	return new(big.Rat).SetFloat64(f)
+}
+
 func jpEqual(a, b jpVal) bool {
 	if !a.present || !b.present {
 		return !a.present && !b.present
@@ -502,9 +614,9 @@ func jpEqual(a, b jpVal) bool {
 }
 
 func jpDeepEqual(a, b any) bool {
-	if fa, ok := jpNumber(a); ok {
-		fb, ok := jpNumber(b)
-		return ok && fa == fb
+	if _, ok := jpNumber(a); ok {
+		c, ok := jpNumCmp(a, b)
+		return ok && c == 0
 	}
 	switch x := a.(type) {
 	case nil:
@@ -547,9 +659,9 @@ func jpLess(a, b jpVal) bool {
 	if !a.present || !b.present {
 		return false
 	}
-	if fa, ok := jpNumber(a.v); ok {
-		fb, ok := jpNumber(b.v)
-		return ok && fa < fb
+	if _, ok := jpNumber(a.v); ok {
+		c, ok := jpNumCmp(a.v, b.v)
+		return ok && c < 0
 	}
 	if sa, ok := a.v.(string); ok {
 		sb, ok := b.v.(string)
@@ -658,31 +770,131 @@ type jpFuncValue struct{ f jpFunc }
 
 func (v jpFuncValue) value(c *jpEval, cur any) jpVal { return v.f.value(c, cur) }
 
-var iregexpCache sync.Map // key: "m|" or "s|" + pattern → *regexp.Regexp (nil when invalid)
+// iregexpCacheMax bounds the compiled patterns kept. A pattern normally comes
+// from the query, so there are few; one that comes from the document (search(@.a,
+// @.b)) is chosen by whoever wrote the document, so the cache must not grow with it.
+const iregexpCacheMax = 512
+
+var (
+	iregexpMu    sync.Mutex
+	iregexpCache = map[string]*regexp.Regexp{} // nil value: the pattern is invalid
+)
 
 // compileIRegexp compiles an I-Regexp (RFC 9485) pattern: anchored for match,
 // unanchored for search. "." means any character except line feed and carriage
-// return. A pattern that does not compile gives nil, which the caller treats as
-// "no match", as the RFC says.
+// return. A pattern that is not a valid I-Regexp gives nil, which the caller treats
+// as "no match", as RFC 9535 says.
 func compileIRegexp(pattern string, anchored bool) *regexp.Regexp {
 	key := "s|" + pattern
 	if anchored {
 		key = "m|" + pattern
 	}
-	if v, ok := iregexpCache.Load(key); ok {
-		re, _ := v.(*regexp.Regexp)
+	iregexpMu.Lock()
+	re, ok := iregexpCache[key]
+	iregexpMu.Unlock()
+	if ok {
 		return re
 	}
-	expr := rewriteDot(pattern)
-	if anchored {
-		expr = `\A(?:` + expr + `)\z`
+	re = nil
+	if validIRegexp(pattern) {
+		expr := rewriteDot(pattern)
+		// The pattern must compile on its own, so that something like "a)|(b"
+		// cannot close the group that anchors it and escape the anchors.
+		if _, err := regexp.Compile(expr); err == nil {
+			if anchored {
+				expr = `\A(?:` + expr + `)\z`
+			}
+			if c, err := regexp.Compile(expr); err == nil {
+				re = c
+			}
+		}
 	}
-	re, err := regexp.Compile(expr)
-	if err != nil {
-		re = nil
+	iregexpMu.Lock()
+	if len(iregexpCache) >= iregexpCacheMax {
+		iregexpCache = map[string]*regexp.Regexp{}
 	}
-	iregexpCache.Store(key, re)
+	iregexpCache[key] = re
+	iregexpMu.Unlock()
 	return re
+}
+
+// validIRegexp reports whether p only uses what RFC 9485 allows, where Go's
+// regexp accepts more: no (?...) groups, no lazy quantifiers, no escapes other than
+// the single characters I-Regexp names and \p{..} \P{..}, and "{" only as a
+// quantifier. "^" and "$" are accepted as anchors, as the RFC 9535 compliance
+// suite expects.
+func validIRegexp(p string) bool {
+	inClass := false
+	prevQuant := false
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		isQuant := false
+		switch {
+		case c == '\\':
+			i++
+			if i >= len(p) {
+				return false
+			}
+			switch p[i] {
+			case '\\', '|', '.', '-', '^', '?', '*', '+', '{', '}', '(', ')', '[', ']', 'n', 'r', 't', '$':
+			case 'p', 'P':
+				if i+1 >= len(p) || p[i+1] != '{' {
+					return false
+				}
+				end := strings.IndexByte(p[i+1:], '}')
+				if end < 2 {
+					return false
+				}
+				i += 1 + end
+			default:
+				return false
+			}
+		case inClass:
+			if c == ']' {
+				inClass = false
+			}
+		case c == '[':
+			inClass = true
+			if i+1 < len(p) && p[i+1] == '^' {
+				i++
+			}
+			if i+1 < len(p) && p[i+1] == ']' {
+				return false // an empty class
+			}
+		case c == '(':
+			if i+1 < len(p) && p[i+1] == '?' {
+				return false
+			}
+		case c == '*' || c == '+' || c == '?':
+			if prevQuant && c == '?' {
+				return false // a lazy quantifier
+			}
+			isQuant = true
+		case c == '{':
+			j := i + 1
+			for j < len(p) && p[j] >= '0' && p[j] <= '9' {
+				j++
+			}
+			if j == i+1 {
+				return false
+			}
+			if j < len(p) && p[j] == ',' {
+				j++
+				for j < len(p) && p[j] >= '0' && p[j] <= '9' {
+					j++
+				}
+			}
+			if j >= len(p) || p[j] != '}' {
+				return false
+			}
+			i = j
+			isQuant = true
+		case c == '}':
+			return false
+		}
+		prevQuant = isQuant
+	}
+	return !inClass
 }
 
 // rewriteDot turns an unescaped "." outside a character class into [^\n\r].
@@ -1339,6 +1551,10 @@ func (p *jpParser) parseWordOperand() (jpOperand, error) {
 		p.i = start
 		return jpOperand{}, p.errorf("unknown word %q", word)
 	}
+	if err := p.enter(); err != nil {
+		return jpOperand{}, err
+	}
+	defer p.leave()
 	p.i++ // (
 	f := &jpFunc{name: word}
 	p.skipSpace()
