@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -286,3 +287,74 @@ func decodeDocFuzz() any {
 }
 
 func stringsReader(s string) *strings.Reader { return strings.NewReader(s) }
+
+// ─── regressions found in review ─────────────────────────────────────────────
+
+func TestJSONPathQuery_NestedFunctionCallsAreBounded(t *testing.T) {
+	// A query nested a million deep used to recurse until the stack overflowed,
+	// which cannot be recovered from.
+	deep := "$[?" + repeat("length(", 150000) + "@" + repeat(")", 150000) + "==1]"
+	if _, err := CompileJSONPath(deep); err == nil || !errors.Is(err, ErrInvalidJSONPath) {
+		t.Fatalf("deeply nested function calls must be refused, got %v", err)
+	}
+}
+
+func TestJSONPathQuery_RegexCacheDoesNotGrowWithTheData(t *testing.T) {
+	doc := make([]any, 0, iregexpCacheMax*3)
+	for i := 0; i < iregexpCacheMax*3; i++ {
+		doc = append(doc, map[string]any{"a": "x", "b": "pattern" + strconv.Itoa(i)})
+	}
+	if _, err := QueryJSONPath(doc, `$[?search(@.a, @.b)]`); err != nil {
+		t.Fatal(err)
+	}
+	iregexpMu.Lock()
+	n := len(iregexpCache)
+	iregexpMu.Unlock()
+	if n > iregexpCacheMax {
+		t.Fatalf("the cache grew with the document: %d entries", n)
+	}
+}
+
+func TestJSONPathQuery_OnlyValidIRegexpMatches(t *testing.T) {
+	doc := decodeDoc(t, `["a","b","azz","x"]`)
+	for pattern, want := range map[string]int{
+		`a`: 1, `a|b`: 2, `[ab]`: 2, `a.z`: 1, `a(zz)?`: 2, `a{1}`: 1,
+		`a)|(b`: 0, // not a pattern: it must not escape the anchors
+		`\d`:    0, `(?i)A`: 0, `a*?`: 0, `\x61`: 0, `a{`: 0, `[`: 0,
+	} {
+		got := values(t, doc, "$[?match(@, '"+strings.ReplaceAll(pattern, `\`, `\\`)+"')]")
+		if len(got) != want {
+			t.Errorf("match(%q): got %d want %d (%v)", pattern, len(got), want, got)
+		}
+	}
+}
+
+func TestJSONPathQuery_LargeIntegersAreComparedExactly(t *testing.T) {
+	d := json.NewDecoder(strings.NewReader(`[{"id":9007199254740992},{"id":9007199254740993},{"id":9007199254740994},{"id":1e2},{"id":100}]`))
+	d.UseNumber()
+	var doc any
+	if err := d.Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if got := values(t, doc, `$[?@.id==9007199254740993]`); len(got) != 1 {
+		t.Errorf("two different 64-bit ids must not be equal: %v", got)
+	}
+	if got := values(t, doc, `$[?@.id>9007199254740992 && @.id<9007199254740994]`); len(got) != 1 {
+		t.Errorf("ordering beyond 2^53: %v", got)
+	}
+	if got := values(t, doc, `$[?@.id==100]`); len(got) != 2 {
+		t.Errorf("1e2 and 100 are the same number: %v", got)
+	}
+}
+
+func TestJSONPathQuery_PathsAreBuiltOnlyForReturnedNodes(t *testing.T) {
+	// 3000 levels deep: with a path string built per visit this is cubic in memory.
+	var doc any = "leaf"
+	for i := 0; i < 3000; i++ {
+		doc = []any{doc}
+	}
+	nodes, err := QueryJSONPath(doc, `$..[?@=='leaf']`)
+	if err != nil || len(nodes) != 1 || len(nodes[0].Path) != 1+3*3000 {
+		t.Fatalf("%d nodes, err %v", len(nodes), err)
+	}
+}
